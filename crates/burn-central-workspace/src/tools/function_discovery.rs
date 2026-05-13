@@ -522,14 +522,15 @@ mod tests {
 
     #[test]
     fn extracts_real_world_ast() {
-        // This is the actual full format from the mnist project
+        // Format from a new-style training function (no Backend generic):
+        // pub fn training(args: Args<TrainingConfig>, cancel: CancelToken) -> Model<MyModel>
         let expanded = r#"
             #[allow(dead_code)]
             const BURN_CENTRAL_FUNCTION_TRAINING: &str =
-                "BCFN1|mnist_heat::training|training|__training_builder|mnist|training|END";
+                "BCFN1|my_project::training|training|__training_builder|mnist|training|END";
             #[allow(dead_code)]
             const _BURN_FUNCTION_AST_TRAINING: &[u8] =
-                b"{\"vis\":\"pub\",\"ident\":\"training\",\"generics\":{\"params\":[{\"type\":{\"ident\":\"B\",\"colon_token\":true,\"bounds\":[{\"trait\":{\"path\":{\"segments\":[{\"ident\":\"AutodiffBackend\"}]}}}]}}]},\"inputs\":[{\"typed\":{\"pat\":{\"ident\":{\"ident\":\"client\"}},\"ty\":{\"reference\":{\"elem\":{\"path\":{\"segments\":[{\"ident\":\"ExperimentRun\"}]}}}}}},{\"typed\":{\"pat\":{\"ident\":{\"ident\":\"config\"}},\"ty\":{\"path\":{\"segments\":[{\"ident\":\"Args\",\"arguments\":{\"angle_bracketed\":{\"args\":[{\"type\":{\"path\":{\"segments\":[{\"ident\":\"ExperimentConfig\"}]}}}]}}}]}}}}],\"output\":{\"path\":{\"segments\":[{\"ident\":\"Result\"}]}}}";
+                b"{\"vis\":\"pub\",\"ident\":\"training\",\"generics\":{\"params\":[]},\"inputs\":[{\"typed\":{\"pat\":{\"ident\":{\"ident\":\"args\"}},\"ty\":{\"path\":{\"segments\":[{\"ident\":\"Args\",\"arguments\":{\"angle_bracketed\":{\"args\":[{\"type\":{\"path\":{\"segments\":[{\"ident\":\"TrainingConfig\"}]}}}]}}}]}}}},{\"typed\":{\"pat\":{\"ident\":{\"ident\":\"cancel\"}},\"ty\":{\"path\":{\"segments\":[{\"ident\":\"CancelToken\"}]}}}}],\"output\":{\"path\":{\"segments\":[{\"ident\":\"Model\"}]}}}";
         "#;
 
         let token_stream = extract_ast_token_stream(expanded, "training").unwrap();
@@ -537,9 +538,9 @@ mod tests {
         // Verify it starts with the expected JSON structure
         let json_str = std::str::from_utf8(&token_stream).unwrap();
         assert!(json_str.starts_with("{\"vis\":\"pub\",\"ident\":\"training\""));
-        assert!(json_str.contains("\"ident\":\"AutodiffBackend\""));
-        assert!(json_str.contains("\"ident\":\"client\""));
-        assert!(json_str.contains("\"ident\":\"config\""));
+        assert!(json_str.contains("\"ident\":\"TrainingConfig\""));
+        assert!(json_str.contains("\"ident\":\"args\""));
+        assert!(json_str.contains("\"ident\":\"cancel\""));
 
         // Verify it's valid JSON by attempting to parse it
         let _: serde_json::Value =

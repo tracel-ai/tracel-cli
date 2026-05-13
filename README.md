@@ -66,16 +66,15 @@ Use the `#[register]` macro to make your training function discoverable:
 use burn_central::{
     experiment::ExperimentRun,
     macros::register,
-    runtime::{Args, ArtifactLoader, Model, MultiDevice},
+    runtime::{Args, ArtifactLoader, Model},
 };
 
 #[register(training, name = "mnist")]
-pub fn training<B: AutodiffBackend>(
+pub fn training(
     client: &ExperimentRun,
     config: Args<YourExperimentConfig>,
-    MultiDevice(devices): MultiDevice<B>,
-    loader: ArtifactLoader<ModelArtifact<B>>,
-) -> Result<Model<impl ModelArtifact<B::InnerBackend>>, String> {
+    loader: ArtifactLoader<ModelArtifact>,
+) -> Result<Model<impl ModelArtifact>, String> {
     // Your training logic here...
     Ok(Model(model_artifact))
 }

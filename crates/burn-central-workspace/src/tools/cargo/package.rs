@@ -84,8 +84,7 @@ pub fn package_workspace(
         message: "Creating compressed archive".to_string(),
     });
 
-    // Use standard cargo crate naming format to match backend expectations
-    // The backend returns upload URLs keyed by {name}-{version}.crate
+    // The Burn Central API returns upload URLs keyed by {name}-{version}.crate
     const WORKSPACE_VERSION: &str = "0.1.0";
     let archive_name = format!("{}-{}.crate", workspace_name, WORKSPACE_VERSION);
     let archive_path = artifacts_dir.join(&archive_name);
