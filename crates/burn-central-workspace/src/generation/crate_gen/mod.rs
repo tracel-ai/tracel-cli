@@ -2,8 +2,7 @@ pub mod backend;
 mod cargo_toml;
 
 use crate::{
-    entity::projects::burn_dir::cache::CacheState, execution::BackendType,
-    generation::backend::default_device_stream, tools::function_discovery::FunctionMetadata,
+    entity::projects::burn_dir::cache::CacheState, tools::function_discovery::FunctionMetadata,
 };
 use quote::quote;
 use std::{
@@ -199,15 +198,7 @@ fn generate_builder_call(
     }
 }
 
-fn generate_main_rs(
-    user_crate_name: &str,
-    main_backend: &BackendType,
-    functions: &[FunctionMetadata],
-) -> String {
-    let backend_types = backend::generate_backend_typedef_stream(main_backend);
-    let (_backend_type_name, _autodiff_backend_type_name) = backend::get_backend_type_names();
-    let backend_default_device = default_device_stream();
-
+fn generate_main_rs(user_crate_name: &str, functions: &[FunctionMetadata]) -> String {
     let builder_ident = syn::Ident::new("builder", proc_macro2::Span::call_site());
     let builder_registration: Vec<proc_macro2::TokenStream> = functions
         .iter()
@@ -220,15 +211,6 @@ fn generate_main_rs(
         })
         .collect();
 
-    let recursion_limit =
-        if [BackendType::Wgpu, BackendType::Metal, BackendType::Vulkan].contains(main_backend) {
-            quote! {
-                #![recursion_limit = "256"]
-            }
-        } else {
-            quote! {}
-        };
-
     let crate_name_str = syn::Ident::new(
         &user_crate_name.to_lowercase().replace('-', "_"),
         proc_macro2::Span::call_site(),
@@ -236,8 +218,6 @@ fn generate_main_rs(
 
     let bin_content: proc_macro2::TokenStream = quote! {
         #![allow(unused_imports)]
-        #recursion_limit
-        #backend_types
 
         use #crate_name_str::*;
         use ctrlc;
@@ -246,8 +226,6 @@ fn generate_main_rs(
             use burn_central::runtime::Executor;
 
             let runtime_args = burn_central::runtime::cli::parse_runtime_args();
-
-            let device = #backend_default_device;
 
             let key = runtime_args.burn_central.api_key;
             let env = runtime_args.burn_central.env;
@@ -258,7 +236,7 @@ fn generate_main_rs(
 
             ctrlc::set_handler(|| {}).expect("Error setting Ctrl-C handler");
 
-            let mut #builder_ident = Executor::<MyAutodiffBackend>::builder();
+            let mut #builder_ident = Executor::builder();
             #(#builder_registration)*
             // #crate_entrypoint(&mut #builder_ident);
 
@@ -282,7 +260,6 @@ pub fn create_crate(
     crate_name: &str,
     user_project_name: &str,
     user_project_dir: &str,
-    backend: &BackendType,
     functions: &[FunctionMetadata],
     current_pkg: &cargo_metadata::Package,
 ) -> GeneratedCrate {
@@ -317,24 +294,16 @@ pub fn create_crate(
         vec![],
     ));
 
-    let burn_features = backend::get_burn_feature_flags(backend);
-
-    find_required_dependencies(current_pkg, vec!["burn-central", "burn"])
+    find_required_dependencies(current_pkg, vec!["burn-central"])
         .drain(..)
-        .for_each(|mut dep| {
-            if dep.name == "burn" {
-                burn_features.iter().for_each(|feature| {
-                    dep.add_feature(feature.to_string());
-                });
-            }
+        .for_each(|dep| {
             generated_crate.add_dependency(dep);
         });
 
     // Generate source files
     generated_crate.src_mut().insert(FileTree::new_file(
         "main.rs",
-        generate_main_rs(user_project_name, backend, functions),
+        generate_main_rs(user_project_name, functions),
     ));
-
     generated_crate
 }
