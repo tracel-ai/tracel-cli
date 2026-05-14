@@ -45,7 +45,7 @@ pub struct TrainingArgs {
     /// The package name containing the training function
     #[clap(short, long)]
     package: Option<String>,
-    /// The training function to run. Annotate a training function with #[burn(training)] to register it.
+    /// The training function to run. Annotate a training function with #[register(training)] to register it.
     function: Option<String>,
     /// A JSON file containing argument overrides for the training function
     #[clap(long = "args")]
