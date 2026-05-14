@@ -7,9 +7,7 @@ use serde::Serialize;
 
 use crate::{
     entity::projects::ProjectContext,
-    execution::{
-        BackendType, BuildProfile, ExecutionError, ProcedureType, cancellable::CancellationToken,
-    },
+    execution::{BuildProfile, ExecutionError, ProcedureType, cancellable::CancellationToken},
     tools::{
         cargo,
         function_discovery::{DiscoveryEvent, FunctionMetadata},
@@ -38,8 +36,6 @@ pub struct LocalExecutionConfig {
     pub package: Option<String>,
     /// The function to execute
     pub function: String,
-    /// Backend to use for execution
-    pub backend: BackendType,
     /// Launch arguments
     pub args: serde_json::Value,
     /// Type of procedure to execute
@@ -51,7 +47,6 @@ pub struct LocalExecutionConfig {
 }
 
 struct BuildConfig {
-    pub backend: BackendType,
     pub build_profile: BuildProfile,
     pub code_version: String,
 }
@@ -71,7 +66,6 @@ impl LocalExecutionConfig {
         env: String,
         package: Option<String>,
         function: String,
-        backend: BackendType,
         procedure_type: ProcedureType,
         code_version: String,
     ) -> Self {
@@ -80,7 +74,6 @@ impl LocalExecutionConfig {
             env,
             package,
             function,
-            backend,
             procedure_type,
             code_version,
             args: serde_json::Value::Null,
@@ -216,7 +209,6 @@ impl<'a> LocalExecutor<'a> {
 
         // Build configuration for compilation
         let build_config = BuildConfig {
-            backend: config.backend,
             build_profile: config.build_profile,
             code_version: config.code_version,
         };
@@ -225,7 +217,6 @@ impl<'a> LocalExecutor<'a> {
         let crate_name = "burn_central_executable";
         let crate_dir = self.generate_executable_crate(
             crate_name,
-            &build_config,
             &target_package,
             &target_package_functions,
             cancel_token,
@@ -338,7 +329,6 @@ impl<'a> LocalExecutor<'a> {
     fn generate_executable_crate(
         &self,
         crate_name: &str,
-        config: &BuildConfig,
         target_package: &Package,
         functions: &[FunctionMetadata],
         cancel_token: &CancellationToken,
@@ -359,7 +349,6 @@ impl<'a> LocalExecutor<'a> {
             crate_name,
             &target_package.name,
             target_package.manifest_path.parent().unwrap().as_str(),
-            &config.backend,
             functions,
             target_package,
         );

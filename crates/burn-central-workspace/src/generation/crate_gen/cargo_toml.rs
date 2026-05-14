@@ -61,10 +61,6 @@ impl Dependency {
             features,
         }
     }
-
-    pub fn add_feature(&mut self, feature: String) {
-        self.features.push(feature);
-    }
 }
 
 pub struct FeatureFlag {

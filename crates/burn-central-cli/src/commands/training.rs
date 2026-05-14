@@ -1,7 +1,6 @@
 use anyhow::Context;
 use burn_central_workspace::ProjectContext;
 use burn_central_workspace::compute_provider::TrainingJobArgs;
-use burn_central_workspace::execution::BackendType;
 use burn_central_workspace::execution::ExecutionError;
 use burn_central_workspace::execution::ProcedureType;
 use burn_central_workspace::execution::cancellable::CancellationToken;
@@ -46,11 +45,8 @@ pub struct TrainingArgs {
     /// The package name containing the training function
     #[clap(short, long)]
     package: Option<String>,
-    /// The training function to run. Annotate a training function with #[burn(training)] to register it.
+    /// The training function to run. Annotate a training function with #[register(training)] to register it.
     function: Option<String>,
-    /// Backend to use
-    #[clap(short = 'b', long = "backend")]
-    backend: Option<BackendType>,
     /// A JSON file containing argument overrides for the training function
     #[clap(long = "args")]
     args: Option<String>,
@@ -78,7 +74,6 @@ impl Default for TrainingArgs {
             overrides: vec![],
             code_version: None,
             compute_provider: None,
-            backend: None,
         }
     }
 }
@@ -154,7 +149,6 @@ fn execute_remotely(
     let command = TrainingJobArgs {
         package: Some(function.package_name.clone()),
         function: function.function_name.clone(),
-        backend: args.backend.unwrap_or_default(),
         args: Some(launch_args.data),
     };
 
@@ -349,7 +343,6 @@ fn execute_locally(
     let code_version = package_sequence(context, project, Some(&training_discovery), false)?;
 
     let executor = LocalExecutor::new(project);
-    let backend = args.backend.unwrap_or_default();
 
     let config = LocalExecutionConfig::new(
         context
@@ -360,7 +353,6 @@ fn execute_locally(
             .expect("Should be able to serialize environment"),
         Some(function.package_name.clone()),
         function.function_name.clone(),
-        backend,
         ProcedureType::Training,
         code_version.digest,
     )

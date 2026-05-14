@@ -2,7 +2,6 @@ pub mod cancellable;
 pub mod local;
 
 use serde::{Deserialize, Serialize};
-use strum::EnumString;
 
 use crate::tools::function_discovery::DiscoveryError;
 
@@ -38,22 +37,6 @@ impl BuildProfile {
             BuildProfile::Release => "--profile=release",
         }
     }
-}
-
-#[derive(Debug, Clone, EnumString, Default, Deserialize, Serialize, PartialEq, Eq, Copy)]
-#[strum(serialize_all = "snake_case")]
-#[serde(rename_all = "snake_case")]
-pub enum BackendType {
-    #[default]
-    Wgpu,
-    Tch,
-    Ndarray,
-    Cuda,
-    Rocm,
-    Metal,
-    Vulkan,
-    Cpu,
-    Candle,
 }
 
 /// Error types specific to execution
