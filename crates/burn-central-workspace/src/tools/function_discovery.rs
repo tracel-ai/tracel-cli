@@ -522,8 +522,6 @@ mod tests {
 
     #[test]
     fn extracts_real_world_ast() {
-        // Format from a new-style training function (no Backend generic):
-        // pub fn training(args: Args<TrainingConfig>, cancel: CancelToken) -> Model<MyModel>
         let expanded = r#"
             #[allow(dead_code)]
             const BURN_CENTRAL_FUNCTION_TRAINING: &str =

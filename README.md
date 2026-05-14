@@ -74,7 +74,7 @@ pub fn training(
     client: &ExperimentRun,
     config: Args<YourExperimentConfig>,
     loader: ArtifactLoader<ModelArtifact>,
-) -> Result<Model<impl ModelArtifact>, String> {
+) -> Result<Model<ModelArtifact>, String> {
     // Your training logic here...
     Ok(Model(model_artifact))
 }
@@ -91,6 +91,7 @@ burn init
 ```
 
 This will:
+
 - Link your local project to Burn Central
 - Create or select a project on the platform
 - Configure your local environment
@@ -110,6 +111,7 @@ burn train
 ```
 
 The CLI will:
+
 - Discover registered training functions in your project
 - Prompt you to select a function (if multiple are found)
 - Execute the training locally
@@ -187,7 +189,7 @@ burn project
 
 The Burn Central CLI is organized as a Cargo workspace:
 
-```
+```text
 burn-central-cli/
 ├── crates/
 │   ├── burn-central-cli/       # Main CLI binary
@@ -263,8 +265,8 @@ Contributions are welcome! Please feel free to:
 
 Licensed under either of:
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
 
 at your option.
 
