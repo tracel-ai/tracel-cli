@@ -26,10 +26,12 @@ burn-central-workspace
 Discovers and represents a Burn Central project in a local Cargo workspace.
 
 ```rust
+use std::path::Path;
 use burn_central_workspace::ProjectContext;
 
-let project = ProjectContext::discover()?;
-let registry = project.load_functions()?;
+let manifest_path = Path::new("Cargo.toml");
+let project = ProjectContext::load(manifest_path, ".burn")?;
+let registry = project.load_functions(None)?;
 println!("Found {} functions", registry.num_functions());
 ```
 
@@ -38,13 +40,15 @@ println!("Found {} functions", registry.num_functions());
 Builds and runs a `#[register]`-tagged function locally. The pipeline is: discover functions → generate wrapper crate → `cargo build` → run binary.
 
 ```rust
+use std::path::Path;
 use burn_central_workspace::{
     ProjectContext,
     execution::local::{LocalExecutor, LocalExecutionConfig},
     execution::{ProcedureType, BuildProfile},
 };
 
-let project = ProjectContext::discover()?;
+let manifest_path = Path::new("Cargo.toml");
+let project = ProjectContext::load(manifest_path, ".burn")?;
 let executor = LocalExecutor::new(&project);
 
 let config = LocalExecutionConfig::new(
