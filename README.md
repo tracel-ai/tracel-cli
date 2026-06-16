@@ -13,7 +13,7 @@
 
 ## Description
 
-The Burn Central CLI (`burn`) is the command-line tool for interacting with [Burn Central](https://s1-central.burn.dev/), the centralized platform for experiment tracking, model sharing, and deployment for [Burn](https://github.com/tracel-ai/burn) users.
+The Burn Central CLI (`burn`) is the command-line tool for interacting with [Burn Central](https://s1-console.tracel.ai/), the centralized platform for experiment tracking, model sharing, and deployment for [Burn](https://github.com/tracel-ai/burn) users.
 
 This CLI works in conjunction with the [Burn Central SDK](https://github.com/tracel-ai/burn-central) to provide a seamless workflow for:
 
@@ -43,7 +43,7 @@ After installation, the `burn` command will be available in your terminal.
 
 ## Prerequisites
 
-1. **Burn Central Account**: Create an account at [central.burn.dev](https://central.burn.dev/)
+1. **Burn Central Account**: Create an account at [console.tracel.ai](https://central.burn.dev/)
 2. **Rust**: Version 1.87.0 or higher
 3. **Burn Central SDK**: Add the SDK to your Burn project (see [Quick Start](#quick-start))
 
@@ -271,6 +271,6 @@ at your option.
 
 ## Links
 
-- [Burn Central Platform](https://central.burn.dev/)
+- [Burn Central Platform](https://console.tracel.ai/)
 - [Burn Central SDK](https://github.com/tracel-ai/burn-central)
 - [Burn Framework](https://github.com/tracel-ai/burn)
