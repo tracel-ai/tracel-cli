@@ -58,8 +58,7 @@ strum = {version = "0.27.2", features = ["derive"]}
 
 
 ## External Crate
-# burn-central-client = { version = "0.3.0", path = "../client/burn-central-client" }
-burn-central-client = "0.6.2"
+burn-central-client = "0.6.3"
 
 ## Crate
 burn-central-workspace = { version = "0.4.2", path = "crates/burn-central-workspace" }
