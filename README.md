@@ -107,31 +107,28 @@ This opens your browser to authenticate with Burn Central and stores your creden
 ### 5. Run your training
 
 ```bash
-burn train
+burn train -- <args>
 ```
 
-The CLI will:
-
-- Discover registered training functions in your project
-- Prompt you to select a function (if multiple are found)
-- Execute the training locally
-- Send metrics, logs, and checkpoints to Burn Central in real-time
+`burn train` is a thin alias for `cargo run`. Everything after `--` is forwarded
+to your project's binary, which uses the SDK to send metrics, logs, and
+checkpoints to Burn Central in real-time.
 
 ## Commands
 
 ### `burn train`
 
-Run a training or inference job locally or trigger a remote execution.
+Run your project locally. This is a thin alias for `cargo run`: every argument
+after `--` is forwarded to your binary, so `burn train -- <args>` is equivalent
+to `cargo run -- <args>`. stdin/stdout/stderr are inherited and the binary's
+exit code is propagated.
 
 ```bash
-# Run with interactive prompts
+# Equivalent to `cargo run`
 burn train
 
-# Run a specific function
-burn train mnist
-
-# Run with argument overrides
-burn train --override epochs=100
+# Equivalent to `cargo run -- train mnist --epochs 100`
+burn train -- train mnist --epochs 100
 ```
 
 ### `burn package`
@@ -202,29 +199,24 @@ burn-central-cli/
 The `burn-central-workspace` crate is a standalone library that provides:
 
 - Project discovery and management
-- Code generation and function discovery
-- Job execution (local and remote)
+- Project packaging and upload
 - Client integration with Burn Central
-- Compute provider integration
 
 This library can be used independently in other applications. See the [workspace README](crates/burn-central-workspace/README.md) for detailed documentation.
 
 ## How It Works
 
-1. **Function Discovery**: The CLI analyzes your Rust code to find functions annotated with `#[register]`
-2. **Code Generation**: Generates the necessary glue code to execute your functions
-3. **Execution**: Runs your training/inference locally or submits to remote compute
-4. **Tracking**: Integrates with the SDK to send metrics, logs, and checkpoints to Burn Central
-5. **Management**: Provides tools to manage projects, experiments, and deployments
+1. **Execution**: `burn train` runs your project via `cargo run`
+2. **Tracking**: The SDK sends metrics, logs, and checkpoints to Burn Central during execution
+3. **Management**: Provides tools to manage projects, experiments, and deployments
 
 ## Integration with the Burn Central SDK
 
 The CLI works seamlessly with the Burn Central SDK. Here's how they connect:
 
 1. **SDK Integration**: Add the SDK to your project and use the `#[register]` macro
-2. **CLI Discovery**: The CLI finds your registered functions
-3. **Execution**: The CLI generates and runs the necessary code
-4. **Tracking**: The SDK sends data to Burn Central during execution
+2. **Execution**: `burn train` runs your project via `cargo run`
+3. **Tracking**: The SDK sends data to Burn Central during execution
 
 For detailed SDK usage, see the [SDK README](https://github.com/tracel-ai/burn-central).
 
@@ -247,7 +239,7 @@ cargo test
 For testing against a local Burn Central instance:
 
 ```bash
-burn --dev train
+burn --dev login
 ```
 
 This connects to `http://localhost:9001` and uses separate development credentials.
