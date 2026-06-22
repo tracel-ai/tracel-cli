@@ -44,7 +44,7 @@ strum = {version = "0.27.2", features = ["derive"]}
 
 
 ## External Crate
-burn-central-client = "0.6.3"
+burn-central-client = { package = "tracel-client", path = "../client/tracel-client" }
 
 ## Crate
 burn-central-workspace = { version = "0.4.2", path = "crates/burn-central-workspace" }
