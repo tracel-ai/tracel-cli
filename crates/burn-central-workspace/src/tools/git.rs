@@ -6,13 +6,6 @@ use gix::revision::walk::Sorting;
 use gix::traverse::commit::simple::CommitTimeOrder;
 use std::path::Path;
 
-pub fn get_last_commit_hash() -> anyhow::Result<String> {
-    let repo = gix::discover(".")?;
-    let last_commit = repo.head()?.peel_to_commit()?.id();
-
-    Ok(last_commit.to_string())
-}
-
 pub fn is_repo_dirty() -> anyhow::Result<bool> {
     let repo = gix::discover(".")?;
     Ok(repo.is_dirty()?)
@@ -44,14 +37,6 @@ pub fn init_repo(dir: &Path) -> anyhow::Result<Repository> {
 
     let repo = gix::init(dir)?;
     Ok(repo)
-}
-
-pub fn write_gitignore() -> anyhow::Result<()> {
-    let repo = gix::discover(".")?;
-    let gitignore_content = include_str!("../../template.gitignore");
-    let gitignore_path = repo.path().join(".gitignore");
-    std::fs::write(gitignore_path, gitignore_content)
-        .map_err(|e| anyhow::anyhow!("Failed to write .gitignore: {}", e))
 }
 
 #[cfg(test)]
