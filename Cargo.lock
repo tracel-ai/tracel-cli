@@ -209,7 +209,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "burn-central-cli"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "burn-central-workspace",
@@ -228,7 +228,7 @@ dependencies = [
 
 [[package]]
 name = "burn-central-workspace"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "cargo_metadata",
@@ -3990,7 +3990,7 @@ checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
 
 [[package]]
 name = "tracel-client"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "reqwest",
  "serde",
@@ -4904,7 +4904,7 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "xtask"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "strum",
  "tracel-xtask",
