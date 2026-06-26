@@ -137,8 +137,6 @@ fn build_source_artifact(
                 size: archive.size,
             },
         },
-        // The server keys the source blob `source.zip` regardless of the actual
-        // archive format (a `{name}-{version}/`-prefixed tar.gz).
         uploads: vec![("source.zip".to_string(), archive.path)],
     })
 }

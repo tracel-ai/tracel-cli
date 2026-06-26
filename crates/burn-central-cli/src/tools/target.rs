@@ -1,9 +1,4 @@
-//! Target (OS + architecture) helpers for binary code versions.
-//!
-//! The OS/arch enums and the triple mapping mirror the server's
-//! `burn_central_domain::util::triplet` (`TargetTriplet`, `OperatingSystem`,
-//! `Architecture`). Keep the `target_triple` table below in sync with the
-//! server's `TargetTriplet::Display`.
+//! Target (OS + architecture) helpers for binary upload.
 
 use tracel_client::request::{Arch, Os};
 
@@ -20,7 +15,7 @@ pub fn target_triple(os: Os, arch: Arch) -> &'static str {
     }
 }
 
-/// Detect the host OS/arch, mapping Rust's identifiers to the server enums.
+/// Detect the host OS/arch
 pub fn host_target() -> anyhow::Result<(Os, Arch)> {
     let os = match std::env::consts::OS {
         "windows" => Os::Windows,
