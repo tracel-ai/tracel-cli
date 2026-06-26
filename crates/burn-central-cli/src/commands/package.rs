@@ -3,8 +3,8 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use anyhow::Context;
-use burn_central_client::Client;
-use burn_central_client::request::{
+use tracel_client::Client;
+use tracel_client::request::{
     PublishArtifactRequest, PublishBinaryRequest, PublishProjectVersionRequest,
     PublishSourceRequest,
 };

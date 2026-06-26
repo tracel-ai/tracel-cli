@@ -1,7 +1,7 @@
 //! Project helpers for CLI operations
 
 use crate::context::CliContext;
-use burn_central_client::Client;
+use tracel_client::Client;
 use burn_central_workspace::{ProjectContext, WorkspaceInfo, tools::cargo};
 
 /// Check if current directory contains a Rust project (has Cargo.toml)

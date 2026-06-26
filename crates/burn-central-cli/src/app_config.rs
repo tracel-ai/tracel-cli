@@ -4,7 +4,7 @@ use std::{fs, io, path::PathBuf};
 
 use crate::context::Credentials;
 
-pub use burn_central_client::Env as Environment;
+pub use tracel_client::Env as Environment;
 
 pub trait ToFileSuffix {
     fn file_suffix(&self) -> Option<String>;

@@ -5,7 +5,7 @@
 //! `Architecture`). Keep the `target_triple` table below in sync with the
 //! server's `TargetTriplet::Display`.
 
-use burn_central_client::request::{Arch, Os};
+use tracel_client::request::{Arch, Os};
 
 /// Canonical Rust target triple for an (os, arch) pair. Must match the server's
 /// `TargetTriplet::Display`, because the upload-URL map is keyed by this string.
