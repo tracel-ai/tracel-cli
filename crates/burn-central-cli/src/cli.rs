@@ -23,7 +23,7 @@ pub struct CliArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Run a training or inference locally or trigger a remote run.
+    /// Run your project locally via `cargo run` (forwards args after `--`).
     Train(commands::training::TrainingArgs),
 
     /// Package your project for running on a remote machine.

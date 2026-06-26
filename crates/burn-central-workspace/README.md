@@ -1,21 +1,19 @@
 # Burn Central Workspace
 
-Core library for the Burn Central CLI — project management, function discovery, code generation, and local execution.
+Core library for the Burn Central CLI — project management and packaging.
 
 ## Overview
 
-`burn-central-workspace` is the engine behind the `burn` CLI. It is not intended as a general-purpose library, but its modules can be used directly if you need to integrate project management or local execution into another tool.
+`burn-central-workspace` is the engine behind the `burn` CLI. It is not intended as a general-purpose library, but its modules can be used directly if you need to integrate project management or packaging into another tool.
 
 ## Architecture
 
 ```text
 burn-central-workspace
 ├── entity/         – ProjectContext, BurnCentralProject, burn directory management
-├── execution/      – Local build-and-run pipeline (LocalExecutor, LocalExecutionConfig)
-├── generation/     – Generates the executable wrapper crate from discovered functions
-├── tools/          – Cargo utilities, Git helpers, function discovery
-├── compute_provider/ – Runtime integration for remote compute providers
-├── event/          – Reporter trait for streaming execution events
+├── execution/      – Cancellation utilities for long-running operations
+├── tools/          – Cargo utilities, Git helpers, project checks
+├── event/          – Reporter trait for streaming progress events
 └── logging/        – Log setup utilities
 ```
 
@@ -31,63 +29,8 @@ use burn_central_workspace::ProjectContext;
 
 let manifest_path = Path::new("Cargo.toml");
 let project = ProjectContext::load(manifest_path, ".burn")?;
-let registry = project.load_functions(None)?;
-println!("Found {} functions", registry.num_functions());
+println!("Workspace: {}", project.get_workspace_name());
 ```
-
-### `LocalExecutor`
-
-Builds and runs a `#[register]`-tagged function locally. The pipeline is: discover functions → generate wrapper crate → `cargo build` → run binary.
-
-```rust
-use std::path::Path;
-use burn_central_workspace::{
-    ProjectContext,
-    execution::local::{LocalExecutor, LocalExecutionConfig},
-    execution::{ProcedureType, BuildProfile},
-};
-
-let manifest_path = Path::new("Cargo.toml");
-let project = ProjectContext::load(manifest_path, ".burn")?;
-let executor = LocalExecutor::new(&project);
-
-let config = LocalExecutionConfig::new(
-    api_key,
-    env,
-    None,           // package — resolved automatically if None
-    "my_training".to_string(),
-    ProcedureType::Training,
-    code_version,
-)
-.with_build_profile(BuildProfile::Release);
-
-let result = executor.execute(config, None)?;
-```
-
-### `FunctionDiscovery`
-
-Finds functions annotated with `#[register(training)]` or `#[register(inference)]` by running `cargo rustc -Zunpretty=expanded` and parsing the emitted `BCFN1|...|END` markers.
-
-```rust
-use burn_central_workspace::tools::function_discovery::{FunctionDiscovery, DiscoveryConfig};
-
-let discovery = FunctionDiscovery::new(&project_root);
-let result = discovery.discover_functions(&config, &cancel_token, None)?;
-```
-
-### Compute Provider
-
-For remote execution contexts, the `compute_provider` module exposes the `TrainingJobArgs` struct used to dispatch jobs.
-
-## Function Marker Format
-
-The `#[register]` macro emits a string constant in the expanded source:
-
-```text
-BCFN1|<mod_path>|<fn_name>|<builder_fn>|<routine_name>|<proc_type>|END
-```
-
-The function's AST is also emitted as a `_BURN_FUNCTION_AST_<NAME>` byte constant for inspection by the CLI.
 
 ## License
 

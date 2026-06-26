@@ -4,17 +4,13 @@ use std::sync::Arc;
 use crate::commands::init::ensure_git_repo_clean;
 use crate::context::CliContext;
 use crate::helpers::{require_linked_project, validate_project_exists_on_server};
-use crate::tools::preload_functions;
 use anyhow::Context;
 use burn_central_client::Client;
-use burn_central_client::request::{
-    BurnCentralCodeMetadataRequest, CrateVersionMetadataRequest, RegisteredFunctionRequest,
-};
+use burn_central_client::request::{BurnCentralCodeMetadataRequest, CrateVersionMetadataRequest};
 use burn_central_workspace::ProjectContext;
 use burn_central_workspace::tools::cargo::package::{
     PackageEvent, PackagedCrateData, package_workspace,
 };
-use burn_central_workspace::tools::functions_registry::FunctionRegistry;
 use burn_central_workspace::tools::git::is_repo_dirty;
 use clap::Args;
 
@@ -27,7 +23,7 @@ pub struct PackageArgs {
 pub(crate) fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<()> {
     let project = require_linked_project(&context)?;
 
-    let version = package_sequence(&context, &project, None, args.allow_dirty)?;
+    let version = package_sequence(&context, &project, args.allow_dirty)?;
 
     if version.has_uploaded {
         context
@@ -54,7 +50,6 @@ pub struct PackageResult {
 pub fn package_sequence(
     context: &CliContext,
     project: &ProjectContext,
-    discovery: Option<&FunctionRegistry>,
     allow_dirty: bool,
 ) -> anyhow::Result<PackageResult> {
     if is_repo_dirty()? && !allow_dirty {
@@ -85,27 +80,8 @@ pub fn package_sequence(
 
     spinner.stop("Workspace packaging completed.");
 
-    let discovery = if let Some(discovery) = discovery {
-        discovery
-    } else {
-        &preload_functions(context, project)?
-    };
-
     let code_metadata = BurnCentralCodeMetadataRequest {
-        functions: discovery
-            .get_functions()
-            .into_iter()
-            .map(|f| {
-                let code = f.get_function_code();
-                RegisteredFunctionRequest {
-                    mod_path: f.mod_path,
-                    fn_name: f.fn_name,
-                    proc_type: f.proc_type,
-                    code,
-                    routine: f.routine_name,
-                }
-            })
-            .collect(),
+        functions: Vec::new(),
     };
 
     let bc_project = project.get_project();

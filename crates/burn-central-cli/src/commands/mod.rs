@@ -1,7 +1,7 @@
 use crate::commands::init::prompt_init;
-use crate::commands::training::TrainingArgs;
+use crate::commands::login::get_client_and_login_if_needed;
+use crate::context::CliContext;
 use crate::helpers::{is_burn_central_project_linked, require_cargo_workspace};
-use crate::{commands::login::get_client_and_login_if_needed, context::CliContext};
 
 pub mod clean;
 pub mod init;
@@ -12,6 +12,9 @@ pub mod project;
 pub mod training;
 pub mod unlink;
 
+/// `burn` with no subcommand runs the project via `cargo run` (like `burn train`
+/// with no forwarded arguments), but first ensures the repository is linked to a
+/// Burn Central project, prompting for initialization if it is not.
 pub fn default_command(mut context: CliContext) -> anyhow::Result<()> {
     let client = get_client_and_login_if_needed(&mut context)?;
 
@@ -26,7 +29,5 @@ pub fn default_command(mut context: CliContext) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    training::handle_command(TrainingArgs::default(), context)?;
-
-    Ok(())
+    training::run_cargo(&[])
 }

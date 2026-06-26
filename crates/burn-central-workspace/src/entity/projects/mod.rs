@@ -1,15 +1,6 @@
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-
-use cargo_metadata::TargetKind;
 
 use crate::entity::projects::burn_dir::{BurnDir, project::BurnCentralProject};
-use crate::event::Reporter;
-use crate::execution::cancellable::CancellationToken;
-use crate::tools::function_discovery::{
-    DiscoveryConfig, DiscoveryError, DiscoveryEvent, FunctionDiscovery, PkgId,
-};
-use crate::tools::functions_registry::FunctionRegistry;
 
 pub mod burn_dir;
 
@@ -59,7 +50,6 @@ pub struct ProjectContext {
     pub build_profile: String,
     pub burn_dir: BurnDir,
     pub project: BurnCentralProject,
-    function_registry: Mutex<FunctionRegistry>,
 }
 
 pub struct WorkspaceInfo {
@@ -188,7 +178,6 @@ impl ProjectContext {
             build_profile: "release".to_string(),
             burn_dir,
             project,
-            function_registry: Mutex::new(Default::default()),
         })
     }
 
@@ -224,7 +213,6 @@ impl ProjectContext {
             build_profile: "release".to_string(),
             burn_dir,
             project: project.clone(),
-            function_registry: Mutex::new(Default::default()),
         })
     }
 
@@ -273,71 +261,6 @@ impl ProjectContext {
 
     pub fn cwd(&self) -> &Path {
         &self.workspace_info.workspace_root
-    }
-
-    pub fn load_functions(
-        &self,
-        reporter: Option<Arc<dyn Reporter<DiscoveryEvent>>>,
-    ) -> Result<FunctionRegistry, DiscoveryError> {
-        let token = CancellationToken::new();
-        self.load_functions_cancellable(&token, reporter)
-    }
-
-    pub fn load_functions_cancellable(
-        &self,
-        cancel_token: &CancellationToken,
-        reporter: Option<Arc<dyn Reporter<DiscoveryEvent>>>,
-    ) -> Result<FunctionRegistry, DiscoveryError> {
-        let mut functions = self.function_registry.lock().unwrap();
-        if functions.is_empty() {
-            // Discover all workspace packages
-            let workspace_pkgids = self.workspace_info.metadata.workspace_members.clone();
-            let workspace_packages: Vec<_> = self
-                .workspace_info
-                .metadata
-                .packages
-                .iter()
-                .filter(|pkg| workspace_pkgids.contains(&pkg.id))
-                .collect();
-
-            let pkgids = workspace_packages
-                .iter()
-                .filter(|pkg| {
-                    pkg.targets
-                        .iter()
-                        .any(|t| t.kind.iter().any(|k| matches!(k, TargetKind::Lib)))
-                })
-                .map(|pkg| PkgId {
-                    name: pkg.name.to_string(),
-                    version: Some(pkg.version.to_string()),
-                })
-                .collect::<Vec<_>>();
-
-            let config = DiscoveryConfig {
-                packages: pkgids,
-                target_dir: Some(self.burn_dir.target_dir()),
-            };
-
-            let result = FunctionDiscovery::new(self.get_workspace_root()).discover_functions(
-                &config,
-                cancel_token,
-                reporter,
-            )?;
-
-            let mut registry = FunctionRegistry::new();
-            for (pkgid, funcs) in result.functions.into_iter() {
-                let package = workspace_packages
-                    .iter()
-                    .find(|pkg| pkg.name.as_str() == pkgid.name)
-                    .expect("Discovered package should be in workspace");
-                registry
-                    .get_or_create_package_entry((*package).clone())
-                    .extend(funcs);
-            }
-
-            *functions = registry;
-        }
-        Ok(functions.clone())
     }
 
     pub fn get_workspace_packages(&self) -> Vec<&cargo_metadata::Package> {
