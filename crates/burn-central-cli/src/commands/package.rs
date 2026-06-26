@@ -11,7 +11,7 @@ use clap::Args;
 use sha2::{Digest, Sha256};
 use tracel_client::Client;
 use tracel_client::request::{
-    PublishArtifactRequest, PublishBinaryRequest, PublishProjectVersionRequest,
+    Arch, Os, PublishArtifactRequest, PublishBinaryRequest, PublishProjectVersionRequest,
     PublishSourceRequest,
 };
 
@@ -19,7 +19,7 @@ use crate::commands::init::commit_sequence;
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::helpers::{require_linked_project, validate_project_exists_on_server};
-use crate::tools::target;
+use crate::tools::{linker, target};
 
 #[derive(Args, Debug)]
 pub struct PackageArgs {
@@ -32,12 +32,6 @@ pub struct PackageArgs {
 enum Mode {
     Binary,
     Source,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum BinarySource {
-    BuildFromCode,
-    ProvidePaths,
 }
 
 /// An artifact prepared for upload: the publish request describing it, plus the
@@ -97,7 +91,7 @@ pub(crate) fn handle_command(args: PackageArgs, mut context: CliContext) -> anyh
 
     let artifact = match mode {
         Mode::Source => build_source_artifact(&context, &project)?,
-        Mode::Binary => build_binary_artifact(&context)?,
+        Mode::Binary => build_binary_artifact(&context, &project)?,
     };
 
     // 4. Upload.
@@ -141,72 +135,52 @@ fn build_source_artifact(
     })
 }
 
-fn build_binary_artifact(context: &CliContext) -> anyhow::Result<PreparedArtifact> {
-    let source = cliclack::select("Where should the binary come from?")
-        .items(&[
-            (
-                BinarySource::BuildFromCode,
-                "Build from code",
-                "compile now for THIS machine's OS/architecture only",
-            ),
-            (
-                BinarySource::ProvidePaths,
-                "Provide path(s)",
-                "use prebuilt binaries (e.g. cross-compiled for several targets)",
-            ),
-        ])
-        .interact()?;
+fn build_binary_artifact(
+    context: &CliContext,
+    project: &ProjectContext,
+) -> anyhow::Result<PreparedArtifact> {
+    let host = target::host_target()?;
+    let installed = target::installed_targets();
 
+    let selected = target::prompt_targets(host, &installed)?;
+
+    // rustup preflight: offer to install any selected cross target whose std is missing.
+    let missing: Vec<&str> = selected
+        .iter()
+        .filter(|&&(os, arch)| (os, arch) != host)
+        .map(|&(os, arch)| target::target_triple(os, arch))
+        .filter(|triple| !installed.contains(*triple))
+        .collect();
+    target::install_missing_target(missing)?;
+
+    let root = project.get_workspace_root();
     let mut binaries = Vec::new();
     let mut uploads = Vec::new();
 
-    match source {
-        BinarySource::BuildFromCode => {
-            let (os, arch) = target::host_target()?;
-            context.terminal().print_warning(&format!(
-                "Building for this machine ({}). It will only run on compute providers with the same OS and architecture.",
-                target::target_triple(os, arch)
-            ));
-            let path = build_release_binary(context)?;
-            let (checksum, size) = sha256_and_size(&path)?;
-            binaries.push(PublishBinaryRequest {
-                os,
-                architecture: arch,
-                checksum,
-                size,
-            });
-            uploads.push((target::target_triple(os, arch).to_string(), path));
-        }
-        BinarySource::ProvidePaths => loop {
-            let path: PathBuf = cliclack::input("Path to the binary")
-                .validate(|s: &String| {
-                    if Path::new(s.trim()).is_file() {
-                        Ok(())
-                    } else {
-                        Err("No file exists at that path".to_string())
-                    }
-                })
-                .interact::<String>()?
-                .trim()
-                .into();
-            let os = target::prompt_os()?;
-            let arch = target::prompt_arch()?;
-            let (checksum, size) = sha256_and_size(&path)?;
-            binaries.push(PublishBinaryRequest {
-                os,
-                architecture: arch,
-                checksum,
-                size,
-            });
-            uploads.push((target::target_triple(os, arch).to_string(), path));
+    for (os, arch) in selected {
+        let triple = target::target_triple(os, arch);
+        let is_host = (os, arch) == host;
 
-            if !cliclack::confirm("Add another binary for a different target?")
-                .initial_value(false)
-                .interact()?
-            {
-                break;
-            }
-        },
+        if is_host {
+            context.terminal().print_warning(&format!(
+                "Building for this machine ({triple}). It will only run on compute providers with the same OS and architecture."
+            ));
+        } else {
+            ensure_linker(context, root, host, (os, arch))?;
+            context.terminal().print_warning(&format!(
+                "Cross-building for {triple}. It may still fail at link time if the required toolchain is missing."
+            ));
+        }
+
+        let path = build_release_binary(context, (!is_host).then_some(triple))?;
+        let (checksum, size) = sha256_and_size(&path)?;
+        binaries.push(PublishBinaryRequest {
+            os,
+            architecture: arch,
+            checksum,
+            size,
+        });
+        uploads.push((triple.to_string(), path));
     }
 
     Ok(PreparedArtifact {
@@ -215,24 +189,79 @@ fn build_binary_artifact(context: &CliContext) -> anyhow::Result<PreparedArtifac
     })
 }
 
-/// Run `cargo build --release` and return the path to the produced executable
-/// (prompting if the build produced more than one).
-fn build_release_binary(context: &CliContext) -> anyhow::Result<PathBuf> {
+/// Make sure a cross target's linker is set up: prompt to write a `.cargo/config.toml`
+/// entry where we can do so reliably, or print guidance for OS-level cross toolchains.
+fn ensure_linker(
+    context: &CliContext,
+    root: &Path,
+    host: (Os, Arch),
+    target_pair: (Os, Arch),
+) -> anyhow::Result<()> {
+    let triple = target::target_triple(target_pair.0, target_pair.1);
+    match linker::linker_need(host, target_pair) {
+        linker::LinkerNeed::None => {}
+        linker::LinkerNeed::Foreign { guidance } => {
+            context.terminal().print_warning(&guidance);
+        }
+        linker::LinkerNeed::ConfigEntry {
+            linker: linker_bin,
+            install_hint,
+        } => {
+            if linker::linker_configured(root, triple) {
+                return Ok(());
+            }
+            if cliclack::confirm(format!(
+                "Target `{triple}` needs a linker. Add `[target.{triple}] linker = \"{linker_bin}\"` to .cargo/config.toml?"
+            ))
+            .initial_value(true)
+            .interact()?
+            {
+                linker::add_linker_entry(root, triple, linker_bin)?;
+                context.terminal().print_success(&format!(
+                    "Configured linker for {triple} in .cargo/config.toml."
+                ));
+                if !linker::linker_on_path(linker_bin) {
+                    context.terminal().print_warning(&format!(
+                        "Linker `{linker_bin}` was not found on PATH — {install_hint}."
+                    ));
+                }
+            } else {
+                context.terminal().print(&format!(
+                    "Skipped. To configure it manually, add to .cargo/config.toml:\n\n[target.{triple}]\nlinker = \"{linker_bin}\"\n\nand {install_hint}."
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Run `cargo build --release` (optionally for a cross `--target`) and return the
+/// path to the produced executable (prompting if the build produced more than one).
+fn build_release_binary(context: &CliContext, target: Option<&str>) -> anyhow::Result<PathBuf> {
+    let cmd_label = match target {
+        Some(triple) => format!("cargo build --release --target {triple}"),
+        None => "cargo build --release".to_string(),
+    };
     context
         .terminal()
-        .print("Building release binary (cargo build --release)...");
+        .print(&format!("Building release binary ({cmd_label})..."));
 
-    let output = cargo::command()
+    let mut command = cargo::command();
+    command
         .arg("build")
         .arg("--release")
-        .arg("--message-format=json")
+        .arg("--message-format=json");
+    if let Some(triple) = target {
+        command.arg("--target").arg(triple);
+    }
+    let output = command
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .output()
-        .context("Failed to run `cargo build --release`")?;
+        .with_context(|| format!("Failed to run `{cmd_label}`"))?;
 
     if !output.status.success() {
-        anyhow::bail!("`cargo build --release` failed");
+        anyhow::bail!("`{cmd_label}` failed");
     }
 
     let mut executables: Vec<PathBuf> = Vec::new();
