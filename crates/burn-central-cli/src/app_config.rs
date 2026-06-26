@@ -20,6 +20,19 @@ impl ToFileSuffix for Environment {
     }
 }
 
+/// Render the value the SDK expects in the `TRACEL_ENV` environment variable.
+///
+/// The SDK parses this string with an explicit match (see `discover_env` in the
+/// `tracel-core` cloud backend), so the format must be exactly `Production`,
+/// `Development` or `Staging(N)` — do not rely on `Debug`/serde formatting.
+pub fn tracel_env_value(env: &Environment) -> String {
+    match env {
+        Environment::Production => "Production".to_string(),
+        Environment::Development => "Development".to_string(),
+        Environment::Staging(version) => format!("Staging({version})"),
+    }
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum ConfigError {
     #[error(transparent)]

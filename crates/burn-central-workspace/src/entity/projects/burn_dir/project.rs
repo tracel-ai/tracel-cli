@@ -9,7 +9,7 @@ pub struct BurnCentralProject {
 }
 
 impl BurnCentralProject {
-    const BURN_PROJECT_FILENAME: &'static str = "project.toml";
+    const BURN_PROJECT_FILENAME: &'static str = "tracel.toml";
 
     pub fn save(&self, dir: &Path) -> io::Result<()> {
         let contents =

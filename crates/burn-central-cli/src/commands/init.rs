@@ -62,12 +62,7 @@ pub fn prompt_init(context: &CliContext, client: &Client) -> anyhow::Result<()> 
         }
     };
 
-    ProjectContext::init(
-        project_info,
-        &workspace_info.get_manifest_path(),
-        &context.get_burn_dir_name(),
-    )
-    .map_err(|e| {
+    ProjectContext::init(project_info, &workspace_info.get_manifest_path()).map_err(|e| {
         terminal.cancel_finalize(&format!("Failed to initialize project metadata: {}", e));
         e
     })?;

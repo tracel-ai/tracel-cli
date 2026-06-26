@@ -19,7 +19,7 @@ pub fn default_command(mut context: CliContext) -> anyhow::Result<()> {
     let client = get_client_and_login_if_needed(&mut context)?;
 
     // Check if we have a linked Burn Central project
-    if !is_burn_central_project_linked(&context) {
+    if !is_burn_central_project_linked() {
         // Make sure we're at least in a Rust project before initializing
         let _crate_info = require_cargo_workspace(&context)?;
         context
@@ -29,5 +29,5 @@ pub fn default_command(mut context: CliContext) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    training::run_cargo(&[])
+    training::run_cargo(&context, &[])
 }

@@ -142,12 +142,20 @@ impl ProjectContext {
         WorkspaceInfo::load_from_path(manifest_path)
     }
 
-    pub fn load(manifest_path: &Path, burn_dir_name: &str) -> Result<Self, ProjectContextError> {
+    /// Scratch/cache directory for this workspace, under the cargo target
+    /// directory (already gitignored) rather than a committed `.burn` folder.
+    fn scratch_dir(workspace_info: &WorkspaceInfo) -> PathBuf {
+        workspace_info
+            .metadata
+            .target_directory
+            .clone()
+            .into_std_path_buf()
+            .join("burn-central")
+    }
+
+    pub fn load(manifest_path: &Path) -> Result<Self, ProjectContextError> {
         let workspace_info = WorkspaceInfo::load_from_path(manifest_path)?;
-        let burn_dir_root = workspace_info
-            .workspace_root
-            .join(PathBuf::from(burn_dir_name));
-        let burn_dir = BurnDir::new(burn_dir_root);
+        let burn_dir = BurnDir::new(Self::scratch_dir(&workspace_info));
         burn_dir.init().map_err(|e| {
             ProjectContextError::new(
                 "Failed to initialize Burn directory".to_string(),
@@ -156,22 +164,21 @@ impl ProjectContext {
             )
         })?;
 
-        let project = burn_dir
-            .load_project()
-            .map_err(|e| {
-                ProjectContextError::new(
-                    "Failed to load project metadata from Burn directory".to_string(),
-                    ErrorKind::BurnDirNotInitialized,
-                    Some(e.into()),
-                )
-            })?
-            .ok_or_else(|| {
+        let project = BurnCentralProject::load(&workspace_info.workspace_root).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
                 ProjectContextError::new(
                     "No Burn Central project linked to this repository".to_string(),
                     ErrorKind::BurnDirNotInitialized,
                     None,
                 )
-            })?;
+            } else {
+                ProjectContextError::new(
+                    "Failed to load project metadata from tracel.toml".to_string(),
+                    ErrorKind::Parsing,
+                    Some(e.into()),
+                )
+            }
+        })?;
 
         Ok(Self {
             workspace_info,
@@ -184,14 +191,10 @@ impl ProjectContext {
     pub fn init(
         project: BurnCentralProject,
         manifest_path: &Path,
-        burn_dir_name: &str,
     ) -> Result<Self, ProjectContextError> {
         let workspace_info = WorkspaceInfo::load_from_path(manifest_path)?;
 
-        let burn_dir_root = workspace_info
-            .workspace_root
-            .join(PathBuf::from(burn_dir_name));
-        let burn_dir = BurnDir::new(burn_dir_root);
+        let burn_dir = BurnDir::new(Self::scratch_dir(&workspace_info));
         burn_dir.init().map_err(|e| {
             ProjectContextError::new(
                 "Failed to initialize Burn directory".to_string(),
@@ -200,13 +203,15 @@ impl ProjectContext {
             )
         })?;
 
-        burn_dir.save_project(&project).map_err(|e| {
-            ProjectContextError::new(
-                "Failed to save project metadata to Burn directory".to_string(),
-                ErrorKind::BurnDirInitialization,
-                Some(e.into()),
-            )
-        })?;
+        project
+            .save(&workspace_info.workspace_root)
+            .map_err(|e| {
+                ProjectContextError::new(
+                    "Failed to save project metadata to tracel.toml".to_string(),
+                    ErrorKind::BurnDirInitialization,
+                    Some(e.into()),
+                )
+            })?;
 
         Ok(Self {
             workspace_info,
@@ -216,21 +221,29 @@ impl ProjectContext {
         })
     }
 
-    pub fn unlink(manifest_path: &Path, burn_dir_name: &str) -> Result<(), ProjectContextError> {
+    pub fn unlink(manifest_path: &Path) -> Result<(), ProjectContextError> {
         let workspace_info = WorkspaceInfo::load_from_path(manifest_path)?;
 
-        let burn_dir_root = workspace_info
-            .workspace_root
-            .join(PathBuf::from(burn_dir_name));
-        let burn_dir = BurnDir::new(burn_dir_root);
-
-        std::fs::remove_dir_all(burn_dir.root()).map_err(|e| {
+        // Remove the link itself (tracel.toml at the workspace root).
+        BurnCentralProject::remove(&workspace_info.workspace_root).map_err(|e| {
             ProjectContextError::new(
-                "Failed to remove Burn directory".to_string(),
+                "Failed to remove tracel.toml".to_string(),
                 ErrorKind::Unexpected,
                 Some(e.into()),
             )
         })?;
+
+        // Best-effort cleanup of the scratch/cache directory.
+        let scratch = Self::scratch_dir(&workspace_info);
+        if scratch.exists() {
+            std::fs::remove_dir_all(&scratch).map_err(|e| {
+                ProjectContextError::new(
+                    "Failed to remove Burn cache directory".to_string(),
+                    ErrorKind::Unexpected,
+                    Some(e.into()),
+                )
+            })?;
+        }
 
         Ok(())
     }
