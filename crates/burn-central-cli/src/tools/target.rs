@@ -9,10 +9,10 @@ use tracel_client::request::{Arch, Os};
 
 /// Every (os, arch) target we offer to build for, in canonical display order.
 /// The host is surfaced separately and pulled to the front by `prompt_targets`.
-pub const ALL_TARGETS: [(Os, Arch); 6] = [
+/// macOS x86_64 (Intel) is intentionally omitted — we don't support it.
+pub const ALL_TARGETS: [(Os, Arch); 5] = [
     (Os::Linux, Arch::X86_64),
     (Os::Linux, Arch::Arm64),
-    (Os::Macos, Arch::X86_64),
     (Os::Macos, Arch::Arm64),
     (Os::Windows, Arch::X86_64),
     (Os::Windows, Arch::Arm64),
@@ -56,6 +56,9 @@ pub fn host_target() -> anyhow::Result<(Os, Arch)> {
         "aarch64" | "arm64" => Arch::Arm64,
         other => anyhow::bail!("Unsupported host architecture for packaging: `{other}`"),
     };
+    if (os, arch) == (Os::Macos, Arch::X86_64) {
+        anyhow::bail!("macOS on x86_64 (Intel) is not supported for packaging.");
+    }
     Ok((os, arch))
 }
 
