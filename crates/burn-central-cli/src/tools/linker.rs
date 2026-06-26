@@ -13,6 +13,9 @@ use anyhow::Context;
 use toml_edit::{DocumentMut, Item, Table, value};
 use tracel_client::request::{Arch, Os};
 
+use crate::tools::target::target_triple;
+use crate::tools::terminal::Terminal;
+
 /// What (if anything) is needed to link `target` while running on `host`.
 pub enum LinkerNeed {
     /// Native, a same-OS cross-arch the toolchain handles itself (macOS/Windows), or a
@@ -148,6 +151,49 @@ pub fn linker_on_path(bin: &str) -> bool {
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
+}
+
+/// Offer to write a `[target.<triple>] linker = "..."` entry for a same-OS cross-arch
+/// build that needs one (Linux), or do nothing when the toolchain handles it natively.
+pub fn ensure_linker(
+    terminal: &Terminal,
+    root: &Path,
+    host: (Os, Arch),
+    target: (Os, Arch),
+) -> anyhow::Result<()> {
+    let triple = target_triple(target.0, target.1);
+    match linker_need(host, target) {
+        LinkerNeed::None => {}
+        LinkerNeed::ConfigEntry {
+            linker: linker_bin,
+            install_hint,
+        } => {
+            if linker_configured(root, triple) {
+                return Ok(());
+            }
+            if cliclack::confirm(format!(
+                "Target `{triple}` needs a linker. Add `[target.{triple}] linker = \"{linker_bin}\"` to .cargo/config.toml?"
+            ))
+            .initial_value(true)
+            .interact()?
+            {
+                add_linker_entry(root, triple, linker_bin)?;
+                terminal.print_success(&format!(
+                    "Configured linker for {triple} in .cargo/config.toml."
+                ));
+                if !linker_on_path(linker_bin) {
+                    terminal.print_warning(&format!(
+                        "Linker `{linker_bin}` was not found on PATH — {install_hint}."
+                    ));
+                }
+            } else {
+                terminal.print(&format!(
+                    "Skipped. To configure it manually, add to .cargo/config.toml:\n\n[target.{triple}]\nlinker = \"{linker_bin}\"\n\nand {install_hint}."
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

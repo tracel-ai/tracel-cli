@@ -11,7 +11,7 @@ use clap::Args;
 use sha2::{Digest, Sha256};
 use tracel_client::Client;
 use tracel_client::request::{
-    Arch, Os, PublishArtifactRequest, PublishBinaryRequest, PublishProjectVersionRequest,
+    PublishArtifactRequest, PublishBinaryRequest, PublishProjectVersionRequest,
     PublishSourceRequest,
 };
 
@@ -20,7 +20,7 @@ use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::helpers::{require_linked_project, validate_project_exists_on_server};
 use crate::tools::build_driver::{self, BuildDriver};
-use crate::tools::{linker, target};
+use crate::tools::target;
 
 #[derive(Args, Debug)]
 pub struct PackageArgs {
@@ -173,7 +173,7 @@ fn build_binary_artifact(
                 "Building for this machine ({triple}). It will only run on compute providers with the same OS and architecture."
             ));
         } else {
-            cross_preflight(context, root, host, (os, arch), driver)?;
+            build_driver::cross_preflight(context.terminal(), root, host, (os, arch), driver)?;
         }
 
         let path = build_release_binary(context, (!is_host).then_some(triple), driver)?;
@@ -191,88 +191,6 @@ fn build_binary_artifact(
         request: PublishArtifactRequest::Binaries { binaries },
         uploads,
     })
-}
-
-/// Prepare to cross-build `target_pair` with `driver`: set up the linker for same-OS
-/// cargo builds, or note which driver/toolchain a cross-OS build relies on.
-fn cross_preflight(
-    context: &CliContext,
-    root: &Path,
-    host: (Os, Arch),
-    target_pair: (Os, Arch),
-    driver: BuildDriver,
-) -> anyhow::Result<()> {
-    let triple = target::target_triple(target_pair.0, target_pair.1);
-    match driver {
-        BuildDriver::Cargo if host.0 == target_pair.0 => {
-            // Same-OS cross-arch: a `[target.<triple>] linker` entry (Linux) is enough.
-            ensure_linker(context, root, host, target_pair)?;
-            context.terminal().print_warning(&format!(
-                "Cross-building {triple} with `cargo build`. It may fail at link time if the cross toolchain is missing."
-            ));
-        }
-        BuildDriver::Cargo => {
-            // Cross-OS with no suitable driver installed — plain cargo build won't link.
-            context.terminal().print_warning(&format!(
-                "No cross-build driver found for {triple}; plain `cargo build` will almost certainly fail at link — {hint}.",
-                hint = build_driver::install_hint(target_pair)
-            ));
-        }
-        BuildDriver::Zigbuild => {
-            context.terminal().print(&format!(
-                "Cross-building {triple} with `cargo zigbuild` (requires Zig; macOS targets also need the Apple SDK)."
-            ));
-        }
-        BuildDriver::Xwin => {
-            context.terminal().print(&format!(
-                "Cross-building {triple} with `cargo xwin build` (downloads the MSVC CRT/SDK on first use; needs LLVM/lld)."
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Offer to write a `[target.<triple>] linker = "..."` entry for a same-OS cross-arch
-/// build that needs one (Linux), or do nothing when the toolchain handles it natively.
-fn ensure_linker(
-    context: &CliContext,
-    root: &Path,
-    host: (Os, Arch),
-    target_pair: (Os, Arch),
-) -> anyhow::Result<()> {
-    let triple = target::target_triple(target_pair.0, target_pair.1);
-    match linker::linker_need(host, target_pair) {
-        linker::LinkerNeed::None => {}
-        linker::LinkerNeed::ConfigEntry {
-            linker: linker_bin,
-            install_hint,
-        } => {
-            if linker::linker_configured(root, triple) {
-                return Ok(());
-            }
-            if cliclack::confirm(format!(
-                "Target `{triple}` needs a linker. Add `[target.{triple}] linker = \"{linker_bin}\"` to .cargo/config.toml?"
-            ))
-            .initial_value(true)
-            .interact()?
-            {
-                linker::add_linker_entry(root, triple, linker_bin)?;
-                context.terminal().print_success(&format!(
-                    "Configured linker for {triple} in .cargo/config.toml."
-                ));
-                if !linker::linker_on_path(linker_bin) {
-                    context.terminal().print_warning(&format!(
-                        "Linker `{linker_bin}` was not found on PATH — {install_hint}."
-                    ));
-                }
-            } else {
-                context.terminal().print(&format!(
-                    "Skipped. To configure it manually, add to .cargo/config.toml:\n\n[target.{triple}]\nlinker = \"{linker_bin}\"\n\nand {install_hint}."
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 /// Run the release build with `driver` (optionally for a cross `--target`) and return

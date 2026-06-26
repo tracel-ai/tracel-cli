@@ -5,9 +5,14 @@
 //! `cargo zigbuild` for Linux/macOS. Both proxy cargo (and forward
 //! `--message-format=json`), so the rest of the build pipeline is unchanged.
 
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use tracel_client::request::{Arch, Os};
+
+use crate::tools::linker;
+use crate::tools::target::target_triple;
+use crate::tools::terminal::Terminal;
 
 /// How to drive the build of a given target.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -104,6 +109,45 @@ pub fn install_hint(target: (Os, Arch)) -> &'static str {
             "install cargo-zigbuild (`cargo install --locked cargo-zigbuild`) and Zig; macOS also needs the Apple SDK"
         }
     }
+}
+
+/// Prepare to cross-build `target` with `driver`: set up the linker for same-OS cargo
+/// builds, or note which driver/toolchain a cross-OS build relies on.
+pub fn cross_preflight(
+    terminal: &Terminal,
+    root: &Path,
+    host: (Os, Arch),
+    target: (Os, Arch),
+    driver: BuildDriver,
+) -> anyhow::Result<()> {
+    let triple = target_triple(target.0, target.1);
+    match driver {
+        BuildDriver::Cargo if host.0 == target.0 => {
+            // Same-OS cross-arch: a `[target.<triple>] linker` entry (Linux) is enough.
+            linker::ensure_linker(terminal, root, host, target)?;
+            terminal.print_warning(&format!(
+                "Cross-building {triple} with `cargo build`. It may fail at link time if the cross toolchain is missing."
+            ));
+        }
+        BuildDriver::Cargo => {
+            // Cross-OS with no suitable driver installed — plain cargo build won't link.
+            terminal.print_warning(&format!(
+                "No cross-build driver found for {triple}; plain `cargo build` will almost certainly fail at link — {hint}.",
+                hint = install_hint(target)
+            ));
+        }
+        BuildDriver::Zigbuild => {
+            terminal.print(&format!(
+                "Cross-building {triple} with `cargo zigbuild` (requires Zig; macOS targets also need the Apple SDK)."
+            ));
+        }
+        BuildDriver::Xwin => {
+            terminal.print(&format!(
+                "Cross-building {triple} with `cargo xwin build` (downloads the MSVC CRT/SDK on first use; needs LLVM/lld)."
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
