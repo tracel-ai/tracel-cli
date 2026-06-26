@@ -2,11 +2,11 @@ use crate::context::CliContext;
 use crate::helpers::{can_initialize_project, require_cargo_workspace};
 use crate::tools::terminal::Terminal;
 use anyhow::Context;
-use tracel_client::Client;
-use tracel_client::response::ProjectResponse;
 use burn_central_workspace::tools::git;
 use burn_central_workspace::{BurnCentralProject, ProjectContext};
 use clap::Args;
+use tracel_client::Client;
+use tracel_client::response::ProjectResponse;
 
 #[derive(Args, Debug)]
 pub struct InitArgs {

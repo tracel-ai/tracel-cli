@@ -1,6 +1,6 @@
 use anyhow::Context;
-use tracel_client::Client;
 use clap::Args;
+use tracel_client::Client;
 
 use crate::{
     app_config::Environment,

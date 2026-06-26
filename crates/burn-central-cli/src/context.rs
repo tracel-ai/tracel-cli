@@ -1,7 +1,7 @@
 use crate::app_config::{AppConfig, Environment, ToFileSuffix};
 use crate::tools::terminal::Terminal;
-use tracel_client::{Client, TracelCredentials};
 use serde::{Deserialize, Serialize};
+use tracel_client::{Client, TracelCredentials};
 use url::Url;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

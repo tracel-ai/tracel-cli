@@ -3,17 +3,17 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use anyhow::Context;
-use tracel_client::Client;
-use tracel_client::request::{
-    PublishArtifactRequest, PublishBinaryRequest, PublishProjectVersionRequest,
-    PublishSourceRequest,
-};
 use burn_central_workspace::ProjectContext;
 use burn_central_workspace::tools::cargo;
 use burn_central_workspace::tools::cargo::package::{PackageEvent, package_workspace};
 use burn_central_workspace::tools::git;
 use clap::Args;
 use sha2::{Digest, Sha256};
+use tracel_client::Client;
+use tracel_client::request::{
+    PublishArtifactRequest, PublishBinaryRequest, PublishProjectVersionRequest,
+    PublishSourceRequest,
+};
 
 use crate::commands::init::commit_sequence;
 use crate::commands::login::get_client_and_login_if_needed;
@@ -323,8 +323,8 @@ fn upload(
             spinner.error("Upload failed.");
             anyhow::anyhow!("Server did not return an upload URL for `{key}`")
         })?;
-        let bytes = std::fs::read(&path)
-            .with_context(|| format!("Failed to read {}", path.display()))?;
+        let bytes =
+            std::fs::read(&path).with_context(|| format!("Failed to read {}", path.display()))?;
         client.upload_bytes_to_url(url, bytes).map_err(|e| {
             spinner.error("Upload failed.");
             anyhow::anyhow!("Failed to upload `{key}`: {e}")
@@ -344,6 +344,8 @@ fn upload(
     context
         .terminal()
         .print_success(&format!("New code version uploaded: {}", response.digest));
-    context.terminal().finalize("Project packaged successfully.");
+    context
+        .terminal()
+        .finalize("Project packaged successfully.");
     Ok(())
 }
