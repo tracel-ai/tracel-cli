@@ -19,6 +19,7 @@ use crate::commands::init::commit_sequence;
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::helpers::{require_linked_project, validate_project_exists_on_server};
+use crate::tools::build_driver::{self, BuildDriver};
 use crate::tools::{linker, target};
 
 #[derive(Args, Debug)]
@@ -154,25 +155,28 @@ fn build_binary_artifact(
     target::install_missing_target(missing)?;
 
     let root = project.get_workspace_root();
+    let drivers = build_driver::detect();
     let mut binaries = Vec::new();
     let mut uploads = Vec::new();
 
     for (os, arch) in selected {
         let triple = target::target_triple(os, arch);
         let is_host = (os, arch) == host;
+        let driver = if is_host {
+            BuildDriver::Cargo
+        } else {
+            build_driver::choose(host, (os, arch), &drivers)
+        };
 
         if is_host {
             context.terminal().print_warning(&format!(
                 "Building for this machine ({triple}). It will only run on compute providers with the same OS and architecture."
             ));
         } else {
-            ensure_linker(context, root, host, (os, arch))?;
-            context.terminal().print_warning(&format!(
-                "Cross-building for {triple}. It may still fail at link time if the required toolchain is missing."
-            ));
+            cross_preflight(context, root, host, (os, arch), driver)?;
         }
 
-        let path = build_release_binary(context, (!is_host).then_some(triple))?;
+        let path = build_release_binary(context, (!is_host).then_some(triple), driver)?;
         let (checksum, size) = sha256_and_size(&path)?;
         binaries.push(PublishBinaryRequest {
             os,
@@ -189,8 +193,47 @@ fn build_binary_artifact(
     })
 }
 
-/// Make sure a cross target's linker is set up: prompt to write a `.cargo/config.toml`
-/// entry where we can do so reliably, or print guidance for OS-level cross toolchains.
+/// Prepare to cross-build `target_pair` with `driver`: set up the linker for same-OS
+/// cargo builds, or note which driver/toolchain a cross-OS build relies on.
+fn cross_preflight(
+    context: &CliContext,
+    root: &Path,
+    host: (Os, Arch),
+    target_pair: (Os, Arch),
+    driver: BuildDriver,
+) -> anyhow::Result<()> {
+    let triple = target::target_triple(target_pair.0, target_pair.1);
+    match driver {
+        BuildDriver::Cargo if host.0 == target_pair.0 => {
+            // Same-OS cross-arch: a `[target.<triple>] linker` entry (Linux) is enough.
+            ensure_linker(context, root, host, target_pair)?;
+            context.terminal().print_warning(&format!(
+                "Cross-building {triple} with `cargo build`. It may fail at link time if the cross toolchain is missing."
+            ));
+        }
+        BuildDriver::Cargo => {
+            // Cross-OS with no suitable driver installed — plain cargo build won't link.
+            context.terminal().print_warning(&format!(
+                "No cross-build driver found for {triple}; plain `cargo build` will almost certainly fail at link — {hint}.",
+                hint = build_driver::install_hint(target_pair)
+            ));
+        }
+        BuildDriver::Zigbuild => {
+            context.terminal().print(&format!(
+                "Cross-building {triple} with `cargo zigbuild` (requires Zig; macOS targets also need the Apple SDK)."
+            ));
+        }
+        BuildDriver::Xwin => {
+            context.terminal().print(&format!(
+                "Cross-building {triple} with `cargo xwin build` (downloads the MSVC CRT/SDK on first use; needs LLVM/lld)."
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Offer to write a `[target.<triple>] linker = "..."` entry for a same-OS cross-arch
+/// build that needs one (Linux), or do nothing when the toolchain handles it natively.
 fn ensure_linker(
     context: &CliContext,
     root: &Path,
@@ -200,9 +243,6 @@ fn ensure_linker(
     let triple = target::target_triple(target_pair.0, target_pair.1);
     match linker::linker_need(host, target_pair) {
         linker::LinkerNeed::None => {}
-        linker::LinkerNeed::Foreign { guidance } => {
-            context.terminal().print_warning(&guidance);
-        }
         linker::LinkerNeed::ConfigEntry {
             linker: linker_bin,
             install_hint,
@@ -235,22 +275,26 @@ fn ensure_linker(
     Ok(())
 }
 
-/// Run `cargo build --release` (optionally for a cross `--target`) and return the
-/// path to the produced executable (prompting if the build produced more than one).
-fn build_release_binary(context: &CliContext, target: Option<&str>) -> anyhow::Result<PathBuf> {
+/// Run the release build with `driver` (optionally for a cross `--target`) and return
+/// the path to the produced executable (prompting if the build produced more than one).
+fn build_release_binary(
+    context: &CliContext,
+    target: Option<&str>,
+    driver: BuildDriver,
+) -> anyhow::Result<PathBuf> {
     let cmd_label = match target {
-        Some(triple) => format!("cargo build --release --target {triple}"),
-        None => "cargo build --release".to_string(),
+        Some(triple) => format!("{} --release --target {triple}", driver.label()),
+        None => format!("{} --release", driver.label()),
     };
     context
         .terminal()
         .print(&format!("Building release binary ({cmd_label})..."));
 
     let mut command = cargo::command();
-    command
-        .arg("build")
-        .arg("--release")
-        .arg("--message-format=json");
+    for arg in driver.subcommand_args() {
+        command.arg(arg);
+    }
+    command.arg("--release").arg("--message-format=json");
     if let Some(triple) = target {
         command.arg("--target").arg(triple);
     }

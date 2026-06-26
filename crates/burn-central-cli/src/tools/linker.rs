@@ -3,8 +3,8 @@
 //! `rustup target add` installs only the prebuilt std, not a linker. For the
 //! predictable Linux same-OS cross-arch case we can write a
 //! `[target.<triple>] linker = "..."` entry into the project's `.cargo/config.toml`.
-//! For a different OS (Windows/macOS from Linux, etc.) a single linker entry is not
-//! enough, so we only point the user at the right tool.
+//! Cross-OS targets (Windows/macOS from Linux, etc.) need a whole toolchain, not just
+//! a linker entry — those are handled by a build driver (see `tools::build_driver`).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -13,19 +13,16 @@ use anyhow::Context;
 use toml_edit::{DocumentMut, Item, Table, value};
 use tracel_client::request::{Arch, Os};
 
-use crate::tools::target::target_triple;
-
 /// What (if anything) is needed to link `target` while running on `host`.
 pub enum LinkerNeed {
-    /// Native, or a same-OS cross-arch the toolchain handles itself (macOS/Windows).
+    /// Native, a same-OS cross-arch the toolchain handles itself (macOS/Windows), or a
+    /// cross-OS target (whose toolchain is supplied by the build driver, not a linker entry).
     None,
     /// Linux same-OS cross-arch: a `[target.<triple>] linker` entry we can auto-add.
     ConfigEntry {
         linker: &'static str,
         install_hint: &'static str,
     },
-    /// Different OS: needs cargo-xwin / osxcross / a sysroot — instruct only.
-    Foreign { guidance: String },
 }
 
 /// Classify what linker setup `target` needs when building on `host`.
@@ -55,20 +52,9 @@ pub fn linker_need(host: (Os, Arch), target: (Os, Arch)) -> LinkerNeed {
         };
     }
 
-    // Different OS: a single linker entry is not enough.
-    let triple = target_triple(target_os, target_arch);
-    let guidance = match target_os {
-        Os::Windows => format!(
-            "Cross-compiling to {triple} needs the MSVC toolchain — consider `cargo-xwin` (https://github.com/rust-cross/cargo-xwin)."
-        ),
-        Os::Macos => format!(
-            "Cross-compiling to {triple} needs the Apple SDK — consider `osxcross` (https://github.com/tpoechtrager/osxcross)."
-        ),
-        Os::Linux => format!(
-            "Cross-compiling to {triple} from this OS needs a Linux sysroot/cross toolchain — consider `cross` (https://github.com/cross-rs/cross) or a zig-based linker."
-        ),
-    };
-    LinkerNeed::Foreign { guidance }
+    // Different OS: a linker entry isn't enough — a build driver (cargo-xwin /
+    // cargo-zigbuild) supplies the toolchain instead. See `tools::build_driver`.
+    LinkerNeed::None
 }
 
 /// Read the project's cargo config, preferring `.cargo/config.toml` over the legacy
@@ -173,10 +159,8 @@ mod tests {
 
     impl TempRoot {
         fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!(
-                "burn_linker_test_{}_{name}",
-                std::process::id()
-            ));
+            let dir = std::env::temp_dir()
+                .join(format!("burn_linker_test_{}_{name}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             TempRoot(dir)
@@ -205,7 +189,10 @@ mod tests {
 
     #[test]
     fn linker_need_same_target_is_none() {
-        assert!(matches!(linker_need(LINUX_X86, LINUX_X86), LinkerNeed::None));
+        assert!(matches!(
+            linker_need(LINUX_X86, LINUX_X86),
+            LinkerNeed::None
+        ));
     }
 
     #[test]
@@ -226,15 +213,10 @@ mod tests {
     }
 
     #[test]
-    fn linker_need_different_os_is_foreign() {
-        assert!(matches!(
-            linker_need(LINUX_X86, WIN_X86),
-            LinkerNeed::Foreign { .. }
-        ));
-        assert!(matches!(
-            linker_need(LINUX_X86, MAC_ARM),
-            LinkerNeed::Foreign { .. }
-        ));
+    fn linker_need_different_os_is_none() {
+        // Cross-OS linker setup is handled by the build driver, not a linker entry.
+        assert!(matches!(linker_need(LINUX_X86, WIN_X86), LinkerNeed::None));
+        assert!(matches!(linker_need(LINUX_X86, MAC_ARM), LinkerNeed::None));
     }
 
     #[test]
@@ -268,7 +250,10 @@ mod tests {
 
         let content = root.config();
         assert!(content.contains("# keep me"), "comment dropped: {content}");
-        assert!(content.contains("jobs = 4"), "build table dropped: {content}");
+        assert!(
+            content.contains("jobs = 4"),
+            "build table dropped: {content}"
+        );
         let doc: DocumentMut = content.parse().unwrap();
         assert_eq!(
             doc["target"][triple]["linker"].as_str(),

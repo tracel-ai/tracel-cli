@@ -142,14 +142,12 @@ pub fn prompt_targets(
         })
         .collect();
 
-    cliclack::multiselect(
-        "Select the target(s) to build for (space to toggle, enter to confirm)",
-    )
-    .items(&items)
-    .initial_values(vec![host])
-    .required(true)
-    .interact()
-    .map_err(anyhow::Error::from)
+    cliclack::multiselect("Select the target(s) to build for (space to toggle, enter to confirm)")
+        .items(&items)
+        .initial_values(vec![host])
+        .required(true)
+        .interact()
+        .map_err(anyhow::Error::from)
 }
 
 pub fn install_missing_target(missing: Vec<&str>) -> anyhow::Result<()> {
