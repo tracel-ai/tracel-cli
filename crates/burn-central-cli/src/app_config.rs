@@ -76,3 +76,15 @@ impl AppConfig {
         }
     }
 }
+
+/// Render the value the SDK expects in the `TRACEL_ENV` environment variable.
+///
+/// The SDK parses this string with an explicit match (see `discover_env` in the
+/// `tracel-core` cloud backend). This need to match.
+pub fn tracel_env_value(env: &Environment) -> String {
+    match env {
+        Environment::Production => "Production".to_string(),
+        Environment::Development => "Development".to_string(),
+        Environment::Staging(version) => format!("Staging({version})"),
+    }
+}

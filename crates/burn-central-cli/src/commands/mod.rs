@@ -29,5 +29,5 @@ pub fn default_command(mut context: CliContext) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    training::run_cargo(&[])
+    training::run_cargo(&[], context)
 }
