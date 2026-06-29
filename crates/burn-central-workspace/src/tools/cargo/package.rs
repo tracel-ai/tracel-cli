@@ -145,10 +145,7 @@ fn list_workspace_files(workspace_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
         exclude_builder.add_line(None, ".*")?;
     }
 
-    // Add common excludes. `.burn/` is kept for any leftover directory from before
-    // the move to a root `tracel.toml`, which is itself excluded as project metadata.
     exclude_builder.add_line(None, "target/")?;
-    exclude_builder.add_line(None, "tracel.toml")?;
 
     let ignore_exclude = exclude_builder.build()?;
 
