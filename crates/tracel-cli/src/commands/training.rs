@@ -17,7 +17,7 @@ pub(crate) fn handle_command(args: TrainingArgs, context: CliContext) -> anyhow:
 /// Run `cargo run` in the current directory, forwarding `forwarded` after `--`.
 ///
 /// stdin/stdout/stderr are inherited so the run is interactive, and the child's
-/// exit code is mirrored. `burn train -- entrypoint` is therefore equivalent to
+/// exit code is mirrored. `tracel train -- entrypoint` is therefore equivalent to
 /// `cargo run -- entrypoint`.
 pub(crate) fn run_cargo(forwarded: &[String], context: CliContext) -> anyhow::Result<()> {
     let mut cmd = cargo::command();
