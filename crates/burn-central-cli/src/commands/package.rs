@@ -107,7 +107,6 @@ fn build_source_artifact(
     spinner.start("Packaging workspace...");
     let spinner_clone = spinner.clone();
     let result = package_workspace(
-        &project.burn_dir().artifacts_dir(),
         project.get_workspace_name(),
         Arc::new(move |msg: PackageEvent| {
             spinner_clone.set_message(msg.message);
@@ -119,20 +118,14 @@ fn build_source_artifact(
     })?;
     spinner.stop("Workspace packaged.");
 
-    let archive = result
-        .crate_metadata
-        .into_iter()
-        .next()
-        .context("Packaging produced no archive")?;
-
     Ok(PreparedArtifact {
         request: PublishArtifactRequest::Source {
             source: PublishSourceRequest {
-                checksum: archive.checksum,
-                size: archive.size,
+                checksum: result.checksum,
+                size: result.size,
             },
         },
-        uploads: vec![("source.zip".to_string(), archive.path)],
+        uploads: vec![("source.zip".to_string(), result.path)],
     })
 }
 

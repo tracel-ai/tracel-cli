@@ -20,10 +20,6 @@ impl BurnDir {
         Ok(())
     }
 
-    pub fn artifacts_dir(&self) -> PathBuf {
-        self.root.join("artifacts")
-    }
-
     pub fn load_project(&self) -> io::Result<Option<BurnCentralProject>> {
         BurnCentralProject::load(&self.root)
             .map(Some)

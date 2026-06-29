@@ -17,17 +17,11 @@ use sha2::Sha256;
 use crate::print_info;
 
 #[derive(Debug)]
-pub struct PackagedCrateData {
+pub struct ArchiveMetadata {
     pub name: String,
     pub path: PathBuf,
     pub checksum: String,
     pub size: u64,
-}
-
-#[derive(Debug)]
-pub struct PackageResult {
-    pub crate_metadata: Vec<PackagedCrateData>,
-    pub digest: String,
 }
 
 pub struct PackageEvent {
@@ -40,10 +34,9 @@ type PackageEventReporter = dyn crate::event::Reporter<PackageEvent>;
 ///
 /// Returns a `PackageResult` containing the packaged workspace data and digest
 pub fn package_workspace(
-    artifacts_dir: &Path,
     workspace_name: &str,
     event_reporter: Arc<PackageEventReporter>,
-) -> anyhow::Result<PackageResult> {
+) -> anyhow::Result<ArchiveMetadata> {
     event_reporter.report_event(PackageEvent {
         message: "Initializing workspace packaging".to_string(),
     });
@@ -80,15 +73,23 @@ pub fn package_workspace(
         message: "Creating compressed archive".to_string(),
     });
 
-    let archive_name = format!("{}.compressed", workspace_name);
-    let archive_path = artifacts_dir.join(&archive_name);
+    // Write the archive under the cargo target directory, the idiomatic home for
+    // build artifacts (kept out of the archive itself by the `target/` exclusion).
+    let output_dir = metadata
+        .target_directory
+        .as_std_path()
+        .join("tracel")
+        .join("package");
+    let archive_path = output_dir.join(&workspace_name);
 
-    std::fs::create_dir_all(artifacts_dir)?;
+    std::fs::create_dir_all(&output_dir)?;
 
+    // Create archive at tarcel/package/{workspace_name}.tar.gz
     let archive_file = File::create(&archive_path)?;
-    let package_prefix = format!("{}", workspace_name);
+
+    // Organize files inside the archive (when uncompressed) it will be inside a directory named `{workspace_name}/` to match the standard cargo crate format.
     let uncompressed_size =
-        create_workspace_archive(&workspace_root, &files, &archive_file, &package_prefix)?;
+        create_workspace_archive(&workspace_root, &files, &archive_file, &workspace_name)?;
 
     event_reporter.report_event(PackageEvent {
         message: format!(
@@ -111,24 +112,18 @@ pub fn package_workspace(
         message: "Extracting package metadata".to_string(),
     });
 
-    let packaged_data = PackagedCrateData {
-        name: archive_name,
+    let archive_data = ArchiveMetadata {
+        name: workspace_name.to_string(),
         path: archive_path,
         checksum: checksum.clone(),
         size,
     };
 
-    // Calculate final digest
-    let digest = checksum; // For a single package, the digest is the same as the checksum
-
     event_reporter.report_event(PackageEvent {
         message: "Workspace packaging completed successfully".to_string(),
     });
 
-    Ok(PackageResult {
-        crate_metadata: vec![packaged_data],
-        digest,
-    })
+    Ok(archive_data)
 }
 
 /// Lists all files in the workspace that should be packaged, respecting gitignore rules.
