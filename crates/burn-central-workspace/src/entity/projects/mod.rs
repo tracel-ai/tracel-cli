@@ -243,10 +243,6 @@ impl ProjectContext {
         &self.workspace_info.workspace_name
     }
 
-    pub fn get_workspace_path(&self) -> &Path {
-        &self.workspace_info.workspace_root
-    }
-
     pub fn get_workspace_root(&self) -> &Path {
         &self.workspace_info.workspace_root
     }
@@ -257,30 +253,6 @@ impl ProjectContext {
 
     pub fn burn_dir(&self) -> &BurnDir {
         &self.burn_dir
-    }
-
-    pub fn cwd(&self) -> &Path {
-        &self.workspace_info.workspace_root
-    }
-
-    pub fn get_workspace_packages(&self) -> Vec<&cargo_metadata::Package> {
-        self.workspace_info
-            .metadata
-            .packages
-            .iter()
-            .filter(|pkg| {
-                self.workspace_info
-                    .metadata
-                    .workspace_members
-                    .contains(&pkg.id)
-            })
-            .collect()
-    }
-
-    pub fn find_package_by_name(&self, name: &str) -> Option<&cargo_metadata::Package> {
-        self.get_workspace_packages()
-            .into_iter()
-            .find(|pkg| pkg.name.as_str() == name)
     }
 }
 
