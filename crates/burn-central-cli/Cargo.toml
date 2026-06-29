@@ -17,7 +17,7 @@ path = "src/bin/burn.rs"
 
 [dependencies]
 burn-central-workspace.workspace = true
-burn-central-client.workspace = true
+tracel-client.workspace = true
 
 anyhow.workspace = true
 clap.workspace = true
@@ -27,5 +27,7 @@ cliclack.workspace = true
 directories.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
+toml_edit.workspace = true
 url.workspace = true

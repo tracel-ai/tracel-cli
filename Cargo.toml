@@ -8,7 +8,7 @@ members = ["crates/*", "xtask"]
 
 [workspace.package]
 edition = "2024"
-version = "0.4.2"
+version = "0.5.0"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
 rust-version = "1.87.0"
@@ -18,40 +18,42 @@ keywords = ["tracel", "burn-central", "burn", "cli"]
 categories = ["command-line-interface", "development-tools"]
 
 [workspace.dependencies]
-anyhow = "1.0.98"
-toml = "0.8.22"
-clap = { version = "4.5.39", features = ["derive", "cargo"] }
-colored = "3.0.0"
+anyhow = "1.0.103"
+toml = "0.8.23"
+toml_edit = "0.22.27"
+clap = { version = "4.6.1", features = ["derive", "cargo"] }
+colored = "3.1.1"
 derive-new = { version = "0.7.0", default-features = false }
 tracing = "0.1.44"
-serde = { version = "1.0.224", default-features = false, features = ["derive"] }
-serde_json = "1.0.140"
+serde = { version = "1.0.228", default-features = false, features = ["derive"] }
+serde_json = "1.0.150"
 sha2 = { version = "0.10.9" }
-thiserror = "2.0.12"
-env_logger = "0.11.8"
-console = "0.15.8"
-cliclack = "0.3.6"
+thiserror = "2.0.18"
+env_logger = "0.11.11"
+console = "0.15.11"
+cliclack = "0.3.8"
 directories = "5.0"
-url = "2.5.4"
+url = "2.5.8"
 cargo_metadata = { version = "0.20.0", features = ["builder"] }
-flate2 = { version = "1.1.1", default-features = false, features = ["zlib"] }
-tar = { version = "0.4.44", default-features = false }
+flate2 = { version = "1.1.9", default-features = false, features = ["zlib"] }
+tar = { version = "0.4.46", default-features = false }
 walkdir = "2"
-ignore = "0.4.23"
+ignore = "0.4.26"
 gix = { version = "0.77.0", default-features = false, features = ["dirwalk", "status"]}
-chrono = "0.4.42"
+chrono = "0.4.45"
 strum = {version = "0.27.2", features = ["derive"]}
 
 
 ## External Crate
-burn-central-client = "0.6.3"
+tracel-client = "0.8.0"
+# tracel-client  = { path = "../client/tracel-client" }
 
 ## Crate
-burn-central-workspace = { version = "0.4.2", path = "crates/burn-central-workspace" }
-burn-central-cli = { version = "0.4.2", path = "crates/burn-central-cli" }
+burn-central-workspace = { version = "0.5.0", path = "crates/burn-central-workspace" }
+burn-central-cli = { version = "0.5.0", path = "crates/burn-central-cli" }
 
 ### For xtask crate ###
-tracel-xtask = { version = "4.5.0" }
+tracel-xtask = { version = "4.19.0" }
 
 [profile.dev]
 debug = 0 # Speed up compilation time and not necessary.

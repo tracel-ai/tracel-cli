@@ -1,7 +1,7 @@
 use crate::app_config::{AppConfig, Environment, ToFileSuffix};
 use crate::tools::terminal::Terminal;
-use burn_central_client::{BurnCentralCredentials, Client};
 use serde::{Deserialize, Serialize};
+use tracel_client::{Client, TracelCredentials};
 use url::Url;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -62,7 +62,7 @@ impl CliContext {
             .get_api_key()
             .ok_or(ClientCreationError::NoCredentials)?;
 
-        let creds = BurnCentralCredentials::new(api_key.to_owned());
+        let creds = TracelCredentials::new(api_key.to_owned());
         let client = Client::new(self.environment.clone(), &creds);
 
         client.map_err(|e| {
