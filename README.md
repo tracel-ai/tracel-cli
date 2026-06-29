@@ -1,10 +1,10 @@
 <div align="center">
 
-<h1>Burn Central CLI</h1>
+<h1>Tracel CLI</h1>
 
-[![Current Crates.io Version](https://img.shields.io/crates/v/burn-central-cli)](https://crates.io/crates/burn-central-cli)
-[![Minimum Supported Rust Version](https://img.shields.io/crates/msrv/burn-central-cli)](https://crates.io/crates/burn-central-cli)
-[![Test Status](https://github.com/tracel-ai/burn-central-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/tracel-ai/burn-central-cli/actions/workflows/ci.yml)
+[![Current Crates.io Version](https://img.shields.io/crates/v/tracel-cli)](https://crates.io/crates/tracel-cli)
+[![Minimum Supported Rust Version](https://img.shields.io/crates/msrv/tracel-cli)](https://crates.io/crates/tracel-cli)
+[![Test Status](https://github.com/tracel-ai/tracel-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/tracel-ai/tracel-cli/actions/workflows/ci.yml)
 ![license](https://shields.io/badge/license-MIT%2FApache--2.0-blue)
 
 ---
@@ -13,9 +13,9 @@
 
 ## Description
 
-The Burn Central CLI (`burn`) is the command-line tool for interacting with [Burn Central](https://s1-console.tracel.ai/), the centralized platform for experiment tracking, model sharing, and deployment for [Burn](https://github.com/tracel-ai/burn) users.
+The Tracel CLI (`tracel`) is the command-line tool for interacting with [Tracel Console](https://console.tracel.ai/), the centralized platform for experiment tracking, model sharing, and deployment for [Burn](https://github.com/tracel-ai/burn) users.
 
-This CLI works in conjunction with the [Burn Central SDK](https://github.com/tracel-ai/burn-central) to provide a seamless workflow for:
+This CLI works in conjunction with the [Tracel SDK](https://github.com/tracel-ai/tracetracell) to provide a seamless workflow for:
 
 - Running training jobs locally or remotely
 - Managing experiments and tracking metrics
@@ -28,204 +28,110 @@ This CLI works in conjunction with the [Burn Central SDK](https://github.com/tra
 ### Install from crates.io
 
 ```bash
-cargo install burn-central-cli
+cargo install tracel-cli
 ```
 
 ### Build from source
 
 ```bash
-git clone https://github.com/tracel-ai/burn-central-cli.git
-cd burn-central-cli
-cargo install --path crates/burn-central-cli
+git clone https://github.com/tracel-ai/tracel-cli.git
+cd tracel-cli
+cargo install --path crates/tracel-cli
 ```
 
-After installation, the `burn` command will be available in your terminal.
+After installation, the `tracel` command will be available in your terminal.
 
 ## Prerequisites
 
-1. **Burn Central Account**: Create an account at [console.tracel.ai](https://central.burn.dev/)
+1. **Tracel Account**: Create an account at [console.tracel.ai](https://console.tracel.ai/)
 2. **Rust**: Version 1.87.0 or higher
-3. **Burn Central SDK**: Add the SDK to your Burn project (see [Quick Start](#quick-start))
-
-## Quick Start
-
-### 1. Add the Burn Central SDK to your project
-
-Add the SDK to your `Cargo.toml`:
-
-```toml
-[dependencies]
-burn-central = "0.1.0"
-```
-
-### 2. Register your training function
-
-Use the `#[register]` macro to make your training function discoverable:
-
-```rust
-use burn_central::{
-    experiment::ExperimentRun,
-    macros::register,
-    runtime::{Args, ArtifactLoader, Model},
-};
-
-#[register(training, name = "mnist")]
-pub fn training(
-    client: &ExperimentRun,
-    config: Args<YourExperimentConfig>,
-    loader: ArtifactLoader<ModelArtifact>,
-) -> Result<Model<ModelArtifact>, String> {
-    // Your training logic here...
-    Ok(Model(model_artifact))
-}
-```
-
-See the [SDK documentation](https://github.com/tracel-ai/burn-central) for complete integration details.
-
-### 3. Initialize your project
-
-Navigate to your Burn project directory and run:
-
-```bash
-burn init
-```
-
-This will:
-
-- Link your local project to Burn Central
-- Create or select a project on the platform
-- Configure your local environment
-
-### 4. Login to Burn Central
-
-```bash
-burn login
-```
-
-This opens your browser to authenticate with Burn Central and stores your credentials locally.
-
-### 5. Run your training
-
-```bash
-burn train -- <args>
-```
-
-`burn train` is a thin alias for `cargo run`. Everything after `--` is forwarded
-to your project's binary, which uses the SDK to send metrics, logs, and
-checkpoints to Burn Central in real-time.
+3. **Tracel SDK**: Add the SDK to your Burn project
 
 ## Commands
 
-### `burn train`
+### `tracel train`
 
 Run your project locally. This is a thin alias for `cargo run`: every argument
-after `--` is forwarded to your binary, so `burn train -- <args>` is equivalent
+after `--` is forwarded to your binary, so `tracel train -- <args>` is equivalent
 to `cargo run -- <args>`. stdin/stdout/stderr are inherited and the binary's
 exit code is propagated.
 
 ```bash
 # Equivalent to `cargo run`
-burn train
+tracel train
 
 # Equivalent to `cargo run -- train mnist --epochs 100`
-burn train -- train mnist --epochs 100
+tracel train -- train mnist --epochs 100
 ```
 
-### `burn package`
+### `tracel package`
 
 Package your project for deployment on remote compute providers.
 
 ```bash
-burn package
+tracel package
 ```
 
 This creates a deployable artifact containing your code, dependencies, and configurations.
 
-### `burn login`
+### `tracel login`
 
-Authenticate with the Burn Central platform.
+Authenticate with the Console platform.
 
 ```bash
-burn login
+tracel login
 ```
 
-### `burn init`
+### `tracel init`
 
-Initialize or reinitialize a Burn Central project in the current directory.
+Initialize or reinitialize a Tracel project in the current directory.
 
 ```bash
 # Interactive initialization
-burn init
+tracel init
 ```
 
-### `burn unlink`
+### `tracel unlink`
 
-Unlink the current directory from Burn Central.
+Unlink the current directory from Tracel project.
 
 ```bash
-burn unlink
+tracel unlink
 ```
 
-### `burn me`
+### `tracel me`
 
 Display information about the currently authenticated user.
 
 ```bash
-burn me
+tracel me
 ```
 
-### `burn project`
+### `tracel project`
 
 Display information about the current project.
 
 ```bash
-burn project
+tracel project
 ```
 
 ## Project Structure
 
-The Burn Central CLI is organized as a Cargo workspace:
+The Tracel CLI is organized as a Cargo workspace:
 
 ```text
-burn-central-cli/
+tracel-cli/
 ├── crates/
-│   ├── burn-central-cli/       # Main CLI binary
-│   └── burn-central-workspace/ # Core library for project management
+│   └── tracel-cli/ 
 └── xtask/                       # Build utilities
 ```
-
-### `burn-central-workspace`
-
-The `burn-central-workspace` crate is a standalone library that provides:
-
-- Project discovery and management
-- Project packaging and upload
-- Client integration with Burn Central
-
-This library can be used independently in other applications. See the [workspace README](crates/burn-central-workspace/README.md) for detailed documentation.
-
-## How It Works
-
-1. **Execution**: `burn train` runs your project via `cargo run`
-2. **Tracking**: The SDK sends metrics, logs, and checkpoints to Burn Central during execution
-3. **Management**: Provides tools to manage projects, experiments, and deployments
-
-## Integration with the Burn Central SDK
-
-The CLI works seamlessly with the Burn Central SDK. Here's how they connect:
-
-1. **SDK Integration**: Add the SDK to your project and use the `#[register]` macro
-2. **Execution**: `burn train` runs your project via `cargo run`
-3. **Tracking**: The SDK sends data to Burn Central during execution
-
-For detailed SDK usage, see the [SDK README](https://github.com/tracel-ai/burn-central).
 
 ## Development
 
 ### Running from source
 
 ```bash
-cargo run --bin burn -- --help
+cargo run --bin tracel-- --help
 ```
 
 ### Running tests
@@ -236,10 +142,10 @@ cargo test
 
 ### Development mode
 
-For testing against a local Burn Central instance:
+For testing against a local Console instance:
 
 ```bash
-burn --dev login
+tracel --dev login
 ```
 
 This connects to `http://localhost:9001` and uses separate development credentials.
@@ -264,6 +170,6 @@ at your option.
 
 ## Links
 
-- [Burn Central Platform](https://console.tracel.ai/)
-- [Burn Central SDK](https://github.com/tracel-ai/burn-central)
+- [Console Platform](https://console.tracel.ai/)
+- [Tracel SDK](https://github.com/tracel-ai/tracel)
 - [Burn Framework](https://github.com/tracel-ai/burn)

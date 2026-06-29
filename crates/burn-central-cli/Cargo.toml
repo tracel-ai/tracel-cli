@@ -1,6 +1,6 @@
 [package]
-name = "burn-central-cli"
-description = "Burn Central CLI"
+name = "tracel-cli"
+description = "Tracel CLI"
 authors.workspace = true
 categories.workspace = true
 keywords.workspace = true
