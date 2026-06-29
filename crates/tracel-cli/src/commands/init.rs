@@ -227,7 +227,7 @@ pub fn commit_sequence() -> anyhow::Result<()> {
     let do_commit =
         cliclack::confirm("Do you want to automatically commit all files?").interact()?;
     if do_commit {
-        let commit_message = "Automatic commit by Burn Central CLI";
+        let commit_message = "Automatic commit by Tracel Console CLI";
         let status = std::process::Command::new("git")
             .args(["add", "--all"])
             .stderr(std::process::Stdio::null())

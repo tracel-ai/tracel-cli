@@ -1,4 +1,4 @@
-//! Logging utilities for the Burn Central library
+//! Logging utilities for the Tracel Console library
 //!
 //! This module provides logging macros that can be used throughout the library.
 //! Unlike CLI-specific printing, these use the standard `log` crate for output.

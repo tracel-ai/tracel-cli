@@ -28,11 +28,11 @@ pub enum Commands {
 
     /// Package your project for running on a remote machine.
     Package(commands::package::PackageArgs),
-    /// Log in to the Burn Central server.
+    /// Log in to the Tracel server.
     Login(commands::login::LoginArgs),
     /// Initialize a new project or reinitialize an existing one.
     Init(commands::init::InitArgs),
-    /// Unlink the burn central project from this repository.
+    /// Unlink the Tracel Console project from this repository.
     Unlink,
     /// Display current user information.
     Me,

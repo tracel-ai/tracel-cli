@@ -1,7 +1,7 @@
-//! Workspace packaging functionality for Burn Central
+//! Workspace packaging functionality for Tracel Console
 //!
 //! This module provides functionality to package an entire workspace as a single compressed archive,
-//! respecting gitignore rules. This is used to upload workspace projects to Burn Central while
+//! respecting gitignore rules. This is used to upload workspace projects to Tracel Console while
 //! maintaining backwards compatibility with the single-crate API.
 
 use std::{
@@ -155,10 +155,9 @@ fn list_workspace_files(workspace_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
             return false;
         };
 
-        // Always exclude target and .burn directories
         if let Some(first_component) = relative_path.components().next() {
             let component_str = first_component.as_os_str().to_string_lossy();
-            if component_str == "target" || component_str == ".burn" {
+            if component_str == "target" {
                 return false;
             }
         }

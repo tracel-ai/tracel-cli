@@ -9,7 +9,7 @@ pub fn handle_command(context: CliContext) -> anyhow::Result<()> {
 
     let confirm_value = context
         .terminal()
-        .confirm("Are you sure you want to unlink the burn central project from this repository?")
+        .confirm("Are you sure you want to unlink the Tracel Console project from this repository?")
         .unwrap();
 
     if confirm_value {

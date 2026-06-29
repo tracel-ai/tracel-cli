@@ -1,6 +1,6 @@
 //! Build-driver selection for cross-compilation.
 //!
-//! `burn package` runs `cargo build`, but a cross-**OS** target needs a different
+//! `tracel package` runs `cargo build`, but a cross-**OS** target needs a different
 //! driver that supplies the target's toolchain: `cargo xwin build` for Windows-MSVC,
 //! `cargo zigbuild` for Linux/macOS. Both proxy cargo (and forward
 //! `--message-format=json`), so the rest of the build pipeline is unchanged.

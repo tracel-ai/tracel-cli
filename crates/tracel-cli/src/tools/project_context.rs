@@ -67,7 +67,7 @@ impl ProjectContext {
             })?
             .ok_or_else(|| {
                 ProjectContextError::new(
-                    "No Burn Central project linked to this repository".to_string(),
+                    "No Tracel Console project linked to this repository".to_string(),
                     ErrorKind::ProjectNotLinked,
                     None,
                 )

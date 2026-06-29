@@ -12,8 +12,8 @@ version.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "burn"
-path = "src/bin/burn.rs"
+name = "tracel"
+path = "src/bin/tracel.rs"
 
 [dependencies]
 tracel-client.workspace = true

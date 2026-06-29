@@ -23,8 +23,8 @@ pub fn find_manifest() -> anyhow::Result<std::path::PathBuf> {
     })
 }
 
-/// Check if current directory has a linked Burn Central project
-pub fn is_burn_central_project_linked() -> bool {
+/// Check if current directory has a linked Tracel Console project
+pub fn is_tracel_project_linked() -> bool {
     let manifest_path = find_manifest();
     match manifest_path {
         Err(_) => false,
@@ -45,10 +45,10 @@ pub fn handle_project_context_error(context: &CliContext, e: &ProjectContextErro
         ErrorKind::ProjectNotLinked => {
             context
                 .terminal()
-                .print_err("This Rust project is not linked to Burn Central.");
+                .print_err("This Rust project is not linked to Tracel Console.");
             context
                 .terminal()
-                .print("Run 'burn init' to initialize a Burn Central project.");
+                .print("Run 'tracel init' to initialize a Tracel Console project.");
         }
         ErrorKind::Parsing => {
             context.terminal().print_err(&e.to_string());
@@ -56,9 +56,9 @@ pub fn handle_project_context_error(context: &CliContext, e: &ProjectContextErro
         }
         ErrorKind::ProjectInitialization => {
             context.terminal().print_err(&e.to_string());
-            context
-                .terminal()
-                .print("Try re-initializing the Burn Central project with 'burn init --force'.");
+            context.terminal().print(
+                "Try re-initializing the Tracel Console project with 'tracel init --force'.",
+            );
         }
         ErrorKind::Unexpected => {
             context.terminal().print_err(&e.to_string());
@@ -69,19 +69,19 @@ pub fn handle_project_context_error(context: &CliContext, e: &ProjectContextErro
     }
 }
 
-/// Require a linked Burn Central project, showing helpful errors if not found
+/// Require a linked Tracel Console project, showing helpful errors if not found
 pub fn require_linked_project(context: &CliContext) -> anyhow::Result<ProjectContext> {
     let manifest_path = find_manifest()?;
     match ProjectContext::load(&manifest_path) {
         Ok(project) => Ok(project),
         Err(e) => {
             handle_project_context_error(context, &e);
-            anyhow::bail!("Failed to load linked Burn Central project")
+            anyhow::bail!("Failed to load linked Tracel Console project")
         }
     }
 }
 
-/// Require a Cargo workspace (with or without Burn Central linkage)
+/// Require a Cargo workspace (with or without Tracel Console linkage)
 pub fn require_cargo_workspace(context: &CliContext) -> anyhow::Result<WorkspaceInfo> {
     let manifest_path = find_manifest()?;
     match ProjectContext::load_workspace_info(&manifest_path) {
@@ -105,13 +105,13 @@ pub fn can_initialize_project(context: &CliContext, force: bool) -> anyhow::Resu
         return Ok(false);
     }
 
-    if is_burn_central_project_linked() {
+    if is_tracel_project_linked() {
         if force {
             return Ok(true);
         } else {
             context
                 .terminal()
-                .print("Project is already linked to Burn Central.");
+                .print("Project is already linked to Tracel Console.");
             context
                 .terminal()
                 .print("Use --force flag to reinitialize.");
@@ -122,7 +122,7 @@ pub fn can_initialize_project(context: &CliContext, force: bool) -> anyhow::Resu
     Ok(true)
 }
 
-/// Validate that the linked project exists on Burn Central server
+/// Validate that the linked project exists on Tracel Console server
 pub fn validate_project_exists_on_server(
     context: &CliContext,
     project: &ProjectContext,
@@ -134,25 +134,26 @@ pub fn validate_project_exists_on_server(
         Ok(_) => Ok(()),
         Err(e) if e.is_not_found() => {
             context.terminal().print_err(&format!(
-                "Project {}/{} does not exist on Burn Central.",
+                "Project {}/{} does not exist on Tracel Console.",
                 &bc_project.owner, &bc_project.name
             ));
             context
                 .terminal()
                 .print("The linked project may have been deleted or renamed on the server.");
-            context
-                .terminal()
-                .print("Run 'burn init --force' to reinitialize and link to a different project.");
+            context.terminal().print(
+                "Run 'tracel init --force' to reinitialize and link to a different project.",
+            );
             anyhow::bail!(
-                "Project {}/{} not found on Burn Central",
+                "Project {}/{} not found on Tracel Console",
                 &bc_project.owner,
                 &bc_project.name
             )
         }
         Err(e) => {
-            context
-                .terminal()
-                .print_err(&format!("Failed to verify project on Burn Central: {}", e));
+            context.terminal().print_err(&format!(
+                "Failed to verify project on Tracel Console: {}",
+                e
+            ));
             anyhow::bail!("Failed to verify project exists on server: {}", e)
         }
     }

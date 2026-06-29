@@ -11,7 +11,7 @@ pub fn handle_command(mut context: CliContext) -> anyhow::Result<()> {
         Ok(client) => client,
         Err(_) => {
             context.terminal().cancel_finalize(
-                "Failed to connect to the server. Please run 'burn login' to authenticate.",
+                "Failed to connect to the server. Please run 'tracel login' to authenticate.",
             );
             return Ok(());
         }
