@@ -1,4 +1,4 @@
-use crate::app_config::{AppConfig, Environment, ToFileSuffix};
+use crate::app_config::{AppConfig, Environment};
 use crate::tools::terminal::Terminal;
 use serde::{Deserialize, Serialize};
 use tracel_client::{Client, TracelCredentials};
@@ -90,11 +90,5 @@ impl CliContext {
 
     pub fn get_api_endpoint(&self) -> String {
         self.environment.get_url().to_string()
-    }
-
-    pub fn get_burn_dir_name(&self) -> String {
-        self.environment()
-            .file_suffix()
-            .map_or(".burn".to_string(), |suffix| format!(".burn-{}", suffix))
     }
 }

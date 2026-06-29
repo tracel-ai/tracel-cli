@@ -80,7 +80,7 @@ pub fn package_workspace(
         .as_std_path()
         .join("tracel")
         .join("package");
-    let archive_path = output_dir.join(&workspace_name);
+    let archive_path = output_dir.join(workspace_name);
 
     std::fs::create_dir_all(&output_dir)?;
 
@@ -89,7 +89,7 @@ pub fn package_workspace(
 
     // Organize files inside the archive (when uncompressed) it will be inside a directory named `{workspace_name}/` to match the standard cargo crate format.
     let uncompressed_size =
-        create_workspace_archive(&workspace_root, &files, &archive_file, &workspace_name)?;
+        create_workspace_archive(&workspace_root, &files, &archive_file, workspace_name)?;
 
     event_reporter.report_event(PackageEvent {
         message: format!(
@@ -145,9 +145,10 @@ fn list_workspace_files(workspace_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
         exclude_builder.add_line(None, ".*")?;
     }
 
-    // Add common excludes
+    // Add common excludes. `.burn/` is kept for any leftover directory from before
+    // the move to a root `tracel.toml`, which is itself excluded as project metadata.
     exclude_builder.add_line(None, "target/")?;
-    exclude_builder.add_line(None, ".burn/")?;
+    exclude_builder.add_line(None, "tracel.toml")?;
 
     let ignore_exclude = exclude_builder.build()?;
 
