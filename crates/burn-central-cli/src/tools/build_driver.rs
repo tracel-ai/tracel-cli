@@ -111,23 +111,25 @@ pub fn install_hint(target: (Os, Arch)) -> &'static str {
     }
 }
 
-/// Prepare to cross-build `target` with `driver`: set up the linker for same-OS cargo
-/// builds, or note which driver/toolchain a cross-OS build relies on.
+/// Prepare to cross-build `target` with `driver`, returning the cross-linker the caller
+/// should inject into the build command (same-OS cargo builds only), or `None` when no
+/// per-build linker is needed. Also prints which driver/toolchain a cross-OS build relies on.
 pub fn cross_preflight(
     terminal: &Terminal,
     root: &Path,
     host: (Os, Arch),
     target: (Os, Arch),
     driver: BuildDriver,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<&'static str>> {
     let triple = target_triple(target.0, target.1);
     match driver {
         BuildDriver::Cargo if host.0 == target.0 => {
-            // Same-OS cross-arch: a `[target.<triple>] linker` entry (Linux) is enough.
-            linker::ensure_linker(terminal, root, host, target)?;
+            // Same-OS cross-arch: a `target.<triple>.linker` setting (Linux) is enough.
+            let linker = linker::resolve_linker(terminal, root, host, target);
             terminal.print_warning(&format!(
                 "Cross-building {triple} with `cargo build`. It may fail at link time if the cross toolchain is missing."
             ));
+            Ok(linker)
         }
         BuildDriver::Cargo => {
             // Cross-OS with no suitable driver installed — plain cargo build won't link.
@@ -135,19 +137,21 @@ pub fn cross_preflight(
                 "No cross-build driver found for {triple}; plain `cargo build` will almost certainly fail at link — {hint}.",
                 hint = install_hint(target)
             ));
+            Ok(None)
         }
         BuildDriver::Zigbuild => {
             terminal.print(&format!(
                 "Cross-building {triple} with `cargo zigbuild` (requires Zig; macOS targets also need the Apple SDK)."
             ));
+            Ok(None)
         }
         BuildDriver::Xwin => {
             terminal.print(&format!(
                 "Cross-building {triple} with `cargo xwin build` (downloads the MSVC CRT/SDK on first use; needs LLVM/lld)."
             ));
+            Ok(None)
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]

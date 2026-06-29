@@ -168,15 +168,16 @@ fn build_binary_artifact(
             build_driver::choose(host, (os, arch), &drivers)
         };
 
-        if is_host {
+        let linker = if is_host {
             context.terminal().print_warning(&format!(
                 "Building for this machine ({triple}). It will only run on compute providers with the same OS and architecture."
             ));
+            None
         } else {
-            build_driver::cross_preflight(context.terminal(), root, host, (os, arch), driver)?;
-        }
+            build_driver::cross_preflight(context.terminal(), root, host, (os, arch), driver)?
+        };
 
-        let path = build_release_binary(context, (!is_host).then_some(triple), driver)?;
+        let path = build_release_binary(context, (!is_host).then_some(triple), driver, linker)?;
         let (checksum, size) = sha256_and_size(&path)?;
         binaries.push(PublishBinaryRequest {
             os,
@@ -199,11 +200,15 @@ fn build_release_binary(
     context: &CliContext,
     target: Option<&str>,
     driver: BuildDriver,
+    linker: Option<&str>,
 ) -> anyhow::Result<PathBuf> {
-    let cmd_label = match target {
+    let mut cmd_label = match target {
         Some(triple) => format!("{} --release --target {triple}", driver.label()),
         None => format!("{} --release", driver.label()),
     };
+    if let Some(linker) = linker {
+        cmd_label.push_str(&format!(" (linker {linker})"));
+    }
     context
         .terminal()
         .print(&format!("Building release binary ({cmd_label})..."));
@@ -215,6 +220,11 @@ fn build_release_binary(
     command.arg("--release").arg("--message-format=json");
     if let Some(triple) = target {
         command.arg("--target").arg(triple);
+        if let Some(linker) = linker {
+            command
+                .arg("--config")
+                .arg(format!("target.{triple}.linker=\"{linker}\""));
+        }
     }
     let output = command
         .stdout(Stdio::piped())

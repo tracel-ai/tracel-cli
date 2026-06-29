@@ -1,16 +1,16 @@
 //! Cross-linker helpers for binary upload.
 //!
 //! `rustup target add` installs only the prebuilt std, not a linker. For the
-//! predictable Linux same-OS cross-arch case we can write a
-//! `[target.<triple>] linker = "..."` entry into the project's `.cargo/config.toml`.
+//! predictable Linux same-OS cross-arch case we resolve a cross-linker and inject it
+//! into the single build command via cargo's `--config target.<triple>.linker` flag,
+//! leaving the project's `.cargo/config.toml` untouched.
 //! Cross-OS targets (Windows/macOS from Linux, etc.) need a whole toolchain, not just
 //! a linker entry — those are handled by a build driver (see `tools::build_driver`).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use anyhow::Context;
-use toml_edit::{DocumentMut, Item, Table, value};
+use toml_edit::DocumentMut;
 use tracel_client::request::{Arch, Os};
 
 use crate::tools::target::target_triple;
@@ -21,7 +21,7 @@ pub enum LinkerNeed {
     /// Native, a same-OS cross-arch the toolchain handles itself (macOS/Windows), or a
     /// cross-OS target (whose toolchain is supplied by the build driver, not a linker entry).
     None,
-    /// Linux same-OS cross-arch: a `[target.<triple>] linker` entry we can auto-add.
+    /// Linux same-OS cross-arch: a `target.<triple>.linker` setting we inject per-build.
     ConfigEntry {
         linker: &'static str,
         install_hint: &'static str,
@@ -100,48 +100,6 @@ pub fn linker_configured(root: &Path, triple: &str) -> bool {
     false
 }
 
-/// Add `[target.<triple>] linker = "<linker>"` to the project's cargo config,
-/// preserving existing content and comments. No-op if the entry already exists.
-pub fn add_linker_entry(root: &Path, triple: &str, linker: &str) -> anyhow::Result<()> {
-    let (path, mut doc) = match read_config(root) {
-        Some((path, content)) => {
-            let doc = content
-                .parse::<DocumentMut>()
-                .with_context(|| format!("Failed to parse {}", path.display()))?;
-            (path, doc)
-        }
-        None => (root.join(".cargo").join("config.toml"), DocumentMut::new()),
-    };
-
-    let target_existed = doc.get("target").is_some();
-    let target_tbl = doc
-        .entry("target")
-        .or_insert(Item::Table(Table::new()))
-        .as_table_mut()
-        .context("`target` is not a table in the cargo config")?;
-    // Keep only the `[target.<triple>]` sub-header when we create `target` fresh.
-    if !target_existed {
-        target_tbl.set_implicit(true);
-    }
-
-    let triple_tbl = target_tbl
-        .entry(triple)
-        .or_insert(Item::Table(Table::new()))
-        .as_table_mut()
-        .with_context(|| format!("`target.{triple}` is not a table in the cargo config"))?;
-    if !triple_tbl.contains_key("linker") {
-        triple_tbl["linker"] = value(linker);
-    }
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create {}", parent.display()))?;
-    }
-    std::fs::write(&path, doc.to_string())
-        .with_context(|| format!("Failed to write {}", path.display()))?;
-    Ok(())
-}
-
 /// Whether `bin` can be executed (used to decide whether to also print an install hint).
 pub fn linker_on_path(bin: &str) -> bool {
     Command::new(bin)
@@ -153,47 +111,35 @@ pub fn linker_on_path(bin: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Offer to write a `[target.<triple>] linker = "..."` entry for a same-OS cross-arch
-/// build that needs one (Linux), or do nothing when the toolchain handles it natively.
-pub fn ensure_linker(
+/// Resolve the cross-linker to inject for a same-OS cross-arch build that needs one
+/// (Linux), or `None` when the toolchain handles it natively or the user has already
+/// configured a linker for `target`.
+pub fn resolve_linker(
     terminal: &Terminal,
     root: &Path,
     host: (Os, Arch),
     target: (Os, Arch),
-) -> anyhow::Result<()> {
+) -> Option<&'static str> {
     let triple = target_triple(target.0, target.1);
     match linker_need(host, target) {
-        LinkerNeed::None => {}
+        LinkerNeed::None => None,
         LinkerNeed::ConfigEntry {
             linker: linker_bin,
             install_hint,
         } => {
+            // The user already set a linker for this target (cargo config or env var);
+            // respect their choice and don't override it.
             if linker_configured(root, triple) {
-                return Ok(());
+                return None;
             }
-            if cliclack::confirm(format!(
-                "Target `{triple}` needs a linker. Add `[target.{triple}] linker = \"{linker_bin}\"` to .cargo/config.toml?"
-            ))
-            .initial_value(true)
-            .interact()?
-            {
-                add_linker_entry(root, triple, linker_bin)?;
-                terminal.print_success(&format!(
-                    "Configured linker for {triple} in .cargo/config.toml."
-                ));
-                if !linker_on_path(linker_bin) {
-                    terminal.print_warning(&format!(
-                        "Linker `{linker_bin}` was not found on PATH — {install_hint}."
-                    ));
-                }
-            } else {
-                terminal.print(&format!(
-                    "Skipped. To configure it manually, add to .cargo/config.toml:\n\n[target.{triple}]\nlinker = \"{linker_bin}\"\n\nand {install_hint}."
+            if !linker_on_path(linker_bin) {
+                terminal.print_warning(&format!(
+                    "Linker `{linker_bin}` was not found on PATH — {install_hint}."
                 ));
             }
+            Some(linker_bin)
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -214,10 +160,6 @@ mod tests {
 
         fn path(&self) -> &Path {
             &self.0
-        }
-
-        fn config(&self) -> String {
-            std::fs::read_to_string(self.0.join(".cargo/config.toml")).unwrap()
         }
     }
 
@@ -263,63 +205,6 @@ mod tests {
         // Cross-OS linker setup is handled by the build driver, not a linker entry.
         assert!(matches!(linker_need(LINUX_X86, WIN_X86), LinkerNeed::None));
         assert!(matches!(linker_need(LINUX_X86, MAC_ARM), LinkerNeed::None));
-    }
-
-    #[test]
-    fn add_linker_entry_creates_config() {
-        let root = TempRoot::new("creates");
-        let triple = "aarch64-unknown-linux-gnu";
-        add_linker_entry(root.path(), triple, "aarch64-linux-gnu-gcc").unwrap();
-
-        let content = root.config();
-        let doc: DocumentMut = content.parse().unwrap();
-        assert_eq!(
-            doc["target"][triple]["linker"].as_str(),
-            Some("aarch64-linux-gnu-gcc")
-        );
-        assert!(linker_configured(root.path(), triple));
-    }
-
-    #[test]
-    fn add_linker_entry_preserves_existing_content() {
-        let root = TempRoot::new("preserves");
-        let cargo_dir = root.path().join(".cargo");
-        std::fs::create_dir_all(&cargo_dir).unwrap();
-        std::fs::write(
-            cargo_dir.join("config.toml"),
-            "# keep me\n[build]\njobs = 4\n",
-        )
-        .unwrap();
-
-        let triple = "aarch64-unknown-linux-gnu";
-        add_linker_entry(root.path(), triple, "aarch64-linux-gnu-gcc").unwrap();
-
-        let content = root.config();
-        assert!(content.contains("# keep me"), "comment dropped: {content}");
-        assert!(
-            content.contains("jobs = 4"),
-            "build table dropped: {content}"
-        );
-        let doc: DocumentMut = content.parse().unwrap();
-        assert_eq!(
-            doc["target"][triple]["linker"].as_str(),
-            Some("aarch64-linux-gnu-gcc")
-        );
-    }
-
-    #[test]
-    fn add_linker_entry_is_idempotent() {
-        let root = TempRoot::new("idempotent");
-        let triple = "aarch64-unknown-linux-gnu";
-        add_linker_entry(root.path(), triple, "first-linker").unwrap();
-        // A second call must not overwrite an existing linker entry.
-        add_linker_entry(root.path(), triple, "second-linker").unwrap();
-
-        let doc: DocumentMut = root.config().parse().unwrap();
-        assert_eq!(
-            doc["target"][triple]["linker"].as_str(),
-            Some("first-linker")
-        );
     }
 
     #[test]
