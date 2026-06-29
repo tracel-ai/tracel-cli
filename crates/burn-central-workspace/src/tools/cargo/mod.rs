@@ -7,7 +7,6 @@
 //! Definitions and functions that are not copied from Cargo do not have a link to the original source code.
 
 pub mod package;
-pub mod schemas;
 
 use std::ffi::OsString;
 

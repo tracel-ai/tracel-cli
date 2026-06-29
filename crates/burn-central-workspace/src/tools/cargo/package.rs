@@ -5,7 +5,6 @@
 //! maintaining backwards compatibility with the single-crate API.
 
 use std::{
-    collections::BTreeMap,
     fs::File,
     path::{Path, PathBuf},
     sync::Arc,
@@ -17,14 +16,11 @@ use sha2::Sha256;
 
 use crate::print_info;
 
-use super::schemas::{CrateMetadata, Dep};
-
 #[derive(Debug)]
 pub struct PackagedCrateData {
     pub name: String,
     pub path: PathBuf,
     pub checksum: String,
-    pub metadata: serde_json::Value,
     pub size: u64,
 }
 
@@ -84,15 +80,13 @@ pub fn package_workspace(
         message: "Creating compressed archive".to_string(),
     });
 
-    // The Burn Central API returns upload URLs keyed by {name}-{version}.crate
-    const WORKSPACE_VERSION: &str = "0.1.0";
-    let archive_name = format!("{}-{}.crate", workspace_name, WORKSPACE_VERSION);
+    let archive_name = format!("{}.compressed", workspace_name);
     let archive_path = artifacts_dir.join(&archive_name);
 
     std::fs::create_dir_all(artifacts_dir)?;
 
     let archive_file = File::create(&archive_path)?;
-    let package_prefix = format!("{}-{}", workspace_name, WORKSPACE_VERSION);
+    let package_prefix = format!("{}", workspace_name);
     let uncompressed_size =
         create_workspace_archive(&workspace_root, &files, &archive_file, &package_prefix)?;
 
@@ -117,32 +111,10 @@ pub fn package_workspace(
         message: "Extracting package metadata".to_string(),
     });
 
-    // let crate_metadata = build_crate_metadata(primary_package, &metadata)?;
-    let fake_metadata = CrateMetadata::new(
-        workspace_name.to_string(),
-        WORKSPACE_VERSION.to_string(),
-        Vec::new(),
-        BTreeMap::new(),
-        Vec::new(),
-        Some("Workspace package".to_string()),
-        None,
-        None,
-        None,
-        None,
-        Vec::new(),
-        Vec::new(),
-        None,
-        None,
-        None,
-        BTreeMap::new(),
-        None,
-    );
-
     let packaged_data = PackagedCrateData {
         name: archive_name,
         path: archive_path,
         checksum: checksum.clone(),
-        metadata: serde_json::to_value(&fake_metadata)?,
         size,
     };
 
@@ -251,90 +223,6 @@ fn create_workspace_archive(
     encoder.finish()?;
 
     Ok(uncompressed_size)
-}
-
-/// Builds crate metadata from cargo_metadata information.
-#[allow(unused)]
-fn build_crate_metadata(
-    package: &cargo_metadata::Package,
-    metadata: &cargo_metadata::Metadata,
-) -> anyhow::Result<CrateMetadata> {
-    // Collect all workspace dependencies
-    let mut all_deps = BTreeMap::new();
-
-    for pkg in &metadata.packages {
-        for dep in &pkg.dependencies {
-            let dep_key = format!("{}:{}", dep.name, dep.kind);
-            all_deps.entry(dep_key).or_insert_with(|| {
-                let is_local = dep.path.is_some();
-
-                Dep::new(
-                    dep.name.clone(),
-                    dep.req.to_string(),
-                    dep.features.clone(),
-                    dep.optional,
-                    dep.uses_default_features,
-                    dep.target.clone().map(|t| t.to_string()),
-                    match dep.kind {
-                        cargo_metadata::DependencyKind::Normal => super::schemas::DepKind::Normal,
-                        cargo_metadata::DependencyKind::Development => super::schemas::DepKind::Dev,
-                        cargo_metadata::DependencyKind::Build => super::schemas::DepKind::Build,
-                        cargo_metadata::DependencyKind::Unknown => super::schemas::DepKind::Normal,
-                    },
-                    if is_local {
-                        None
-                    } else {
-                        match &dep.registry {
-                            some @ Some(..) => some.clone(),
-                            None => {
-                                Some("https://github.com/rust-lang/crates.io-index".to_string())
-                            }
-                        }
-                    },
-                    None,
-                )
-            });
-        }
-    }
-
-    let deps: Vec<Dep> = all_deps.into_values().collect();
-
-    // Collect all workspace features
-    let mut all_features = BTreeMap::new();
-    for pkg in &metadata.packages {
-        for (feature_name, feature_deps) in &pkg.features {
-            all_features
-                .entry(feature_name.clone())
-                .or_insert_with(Vec::new)
-                .extend(feature_deps.clone());
-        }
-    }
-
-    // Deduplicate feature dependencies
-    for feature_deps in all_features.values_mut() {
-        feature_deps.sort();
-        feature_deps.dedup();
-    }
-
-    Ok(CrateMetadata::new(
-        package.name.to_string(),
-        package.version.to_string(),
-        deps,
-        all_features,
-        package.authors.clone(),
-        package.description.clone(),
-        package.documentation.clone(),
-        package.homepage.clone(),
-        None, // readme_file
-        package.readme.clone().map(|r| r.to_string()),
-        package.keywords.clone(),
-        package.categories.clone(),
-        package.license.clone(),
-        package.license_file.clone().map(|l| l.to_string()),
-        package.repository.clone(),
-        BTreeMap::new(), // badges
-        package.links.clone(),
-    ))
 }
 
 /// Discovers a git repository starting from the given path.
