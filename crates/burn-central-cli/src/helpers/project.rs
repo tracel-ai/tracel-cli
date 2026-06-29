@@ -1,7 +1,13 @@
 //! Project helpers for CLI operations
 
-use crate::context::CliContext;
-use burn_central_workspace::{ProjectContext, WorkspaceInfo, tools::cargo};
+use crate::{
+    context::CliContext,
+    tools::{
+        cargo::try_locate_manifest,
+        project_context::{ErrorKind, ProjectContext, ProjectContextError},
+        workspace::WorkspaceInfo,
+    },
+};
 use tracel_client::Client;
 
 /// Check if current directory contains a Rust project (has Cargo.toml)
@@ -10,7 +16,7 @@ pub fn is_cargo_workspace() -> bool {
 }
 
 pub fn find_manifest() -> anyhow::Result<std::path::PathBuf> {
-    cargo::try_locate_manifest().ok_or_else(|| {
+    try_locate_manifest().ok_or_else(|| {
         anyhow::anyhow!(
             "Could not locate Cargo.toml manifest. Please run this command inside a Burn project directory."
         )
@@ -26,12 +32,9 @@ pub fn is_burn_central_project_linked() -> bool {
     }
 }
 
-pub fn handle_project_context_error(
-    context: &CliContext,
-    e: &burn_central_workspace::ProjectContextError,
-) {
+pub fn handle_project_context_error(context: &CliContext, e: &ProjectContextError) {
     match e.kind() {
-        burn_central_workspace::ErrorKind::ManifestNotFound => {
+        ErrorKind::ManifestNotFound => {
             context
                 .terminal()
                 .print_err("No Cargo.toml found in current directory.");
@@ -39,7 +42,7 @@ pub fn handle_project_context_error(
                 .terminal()
                 .print("Navigate to a Rust project directory first.");
         }
-        burn_central_workspace::ErrorKind::ProjectNotLinked => {
+        ErrorKind::ProjectNotLinked => {
             context
                 .terminal()
                 .print_err("This Rust project is not linked to Burn Central.");
@@ -47,17 +50,17 @@ pub fn handle_project_context_error(
                 .terminal()
                 .print("Run 'burn init' to initialize a Burn Central project.");
         }
-        burn_central_workspace::ErrorKind::Parsing => {
+        ErrorKind::Parsing => {
             context.terminal().print_err(&e.to_string());
             context.terminal().print("Ensure your Cargo.toml is valid.");
         }
-        burn_central_workspace::ErrorKind::ProjectInitialization => {
+        ErrorKind::ProjectInitialization => {
             context.terminal().print_err(&e.to_string());
             context
                 .terminal()
                 .print("Try re-initializing the Burn Central project with 'burn init --force'.");
         }
-        burn_central_workspace::ErrorKind::Unexpected => {
+        ErrorKind::Unexpected => {
             context.terminal().print_err(&e.to_string());
             context
                 .terminal()

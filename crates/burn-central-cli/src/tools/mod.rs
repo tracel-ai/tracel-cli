@@ -1,4 +1,11 @@
-pub(crate) mod build_driver;
-pub(crate) mod linker;
-pub(crate) mod target;
-pub(crate) mod terminal;
+pub mod build_driver;
+pub mod cargo;
+pub mod event;
+pub mod git;
+pub mod linker;
+pub mod packager;
+pub mod project_context;
+pub mod target;
+pub mod terminal;
+pub mod tracel_config;
+pub mod workspace;

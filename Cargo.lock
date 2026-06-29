@@ -218,31 +218,12 @@ name = "burn-central-cli"
 version = "0.5.0"
 dependencies = [
  "anyhow",
- "burn-central-workspace",
+ "cargo_metadata",
  "clap",
  "cliclack",
  "colored",
  "console 0.15.11",
  "directories",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "toml_edit",
- "tracel-client",
- "url",
-]
-
-[[package]]
-name = "burn-central-workspace"
-version = "0.5.0"
-dependencies = [
- "anyhow",
- "cargo_metadata",
- "chrono",
- "colored",
- "derive-new",
- "env_logger",
  "flate2",
  "gix",
  "ignore",
@@ -252,7 +233,10 @@ dependencies = [
  "tar",
  "thiserror 2.0.18",
  "toml 0.8.23",
+ "toml_edit",
+ "tracel-client",
  "tracing",
+ "url",
  "walkdir",
 ]
 
@@ -358,10 +342,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
- "js-sys",
  "num-traits",
  "serde",
- "wasm-bindgen",
  "windows-link",
 ]
 
@@ -807,17 +789,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 dependencies = [
  "serde_core",
-]
-
-[[package]]
-name = "derive-new"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cdc8d50f426189eef89dac62fabfa0abb27d5cc008f25bf4156a0203325becc"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]

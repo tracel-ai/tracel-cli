@@ -1,6 +1,6 @@
-use burn_central_workspace::ProjectContext;
-
-use crate::{context::CliContext, helpers::require_linked_project};
+use crate::{
+    context::CliContext, helpers::require_linked_project, tools::project_context::ProjectContext,
+};
 
 pub fn handle_command(context: CliContext) -> anyhow::Result<()> {
     let project = require_linked_project(&context)?;

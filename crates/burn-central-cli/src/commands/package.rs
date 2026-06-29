@@ -3,10 +3,6 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use anyhow::Context;
-use burn_central_workspace::ProjectContext;
-use burn_central_workspace::tools::cargo;
-use burn_central_workspace::tools::cargo::package::{PackageEvent, package_workspace};
-use burn_central_workspace::tools::git;
 use clap::Args;
 use sha2::{Digest, Sha256};
 use tracel_client::Client;
@@ -20,7 +16,9 @@ use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::helpers::{require_linked_project, validate_project_exists_on_server};
 use crate::tools::build_driver::{self, BuildDriver};
-use crate::tools::target;
+use crate::tools::packager::{PackageEvent, package_workspace};
+use crate::tools::project_context::ProjectContext;
+use crate::tools::{cargo, git, target};
 
 #[derive(Args, Debug)]
 pub struct PackageArgs {

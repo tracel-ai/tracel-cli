@@ -15,6 +15,7 @@ use sha2::Digest as _;
 use sha2::Sha256;
 
 use crate::print_info;
+use crate::tools::event::Reporter;
 
 #[derive(Debug)]
 pub struct ArchiveMetadata {
@@ -28,7 +29,7 @@ pub struct PackageEvent {
     pub message: String,
 }
 
-type PackageEventReporter = dyn crate::event::Reporter<PackageEvent>;
+type PackageEventReporter = dyn Reporter<PackageEvent>;
 
 /// Package the entire workspace as a single compressed archive with gitignore applied.
 ///

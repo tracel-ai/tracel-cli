@@ -1,9 +1,10 @@
 use crate::context::CliContext;
 use crate::helpers::{can_initialize_project, require_cargo_workspace};
+use crate::tools::git;
+use crate::tools::project_context::ProjectContext;
 use crate::tools::terminal::Terminal;
+use crate::tools::tracel_config::TracelProject;
 use anyhow::Context;
-use burn_central_workspace::tools::git;
-use burn_central_workspace::{ProjectContext, TracelProject};
 use clap::Args;
 use tracel_client::Client;
 use tracel_client::response::ProjectResponse;

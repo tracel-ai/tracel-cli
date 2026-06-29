@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use anyhow::Context;
 use gix::Repository;
 use gix::revision::walk::Sorting;
