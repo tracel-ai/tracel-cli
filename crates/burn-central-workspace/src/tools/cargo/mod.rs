@@ -11,10 +11,6 @@ pub mod schemas;
 
 use std::ffi::OsString;
 
-pub fn cargo_binary() -> OsString {
-    std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"))
-}
-
 pub fn try_locate_manifest() -> Option<std::path::PathBuf> {
     let output = command()
         .arg("locate-project")
@@ -41,6 +37,7 @@ pub fn try_locate_manifest() -> Option<std::path::PathBuf> {
     Some(manifest_path)
 }
 
+/// Retrieve the command to run cargo as define by the CARGO environment variable or default to "cargo"
 pub fn command() -> std::process::Command {
-    std::process::Command::new(cargo_binary())
+    std::process::Command::new(std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")))
 }
