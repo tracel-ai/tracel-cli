@@ -1,15 +1,15 @@
 use std::path::{Path, PathBuf};
 
-use crate::entity::projects::burn_dir::{BurnDir, project::BurnCentralProject};
+use crate::entity::projects::tracel_project::TracelProject;
 
-pub mod burn_dir;
+pub mod tracel_project;
 
 #[derive(Debug)]
 pub enum ErrorKind {
     ManifestNotFound,
     Parsing,
-    BurnDirInitialization,
-    BurnDirNotInitialized,
+    ProjectInitialization,
+    ProjectNotLinked,
     Unexpected,
 }
 
@@ -34,8 +34,8 @@ impl ProjectContextError {
         &self.kind
     }
 
-    pub fn is_burn_dir_not_initialized(&self) -> bool {
-        matches!(self.kind, ErrorKind::BurnDirNotInitialized)
+    pub fn is_project_not_linked(&self) -> bool {
+        matches!(self.kind, ErrorKind::ProjectNotLinked)
     }
 }
 
@@ -48,8 +48,7 @@ impl std::fmt::Display for ProjectContextError {
 pub struct ProjectContext {
     pub workspace_info: WorkspaceInfo,
     pub build_profile: String,
-    pub burn_dir: BurnDir,
-    pub project: BurnCentralProject,
+    pub project: TracelProject,
 }
 
 pub struct WorkspaceInfo {
@@ -142,33 +141,21 @@ impl ProjectContext {
         WorkspaceInfo::load_from_path(manifest_path)
     }
 
-    pub fn load(manifest_path: &Path, burn_dir_name: &str) -> Result<Self, ProjectContextError> {
+    pub fn load(manifest_path: &Path) -> Result<Self, ProjectContextError> {
         let workspace_info = WorkspaceInfo::load_from_path(manifest_path)?;
-        let burn_dir_root = workspace_info
-            .workspace_root
-            .join(PathBuf::from(burn_dir_name));
-        let burn_dir = BurnDir::new(burn_dir_root);
-        burn_dir.init().map_err(|e| {
-            ProjectContextError::new(
-                "Failed to initialize Burn directory".to_string(),
-                ErrorKind::BurnDirInitialization,
-                Some(e.into()),
-            )
-        })?;
 
-        let project = burn_dir
-            .load_project()
+        let project = TracelProject::load(&workspace_info.workspace_root)
             .map_err(|e| {
                 ProjectContextError::new(
-                    "Failed to load project metadata from Burn directory".to_string(),
-                    ErrorKind::BurnDirNotInitialized,
+                    "Failed to read tracel.toml".to_string(),
+                    ErrorKind::Parsing,
                     Some(e.into()),
                 )
             })?
             .ok_or_else(|| {
                 ProjectContextError::new(
                     "No Burn Central project linked to this repository".to_string(),
-                    ErrorKind::BurnDirNotInitialized,
+                    ErrorKind::ProjectNotLinked,
                     None,
                 )
             })?;
@@ -176,34 +163,17 @@ impl ProjectContext {
         Ok(Self {
             workspace_info,
             build_profile: "release".to_string(),
-            burn_dir,
             project,
         })
     }
 
-    pub fn init(
-        project: BurnCentralProject,
-        manifest_path: &Path,
-        burn_dir_name: &str,
-    ) -> Result<Self, ProjectContextError> {
+    pub fn init(project: TracelProject, manifest_path: &Path) -> Result<Self, ProjectContextError> {
         let workspace_info = WorkspaceInfo::load_from_path(manifest_path)?;
 
-        let burn_dir_root = workspace_info
-            .workspace_root
-            .join(PathBuf::from(burn_dir_name));
-        let burn_dir = BurnDir::new(burn_dir_root);
-        burn_dir.init().map_err(|e| {
+        project.save(&workspace_info.workspace_root).map_err(|e| {
             ProjectContextError::new(
-                "Failed to initialize Burn directory".to_string(),
-                ErrorKind::BurnDirInitialization,
-                Some(e.into()),
-            )
-        })?;
-
-        burn_dir.save_project(&project).map_err(|e| {
-            ProjectContextError::new(
-                "Failed to save project metadata to Burn directory".to_string(),
-                ErrorKind::BurnDirInitialization,
+                "Failed to write tracel.toml".to_string(),
+                ErrorKind::ProjectInitialization,
                 Some(e.into()),
             )
         })?;
@@ -211,22 +181,16 @@ impl ProjectContext {
         Ok(Self {
             workspace_info,
             build_profile: "release".to_string(),
-            burn_dir,
-            project: project.clone(),
+            project,
         })
     }
 
-    pub fn unlink(manifest_path: &Path, burn_dir_name: &str) -> Result<(), ProjectContextError> {
+    pub fn unlink(manifest_path: &Path) -> Result<(), ProjectContextError> {
         let workspace_info = WorkspaceInfo::load_from_path(manifest_path)?;
 
-        let burn_dir_root = workspace_info
-            .workspace_root
-            .join(PathBuf::from(burn_dir_name));
-        let burn_dir = BurnDir::new(burn_dir_root);
-
-        std::fs::remove_dir_all(burn_dir.root()).map_err(|e| {
+        TracelProject::remove(&workspace_info.workspace_root).map_err(|e| {
             ProjectContextError::new(
-                "Failed to remove Burn directory".to_string(),
+                "Failed to remove tracel.toml".to_string(),
                 ErrorKind::Unexpected,
                 Some(e.into()),
             )
@@ -235,16 +199,12 @@ impl ProjectContext {
         Ok(())
     }
 
-    pub fn get_project(&self) -> &BurnCentralProject {
+    pub fn get_project(&self) -> &TracelProject {
         &self.project
     }
 
     pub fn get_workspace_name(&self) -> &str {
         &self.workspace_info.workspace_name
-    }
-
-    pub fn get_workspace_path(&self) -> &Path {
-        &self.workspace_info.workspace_root
     }
 
     pub fn get_workspace_root(&self) -> &Path {
@@ -253,34 +213,6 @@ impl ProjectContext {
 
     pub fn get_manifest_path(&self) -> PathBuf {
         self.workspace_info.get_manifest_path()
-    }
-
-    pub fn burn_dir(&self) -> &BurnDir {
-        &self.burn_dir
-    }
-
-    pub fn cwd(&self) -> &Path {
-        &self.workspace_info.workspace_root
-    }
-
-    pub fn get_workspace_packages(&self) -> Vec<&cargo_metadata::Package> {
-        self.workspace_info
-            .metadata
-            .packages
-            .iter()
-            .filter(|pkg| {
-                self.workspace_info
-                    .metadata
-                    .workspace_members
-                    .contains(&pkg.id)
-            })
-            .collect()
-    }
-
-    pub fn find_package_by_name(&self, name: &str) -> Option<&cargo_metadata::Package> {
-        self.get_workspace_packages()
-            .into_iter()
-            .find(|pkg| pkg.name.as_str() == name)
     }
 }
 

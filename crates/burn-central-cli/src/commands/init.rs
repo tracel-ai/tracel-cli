@@ -3,7 +3,7 @@ use crate::helpers::{can_initialize_project, require_cargo_workspace};
 use crate::tools::terminal::Terminal;
 use anyhow::Context;
 use burn_central_workspace::tools::git;
-use burn_central_workspace::{BurnCentralProject, ProjectContext};
+use burn_central_workspace::{ProjectContext, TracelProject};
 use clap::Args;
 use tracel_client::Client;
 use tracel_client::response::ProjectResponse;
@@ -62,12 +62,7 @@ pub fn prompt_init(context: &CliContext, client: &Client) -> anyhow::Result<()> 
         }
     };
 
-    ProjectContext::init(
-        project_info,
-        &workspace_info.get_manifest_path(),
-        &context.get_burn_dir_name(),
-    )
-    .map_err(|e| {
+    ProjectContext::init(project_info, &workspace_info.get_manifest_path()).map_err(|e| {
         terminal.cancel_finalize(&format!("Failed to initialize project metadata: {}", e));
         e
     })?;
@@ -138,7 +133,7 @@ pub fn prompt_project_name(workspace_name: &str) -> anyhow::Result<String> {
     Ok(input)
 }
 
-fn handle_existing_project(project: &ProjectResponse) -> anyhow::Result<BurnCentralProject> {
+fn handle_existing_project(project: &ProjectResponse) -> anyhow::Result<TracelProject> {
     let confirmed = cliclack::confirm(format!(
         "Project \"{}\" already exists under owner \"{}\". Do you want to link it?",
         project.project_name, project.namespace_name
@@ -146,7 +141,7 @@ fn handle_existing_project(project: &ProjectResponse) -> anyhow::Result<BurnCent
     .interact()?;
 
     if confirmed {
-        Ok(BurnCentralProject {
+        Ok(TracelProject {
             owner: project.namespace_name.clone(),
             name: project.project_name.clone(),
         })
@@ -166,7 +161,7 @@ fn create_new_project(
     client: &Client,
     project_kind: ProjectKind,
     name: &str,
-) -> anyhow::Result<BurnCentralProject> {
+) -> anyhow::Result<TracelProject> {
     let description = cliclack::input("Enter the project description (default empty)")
         .required(false)
         .interact::<String>()?;
@@ -184,7 +179,7 @@ fn create_new_project(
     };
 
     match created_project_path {
-        Ok(project) => Ok(BurnCentralProject {
+        Ok(project) => Ok(TracelProject {
             owner: project.namespace_name,
             name: project.project_name,
         }),

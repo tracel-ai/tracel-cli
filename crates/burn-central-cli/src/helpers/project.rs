@@ -18,11 +18,11 @@ pub fn find_manifest() -> anyhow::Result<std::path::PathBuf> {
 }
 
 /// Check if current directory has a linked Burn Central project
-pub fn is_burn_central_project_linked(context: &CliContext) -> bool {
+pub fn is_burn_central_project_linked() -> bool {
     let manifest_path = find_manifest();
     match manifest_path {
         Err(_) => false,
-        Ok(p) => ProjectContext::load(&p, &context.get_burn_dir_name()).is_ok(),
+        Ok(p) => ProjectContext::load(&p).is_ok(),
     }
 }
 
@@ -39,7 +39,7 @@ pub fn handle_project_context_error(
                 .terminal()
                 .print("Navigate to a Rust project directory first.");
         }
-        burn_central_workspace::ErrorKind::BurnDirNotInitialized => {
+        burn_central_workspace::ErrorKind::ProjectNotLinked => {
             context
                 .terminal()
                 .print_err("This Rust project is not linked to Burn Central.");
@@ -51,7 +51,7 @@ pub fn handle_project_context_error(
             context.terminal().print_err(&e.to_string());
             context.terminal().print("Ensure your Cargo.toml is valid.");
         }
-        burn_central_workspace::ErrorKind::BurnDirInitialization => {
+        burn_central_workspace::ErrorKind::ProjectInitialization => {
             context.terminal().print_err(&e.to_string());
             context
                 .terminal()
@@ -69,7 +69,7 @@ pub fn handle_project_context_error(
 /// Require a linked Burn Central project, showing helpful errors if not found
 pub fn require_linked_project(context: &CliContext) -> anyhow::Result<ProjectContext> {
     let manifest_path = find_manifest()?;
-    match ProjectContext::load(&manifest_path, &context.get_burn_dir_name()) {
+    match ProjectContext::load(&manifest_path) {
         Ok(project) => Ok(project),
         Err(e) => {
             handle_project_context_error(context, &e);
@@ -102,7 +102,7 @@ pub fn can_initialize_project(context: &CliContext, force: bool) -> anyhow::Resu
         return Ok(false);
     }
 
-    if is_burn_central_project_linked(context) {
+    if is_burn_central_project_linked() {
         if force {
             return Ok(true);
         } else {
