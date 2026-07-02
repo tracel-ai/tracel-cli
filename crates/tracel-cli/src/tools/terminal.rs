@@ -9,14 +9,10 @@ pub const BURN_ORANGE: CustomColor = CustomColor {
     b: 0,
 };
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Terminal {}
 
 impl Terminal {
-    pub fn new() -> Self {
-        Self {}
-    }
-
     pub fn print_warning(&self, message: &str) {
         cliclack::log::warning(message).expect("To be able to print remark");
     }

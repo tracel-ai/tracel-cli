@@ -51,7 +51,7 @@ pub fn cli_main() {
         Environment::Production
     };
 
-    let terminal = Terminal::new();
+    let terminal = Terminal::default();
 
     if args.dev {
         terminal
