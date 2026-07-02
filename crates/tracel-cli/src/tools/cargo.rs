@@ -1,0 +1,32 @@
+use std::ffi::OsString;
+
+pub fn try_locate_manifest() -> Option<std::path::PathBuf> {
+    let output = command()
+        .arg("locate-project")
+        .arg("--workspace")
+        .output()
+        .expect("Failed to run cargo locate-project");
+    if !output.status.success() {
+        return None;
+    }
+
+    let output_str = String::from_utf8(output.stdout).expect("Failed to parse output");
+    if output_str.trim().is_empty() {
+        return None;
+    }
+    let parsed_output: serde_json::Value =
+        serde_json::from_str(&output_str).expect("Failed to parse output");
+
+    let manifest_path_str = parsed_output["root"]
+        .as_str()
+        .expect("Failed to parse output")
+        .to_owned();
+
+    let manifest_path = std::path::PathBuf::from(manifest_path_str);
+    Some(manifest_path)
+}
+
+/// Retrieve the command to run cargo as define by the CARGO environment variable or default to "cargo"
+pub fn command() -> std::process::Command {
+    std::process::Command::new(std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")))
+}

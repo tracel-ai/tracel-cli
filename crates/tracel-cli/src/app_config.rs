@@ -1,0 +1,90 @@
+use directories::ProjectDirs;
+
+use std::{fs, io, path::PathBuf};
+
+use crate::context::Credentials;
+
+pub use tracel_client::Env as Environment;
+
+pub trait ToFileSuffix {
+    fn file_suffix(&self) -> Option<String>;
+}
+
+impl ToFileSuffix for Environment {
+    fn file_suffix(&self) -> Option<String> {
+        match self {
+            Environment::Production => None,
+            Environment::Staging(version) => Some(format!("staging{}", version)),
+            Environment::Development => Some("dev".to_string()),
+        }
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum ConfigError {
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error(transparent)]
+    Serde(#[from] serde_json::Error),
+    #[error("Missing configuration directory")]
+    MissingDirectory,
+}
+
+pub struct AppConfig {
+    base_dir: PathBuf,
+    environment: Environment,
+}
+
+impl AppConfig {
+    pub fn new(environment: Environment) -> Result<Self, ConfigError> {
+        let proj_dirs =
+            ProjectDirs::from("ai", "tracel", "console").ok_or(ConfigError::MissingDirectory)?;
+
+        let config_dir = proj_dirs.config_dir().to_path_buf();
+        fs::create_dir_all(&config_dir)?; // Ensure it exists
+
+        Ok(Self {
+            base_dir: config_dir,
+            environment,
+        })
+    }
+
+    fn credentials_path(&self) -> PathBuf {
+        let filename = self
+            .environment
+            .file_suffix()
+            .map_or("credentials.json".to_string(), |suffix| {
+                format!("credentials-{}.json", suffix)
+            });
+        self.base_dir.join(filename)
+    }
+
+    pub fn save_credentials(&self, creds: &Credentials) -> Result<(), ConfigError> {
+        let json = serde_json::to_string_pretty(creds)?;
+        fs::write(self.credentials_path(), json)?;
+        Ok(())
+    }
+
+    pub fn load_credentials(&self) -> Result<Option<Credentials>, ConfigError> {
+        let path = self.credentials_path();
+        if path.exists() {
+            let contents = fs::read_to_string(path)?;
+            let creds = serde_json::from_str(&contents)?;
+            Ok(Some(creds))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+/// Render the value the SDK expects in the `TRACEL_ENV` environment variable.
+///
+/// The SDK parses this string with an explicit match (see `discover_env` in the
+/// `tracel-core` cloud backend). This need to match.
+pub fn tracel_env_value(env: &Environment) -> String {
+    match env {
+        Environment::Production => "Production".to_string(),
+        Environment::Development => "Development".to_string(),
+        Environment::Staging(version) => format!("Staging({version})"),
+    }
+}
