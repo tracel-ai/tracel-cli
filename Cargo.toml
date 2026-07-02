@@ -45,7 +45,7 @@ strum = {version = "0.27.2", features = ["derive"]}
 
 
 ## External Crate
-tracel-client = "0.8.0"
+tracel-client = "0.8.1"
 # tracel-client  = { path = "../client/tracel-client" }
 
 ## Crate
