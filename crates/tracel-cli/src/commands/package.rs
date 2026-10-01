@@ -41,7 +41,7 @@ struct PreparedArtifact {
     uploads: Vec<(String, PathBuf)>,
 }
 
-pub(crate) fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<()> {
+pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<()> {
     context.terminal().command_title("Package project");
 
     // 0. Ensure we have auth and a linked project that exists on the server.

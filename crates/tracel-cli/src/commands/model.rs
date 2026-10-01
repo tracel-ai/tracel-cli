@@ -45,7 +45,7 @@ pub struct UploadModelArgs {
     pub description: Option<String>,
 }
 
-pub(crate) fn handle_command(args: ModelArgs, context: CliContext) -> anyhow::Result<()> {
+pub fn handle_command(args: ModelArgs, context: CliContext) -> anyhow::Result<()> {
     match args.command {
         ModelCommands::Upload(upload_args) => upload_model_version(upload_args, context),
     }
