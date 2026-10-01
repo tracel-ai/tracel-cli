@@ -48,8 +48,7 @@ strum = { version = "0.27.2", features = ["derive"] }
 
 
 ## External Crate
-tracel-client = "0.12.0"
-# tracel-client  = { path = "../client/tracel-client" }
+tracel-client = "0.19.0"
 
 ## Crate
 tracel-cli = { version = "0.5.0", path = "crates/tracel-cli" }
@@ -58,3 +57,6 @@ tracel-cli = { version = "0.5.0", path = "crates/tracel-cli" }
 tracel-xtask = { version = "=5.0.0"  }
 [profile.dev]
 debug = 0 # Speed up compilation time and not necessary.
+
+[patch.crates-io]
+tracel-client = { path = "../burn-central-client/tracel-client" }
