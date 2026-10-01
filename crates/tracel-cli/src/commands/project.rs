@@ -2,17 +2,15 @@ use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::helpers::require_linked_project;
 
-pub fn handle_command(mut context: CliContext) -> anyhow::Result<()> {
+pub fn handle_command(context: CliContext) -> anyhow::Result<()> {
     context.terminal().command_title("Project Information");
 
     let project = require_linked_project(&context)?;
 
-    let client = match get_client_and_login_if_needed(&mut context) {
+    let client = match get_client_and_login_if_needed(&context) {
         Ok(client) => client,
-        Err(_) => {
-            context.terminal().cancel_finalize(
-                "Failed to connect to the server. Please run 'tracel login' to authenticate.",
-            );
+        Err(e) => {
+            context.terminal().cancel_finalize(&format!("{e}"));
             return Ok(());
         }
     };

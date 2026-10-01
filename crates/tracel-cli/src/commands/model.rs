@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
-use tracel_client::request::{ModelFileSpecRequest, RequestModelVersionUploadRequest};
+use tracel_client::console::model::request::{
+    ModelFileSpecRequest, RequestModelVersionUploadRequest,
+};
 
 use crate::context::CliContext;
 use crate::helpers::{
@@ -49,14 +51,14 @@ pub(crate) fn handle_command(args: ModelArgs, context: CliContext) -> anyhow::Re
     }
 }
 
-fn upload_model_version(args: UploadModelArgs, mut context: CliContext) -> anyhow::Result<()> {
+fn upload_model_version(args: UploadModelArgs, context: CliContext) -> anyhow::Result<()> {
     if args.description.is_some() && args.auto_create != Some(true) {
         anyhow::bail!("--description can only be used together with --auto-create true.");
     }
 
     context.terminal().command_title("Model upload");
 
-    let client = crate::commands::login::get_client_and_login_if_needed(&mut context)?;
+    let client = crate::commands::login::get_client_and_login_if_needed(&context)?;
     let (namespace, project) = resolve_namespace_project(&context, args.namespace, args.project)?;
 
     context
@@ -103,6 +105,7 @@ fn upload_model_version(args: UploadModelArgs, mut context: CliContext) -> anyho
                 checksum: f.checksum,
             })
             .collect(),
+        metadata: None,
     };
     let upload = client
         .request_model_version_upload(&namespace, &project, &args.model_name, upload_request)

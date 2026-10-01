@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use toml_edit::DocumentMut;
-use tracel_client::request::{Arch, Os};
+use tracel_client::console::project::request::{Arch, Os};
 
 use crate::tools::target::target_triple;
 use crate::tools::terminal::Terminal;

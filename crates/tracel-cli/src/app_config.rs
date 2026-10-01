@@ -2,9 +2,7 @@ use directories::ProjectDirs;
 
 use std::{fs, io, path::PathBuf};
 
-use crate::context::Credentials;
-
-pub use tracel_client::Env as Environment;
+pub use tracel_client::console::Env as Environment;
 
 pub trait ToFileSuffix {
     fn file_suffix(&self) -> Option<String>;
@@ -24,8 +22,6 @@ impl ToFileSuffix for Environment {
 pub enum ConfigError {
     #[error(transparent)]
     Io(#[from] io::Error),
-    #[error(transparent)]
-    Serde(#[from] serde_json::Error),
     #[error("Missing configuration directory")]
     MissingDirectory,
 }
@@ -40,7 +36,6 @@ impl AppConfig {
         let proj_dirs = ProjectDirs::from("", "", "tracel").ok_or(ConfigError::MissingDirectory)?;
 
         let config_dir = proj_dirs.config_dir().to_path_buf();
-        fs::create_dir_all(&config_dir)?; // Ensure it exists
 
         Ok(Self {
             base_dir: config_dir,
@@ -58,20 +53,11 @@ impl AppConfig {
         self.base_dir.join(filename)
     }
 
-    pub fn save_credentials(&self, creds: &Credentials) -> Result<(), ConfigError> {
-        let json = serde_json::to_string_pretty(creds)?;
-        fs::write(self.credentials_path(), json)?;
-        Ok(())
-    }
-
-    pub fn load_credentials(&self) -> Result<Option<Credentials>, ConfigError> {
-        let path = self.credentials_path();
-        if path.exists() {
-            let contents = fs::read_to_string(path)?;
-            let creds = serde_json::from_str(&contents)?;
-            Ok(Some(creds))
-        } else {
-            Ok(None)
+    /// Deletes the API key earlier versions of the CLI stored, if any.
+    pub fn delete_legacy_credentials(&self) -> Result<(), ConfigError> {
+        match fs::remove_file(self.credentials_path()) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
         }
     }
 }

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use tracel_client::response::{PresignedModelFileUploadUrlsResponse, PresignedUploadUrlResponse};
+use tracel_client::console::artifact::response::PresignedUploadUrlResponse;
+use tracel_client::console::model::response::PresignedModelFileUploadUrlsResponse;
 
 #[derive(Clone, Debug)]
 pub struct PartUploadTask {
@@ -94,7 +95,7 @@ pub fn build_part_tasks(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tracel_client::response::MultipartUploadResponse;
+    use tracel_client::console::artifact::response::MultipartUploadResponse;
 
     #[test]
     fn given_multi_part_file_when_build_part_tasks_then_computes_sequential_offsets() {

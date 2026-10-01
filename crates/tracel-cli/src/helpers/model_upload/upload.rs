@@ -14,7 +14,7 @@ pub trait PartUploader: Send + Sync {
     fn upload(&self, url: &str, bytes: Vec<u8>) -> Result<(), ClientError>;
 }
 
-impl PartUploader for tracel_client::Client {
+impl PartUploader for tracel_client::console::Client {
     fn upload(&self, url: &str, bytes: Vec<u8>) -> Result<(), ClientError> {
         self.upload_bytes_to_url(url, bytes)
     }

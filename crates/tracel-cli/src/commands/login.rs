@@ -1,19 +1,12 @@
-use anyhow::Context;
-use clap::Args;
-use tracel_client::Client;
+use tracel_client::console::{Client, TracelCredentials};
+use url::Url;
 
 use crate::{
-    app_config::Environment,
-    context::{CliContext, ClientCreationError, Credentials},
+    app_config::{AppConfig, Environment},
+    context::{CliContext, ClientCreationError},
 };
 
-#[derive(Args, Debug)]
-pub struct LoginArgs {
-    #[arg(long)]
-    pub api_key: Option<String>,
-}
-
-pub fn get_client_and_login_if_needed(context: &mut CliContext) -> anyhow::Result<Client> {
+pub fn get_client_and_login_if_needed(context: &CliContext) -> anyhow::Result<Client> {
     const MAX_RETRIES: u32 = 3;
     let mut attempts = 0;
 
@@ -33,25 +26,19 @@ pub fn get_client_and_login_if_needed(context: &mut CliContext) -> anyhow::Resul
                         if attempts > MAX_RETRIES {
                             return Err(anyhow::anyhow!("Maximum login attempts exceeded"));
                         }
-                        let env_msg = match context.environment() {
-                            Environment::Development => " (development environment)",
-                            Environment::Staging(version) => {
-                                &format!(" (staging environment v{})", version)
-                            }
-                            Environment::Production => "",
-                        };
+                        let env_msg = environment_suffix(&context.environment());
+                        if !context.terminal().is_interactive() {
+                            anyhow::bail!(
+                                "Not logged in{}. Run 'tracel login' or set TRACEL_API_KEY.",
+                                env_msg
+                            );
+                        }
                         context.terminal().print_err(&format!(
-                            "Failed to login{}. Please try again. Press Esc or Ctrl+C to exit.",
+                            "Not logged in{}. Log in below, or press Ctrl+C to exit.",
                             env_msg
                         ));
 
-                        let api_key = prompt_login(context)?;
-
-                        context.set_credentials(Credentials { api_key });
-
-                        context
-                            .create_client()
-                            .context("Failed to authenticate with the server")?;
+                        log_in(context)?;
                     }
                     ClientCreationError::ServerConnectionError(msg) => {
                         if attempts > MAX_RETRIES {
@@ -64,73 +51,70 @@ pub fn get_client_and_login_if_needed(context: &mut CliContext) -> anyhow::Resul
                             "Failed to connect to the server: {msg}. Retrying..."
                         ));
                     }
+                    err => return Err(err.into()),
                 }
             }
         }
     }
 }
 
-pub fn prompt_login(context: &mut CliContext) -> anyhow::Result<String> {
-    let env_msg = match context.environment() {
-        Environment::Development => " for the development environment",
-        Environment::Staging(version) => &format!(" for the staging environment v{}", version),
-        Environment::Production => "",
-    };
-
-    context.terminal().input_password(&format!(
-        "Enter your API key{} found on {} below.",
-        env_msg,
-        context
-            .terminal()
-            .format_url(&context.get_frontend_endpoint().join("/settings/api-keys")?),
-    ))
+pub fn environment_suffix(environment: &Environment) -> String {
+    match environment {
+        Environment::Development => " (development environment)".to_string(),
+        Environment::Staging(version) => format!(" (staging environment v{})", version),
+        Environment::Production => String::new(),
+    }
 }
 
-pub fn handle_command(args: LoginArgs, mut context: CliContext) -> anyhow::Result<()> {
-    let api_key = match args.api_key {
-        Some(api_key) => api_key,
-        None => {
-            let env_msg = match context.environment() {
-                Environment::Development => " (Development)",
-                Environment::Staging(_) => " (Staging)",
-                Environment::Production => "",
-            };
-            context
-                .terminal()
-                .command_title(&format!("Credential initialization{}", env_msg));
-            prompt_login(&mut context)?
-        }
-    };
+fn log_in(context: &CliContext) -> anyhow::Result<()> {
+    let terminal = context.terminal();
+    let device_auth = context.device_auth();
 
-    context.set_credentials(Credentials { api_key });
+    let authorization = device_auth.start()?;
+    terminal.print(&format!(
+        "Open {} and check that it shows the code {}.",
+        terminal.format_url(&Url::parse(&authorization.verification_uri_complete)?),
+        console::style(&authorization.user_code).bold()
+    ));
 
-    let mut client = context.create_client();
+    let spinner = terminal.spinner();
+    spinner.start("Waiting for approval... Press Ctrl+C to cancel.");
+    let issued = device_auth
+        .wait_for_approval(&authorization)
+        .inspect_err(|_| spinner.error("Login failed."))?;
+    spinner.stop("Login approved.");
 
-    while client.is_err() {
-        context
-            .terminal()
-            .print_err("Invalid credentials. Please try again.");
-        let api_key = prompt_login(&mut context)?;
-        context.set_credentials(Credentials { api_key });
-        client = context.create_client();
-    }
+    context.app_session()?.sign_in(issued)?;
 
-    let user = client.unwrap().get_current_user();
-    if let Ok(user) = user {
-        let env_msg = match context.environment() {
-            Environment::Development => " to the development environment",
-            Environment::Staging(_) => " to the staging environment",
-            Environment::Production => "",
-        };
-        context.terminal().finalize(&format!(
-            "Successfully logged in{}! Welcome {}.",
-            env_msg, user.username
+    let deleted = AppConfig::new(context.environment())
+        .and_then(|app_config| app_config.delete_legacy_credentials());
+    if let Err(e) = deleted {
+        terminal.print_warning(&format!(
+            "Failed to delete the API key stored by an earlier version of the CLI: {e}"
         ));
-    } else {
-        context
-            .terminal()
-            .cancel_finalize("Login failed, invalid credentials!");
     }
+
+    Ok(())
+}
+
+pub fn handle_command(context: CliContext) -> anyhow::Result<()> {
+    context.terminal().command_title("Login");
+
+    log_in(&context)?;
+
+    let credentials = TracelCredentials::app_session(context.app_session()?);
+    let client = Client::connect(context.environment(), &credentials)?;
+
+    if TracelCredentials::from_env().is_ok() {
+        context.terminal().print_warning(
+            "TRACEL_API_KEY is set, so other commands use it instead of this login.",
+        );
+    }
+    context.terminal().finalize(&format!(
+        "Logged in as {}{}.",
+        client.user().username,
+        environment_suffix(&context.environment())
+    ));
 
     Ok(())
 }

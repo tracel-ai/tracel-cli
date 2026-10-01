@@ -1,13 +1,13 @@
-use crate::app_config::{AppConfig, Environment};
+use std::sync::Arc;
+
+use crate::app_config::Environment;
 use crate::tools::terminal::Terminal;
-use serde::{Deserialize, Serialize};
-use tracel_client::{Client, TracelCredentials};
+use tracel_client::ClientError;
+use tracel_client::console::auth::DeviceAuthClient;
+use tracel_client::console::{AppSession, Client, FileSessionStore, TracelCredentials};
 use url::Url;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Credentials {
-    pub api_key: String,
-}
+const CLIENT_ID: &str = "tracel-cli";
 
 #[derive(thiserror::Error, Debug)]
 pub enum ClientCreationError {
@@ -15,7 +15,11 @@ pub enum ClientCreationError {
     NoCredentials,
     #[error("Invalid credentials")]
     InvalidCredentials,
-    #[error("Server connection error")]
+    #[error("The API key in TRACEL_API_KEY was refused: {0}")]
+    ApiKeyRefused(ClientError),
+    #[error(transparent)]
+    SessionStore(ClientError),
+    #[error("Server connection error: {0}")]
     ServerConnectionError(String),
 }
 
@@ -23,7 +27,6 @@ pub enum ClientCreationError {
 pub struct CliContext {
     terminal: Terminal,
     environment: Environment,
-    creds: Option<Credentials>,
 }
 
 impl CliContext {
@@ -31,46 +34,46 @@ impl CliContext {
         Self {
             terminal,
             environment,
-            creds: None,
         }
     }
 
-    pub fn init(mut self) -> Self {
-        // Load credentials from AppConfig and inject into core context
-        if let Ok(app_config) = AppConfig::new(self.environment()) {
-            if let Ok(Some(creds)) = app_config.load_credentials() {
-                self.creds = Some(creds);
-            }
-        }
-        self
+    pub fn device_auth(&self) -> DeviceAuthClient {
+        DeviceAuthClient::new(self.environment(), CLIENT_ID)
     }
 
-    pub fn set_credentials(&mut self, creds: Credentials) {
-        // Save credentials to AppConfig
-        if let Ok(app_config) = AppConfig::new(self.environment()) {
-            _ = app_config.save_credentials(&creds);
-        }
-        self.creds = Some(creds);
+    pub fn app_session(&self) -> Result<AppSession, ClientError> {
+        let store = FileSessionStore::for_server(&self.environment.get_url())?;
+        Ok(AppSession::new(Arc::new(store), self.device_auth()))
     }
 
-    pub fn get_api_key(&self) -> Option<&str> {
-        self.creds.as_ref().map(|c| c.api_key.as_str())
+    /// `TRACEL_API_KEY` if set, else the login stored for this environment's server.
+    fn credentials(&self) -> Result<Option<TracelCredentials>, ClientError> {
+        if let Ok(credentials) = TracelCredentials::from_env() {
+            return Ok(Some(credentials));
+        }
+
+        let app_session = self.app_session()?;
+        Ok(app_session
+            .stored()?
+            .map(|_| TracelCredentials::app_session(app_session)))
     }
 
     pub fn create_client(&self) -> Result<Client, ClientCreationError> {
-        let api_key = self
-            .get_api_key()
+        let credentials = self
+            .credentials()
+            .map_err(ClientCreationError::SessionStore)?
             .ok_or(ClientCreationError::NoCredentials)?;
+        let uses_api_key = matches!(credentials, TracelCredentials::ApiKey(_));
 
-        let creds = TracelCredentials::new(api_key.to_owned());
-        let client = Client::new(self.environment.clone(), &creds);
-
-        client.map_err(|e| {
-            if e.is_login_error() || e.to_string().contains("422") {
-                ClientCreationError::InvalidCredentials
-            } else {
-                ClientCreationError::ServerConnectionError(e.to_string())
+        Client::connect(self.environment(), &credentials).map_err(|e| match e {
+            ClientError::SessionStore(_) => ClientCreationError::SessionStore(e),
+            ClientError::Unauthenticated | ClientError::CredentialNotAllowed if uses_api_key => {
+                ClientCreationError::ApiKeyRefused(e)
             }
+            ClientError::Unauthenticated | ClientError::AppSessionEnded => {
+                ClientCreationError::InvalidCredentials
+            }
+            _ => ClientCreationError::ServerConnectionError(e.to_string()),
         })
     }
 

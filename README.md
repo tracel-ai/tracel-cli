@@ -76,10 +76,31 @@ This creates a deployable artifact containing your code, dependencies, and confi
 
 ### `tracel login`
 
-Authenticate with the Console platform.
+Authenticate with the Console platform. The CLI prints a link and a code to
+approve in your browser, and the login then lasts seven days.
 
 ```bash
 tracel login
+```
+
+When `TRACEL_API_KEY` is set, commands use that API key instead of the login.
+
+### `tracel logout`
+
+End the login on the server and forget it locally.
+
+```bash
+tracel logout
+```
+
+### `tracel auth`
+
+```bash
+# Which credential commands use, the user they act as, and when the login ends
+tracel auth status
+
+# Print an access token of the login for scripts; TRACEL_API_KEY is ignored
+curl -H "Authorization: Bearer $(tracel auth token)" https://console.tracel.ai/api/v1/user/organizations
 ```
 
 ### `tracel init`

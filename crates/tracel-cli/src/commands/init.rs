@@ -6,8 +6,9 @@ use crate::tools::terminal::Terminal;
 use crate::tools::tracel_config::TracelProject;
 use anyhow::Context;
 use clap::Args;
-use tracel_client::Client;
-use tracel_client::response::ProjectResponse;
+use tracel_client::console::Client;
+use tracel_client::console::project::request::Visibility;
+use tracel_client::console::project::response::ProjectResponse;
 
 #[derive(Args, Debug)]
 pub struct InitArgs {
@@ -16,12 +17,12 @@ pub struct InitArgs {
     pub force: bool,
 }
 
-pub fn handle_command(args: InitArgs, mut context: CliContext) -> anyhow::Result<()> {
+pub fn handle_command(args: InitArgs, context: CliContext) -> anyhow::Result<()> {
     if !can_initialize_project(&context, args.force)? {
         return Ok(());
     }
 
-    let client = super::login::get_client_and_login_if_needed(&mut context)?;
+    let client = super::login::get_client_and_login_if_needed(&context)?;
     prompt_init(&context, &client).context("Failed to initialize the project")
 }
 
@@ -173,10 +174,13 @@ fn create_new_project(
     };
 
     let created_project_path = match project_kind {
-        ProjectKind::User => client.create_user_project(name, desc.as_deref()),
-        ProjectKind::Organization(org_name) => {
-            client.create_organization_project(&org_name, name, desc.as_deref())
-        }
+        ProjectKind::User => client.create_user_project(name, desc.as_deref(), Visibility::Private),
+        ProjectKind::Organization(org_name) => client.create_organization_project(
+            &org_name,
+            name,
+            desc.as_deref(),
+            Visibility::Private,
+        ),
     };
 
     match created_project_path {

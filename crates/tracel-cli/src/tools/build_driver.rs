@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use tracel_client::request::{Arch, Os};
+use tracel_client::console::project::request::{Arch, Os};
 
 use crate::tools::linker;
 use crate::tools::target::target_triple;
