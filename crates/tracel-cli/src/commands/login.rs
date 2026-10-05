@@ -1,10 +1,7 @@
-use tracel_client::console::{Client, TracelCredentials};
+use tracel_client::console::{Client, Env, TracelCredentials};
 use url::Url;
 
-use crate::{
-    app_config::{AppConfig, Environment},
-    context::{CliContext, ClientCreationError},
-};
+use crate::context::{CliContext, ClientCreationError};
 
 pub fn get_client_and_login_if_needed(context: &CliContext) -> anyhow::Result<Client> {
     const MAX_RETRIES: u32 = 3;
@@ -58,11 +55,11 @@ pub fn get_client_and_login_if_needed(context: &CliContext) -> anyhow::Result<Cl
     }
 }
 
-pub fn environment_suffix(environment: &Environment) -> String {
+pub fn environment_suffix(environment: &Env) -> String {
     match environment {
-        Environment::Development => " (development environment)".to_string(),
-        Environment::Staging(version) => format!(" (staging environment v{})", version),
-        Environment::Production => String::new(),
+        Env::Development => " (development environment)".to_string(),
+        Env::Staging(version) => format!(" (staging environment v{})", version),
+        Env::Production => String::new(),
     }
 }
 
@@ -85,14 +82,6 @@ fn log_in(context: &CliContext) -> anyhow::Result<()> {
     spinner.stop("Login approved.");
 
     context.app_session()?.sign_in(issued)?;
-
-    let deleted = AppConfig::new(context.environment())
-        .and_then(|app_config| app_config.delete_legacy_credentials());
-    if let Err(e) = deleted {
-        terminal.print_warning(&format!(
-            "Failed to delete the API key stored by an earlier version of the CLI: {e}"
-        ));
-    }
 
     Ok(())
 }

@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
+use tracel_client::console::Env;
 
-use crate::app_config::Environment;
 use crate::commands;
 use crate::commands::default_command;
 use crate::context::CliContext;
@@ -50,11 +50,11 @@ pub fn cli_main() {
     let args = CliArgs::parse();
 
     let environment = if args.dev {
-        Environment::Development
+        Env::Development
     } else if let Some(version) = args.staging {
-        Environment::Staging(version)
+        Env::Staging(version)
     } else {
-        Environment::Production
+        Env::Production
     };
 
     let terminal = Terminal::default();

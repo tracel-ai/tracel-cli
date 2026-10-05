@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
-use crate::app_config::Environment;
 use crate::tools::terminal::Terminal;
 use tracel_client::ClientError;
 use tracel_client::console::auth::DeviceAuthClient;
-use tracel_client::console::{AppSession, Client, FileSessionStore, TracelCredentials};
+use tracel_client::console::{AppSession, Client, Env, FileSessionStore, TracelCredentials};
 use url::Url;
 
 const CLIENT_ID: &str = "tracel-cli";
@@ -26,11 +25,11 @@ pub enum ClientCreationError {
 /// CLI-specific context that wraps the library context with terminal functionality
 pub struct CliContext {
     terminal: Terminal,
-    environment: Environment,
+    environment: Env,
 }
 
 impl CliContext {
-    pub fn new(terminal: Terminal, environment: Environment) -> Self {
+    pub fn new(terminal: Terminal, environment: Env) -> Self {
         Self {
             terminal,
             environment,
@@ -87,7 +86,7 @@ impl CliContext {
         &self.terminal
     }
 
-    pub fn environment(&self) -> Environment {
+    pub fn environment(&self) -> Env {
         self.environment.clone()
     }
 
