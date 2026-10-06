@@ -244,6 +244,35 @@ Display information about the current project.
 tracel project
 ```
 
+### `tracel experiments`
+
+Browse experiments in the selected project; `exp` is a visible alias. `list`
+accepts zero-based `--page`, `--limit`, and repeated `--sort` values in the server
+format: `field`, `field,asc`, or `field,desc`. `get <num|latest>` shows details and
+config. Numbers are project-scoped experiment numbers.
+
+```bash
+tracel --project alice/demo experiments list --sort created_at,desc --limit 10 --json
+tracel exp get latest
+tracel exp metrics 42 --metric loss --max-points 100 --downsampling 1
+tracel exp logs 42 --level info --level error --follow --json
+```
+
+`metrics <num>` lists definitions without `--metric`; adding `--summary` returns
+the named metric's summary. Series default to 100 maximum points and a
+downsampling factor of 1. `logs <num>` reads one page (100 entries by default),
+with `--level`, `--search`, `--from`, `--to`, `--offset`, `--after`, and metadata
+filters (`--metadata key=value`, `--metadata-not key=value`, `--metadata-exists
+key`). `--after` is a log sequence cursor and cannot be combined with time ranges
+or offsets. `--follow` uses that cursor and polls every two seconds until the
+experiment finishes, including any remaining pages.
+
+JSON data is the server response, with `null` for an unavailable metric series
+or summary. Following logs emits NDJSON instead of a success envelope: each log
+item has `"type":"log"` added, followed by `{"type":"end","running":false}`.
+Errors still use the standard error envelope. Human output uses tables, experiment
+key/value lines, or one timestamp, level, and message line per log entry.
+
 ## Project Structure
 
 The Tracel CLI is organized as a Cargo workspace:
