@@ -1,5 +1,6 @@
 use serde::Serialize;
 use tracel_client::ClientError;
+use tracel_client::console::auth::DeviceFlowError;
 
 use crate::context::ClientCreationError;
 
@@ -14,6 +15,7 @@ pub enum ErrorKind {
     Conflict,
     ConfirmationRequired,
     LimitReached,
+    Timeout,
     Unavailable,
 }
 
@@ -28,6 +30,7 @@ impl ErrorKind {
             Self::Conflict => 6,
             Self::ConfirmationRequired => 7,
             Self::LimitReached => 8,
+            Self::Timeout => 10,
             Self::Unavailable => 11,
         }
     }
@@ -95,6 +98,12 @@ pub fn classify(error: &anyhow::Error) -> ErrorKind {
         if let Some(error) = cause.downcast_ref::<ClientError>() {
             return classify_client(error);
         }
+        if let Some(error) = cause.downcast_ref::<DeviceFlowError>() {
+            return match error {
+                DeviceFlowError::Client(error) => classify_client(error),
+                _ => ErrorKind::NotAuthenticated,
+            };
+        }
     }
     ErrorKind::Internal
 }
@@ -121,6 +130,8 @@ fn classify_client(error: &ClientError) -> ErrorKind {
             429 | 500..=599 => ErrorKind::Unavailable,
             _ => ErrorKind::Internal,
         },
+        // A request that never got a response, such as a refused connection.
+        ClientError::UnknownError(_) => ErrorKind::Unavailable,
         _ => ErrorKind::Internal,
     }
 }
@@ -140,6 +151,7 @@ mod tests {
             (ErrorKind::Conflict, "CONFLICT", 6),
             (ErrorKind::ConfirmationRequired, "CONFIRMATION_REQUIRED", 7),
             (ErrorKind::LimitReached, "LIMIT_REACHED", 8),
+            (ErrorKind::Timeout, "TIMEOUT", 10),
             (ErrorKind::Unavailable, "UNAVAILABLE", 11),
         ] {
             assert_eq!(kind.exit_code(), exit);
@@ -160,8 +172,8 @@ mod tests {
             ),
             (ClientError::InternalServerError, ErrorKind::Unavailable),
             (
-                ClientError::UnknownError("unknown".into()),
-                ErrorKind::Internal,
+                ClientError::UnknownError("connection refused".into()),
+                ErrorKind::Unavailable,
             ),
             (
                 ClientError::SessionStore("unreadable".into()),
@@ -195,6 +207,23 @@ mod tests {
             };
             assert_eq!(
                 classify(&anyhow::Error::new(error).context("request failed")),
+                kind
+            );
+        }
+    }
+
+    #[test]
+    fn device_flow_errors_separate_outcomes_from_outages() {
+        for (error, kind) in [
+            (DeviceFlowError::AccessDenied, ErrorKind::NotAuthenticated),
+            (DeviceFlowError::ExpiredToken, ErrorKind::NotAuthenticated),
+            (
+                DeviceFlowError::Client(ClientError::UnknownError("connection refused".into())),
+                ErrorKind::Unavailable,
+            ),
+        ] {
+            assert_eq!(
+                classify(&anyhow::Error::new(error).context("login failed")),
                 kind
             );
         }

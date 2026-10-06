@@ -86,9 +86,10 @@ format, and `train` inherits the executed program's output and exit code.
 | `CONFLICT` | 6 |
 | `CONFIRMATION_REQUIRED` | 7 |
 | `LIMIT_REACHED` | 8 |
+| `TIMEOUT` | 10 |
 | `UNAVAILABLE` | 11 |
 
-Exit codes 9 and 10 are reserved.
+Exit code 9 is reserved.
 
 ### `tracel train`
 
@@ -136,6 +137,29 @@ approve in your browser, and the login then lasts seven days.
 ```bash
 tracel login
 ```
+
+For scripts, start a login with `--no-wait`, hand the approval link and user code
+to a person, then finish with `--complete`:
+
+```bash
+tracel login --no-wait --json
+tracel login --complete --json
+# Wait up to 30 seconds, keeping the pending login if approval takes longer
+tracel login --complete --timeout 30 --json
+```
+
+`--no-wait` saves the pending login locally and exits successfully without
+waiting. Starting again replaces the previous pending login. JSON data contains
+`status` (`"pending"`), `verification_uri_complete`, `user_code`, and `expires_at`
+(RFC 3339). The device code is kept in an owner-only file beside the session
+file and is never printed.
+
+`--complete` waits for approval until the code expires, or until `--timeout
+<seconds>` elapses. A timeout returns `TIMEOUT` (exit code 10); run `tracel login
+--complete` again to continue. Expired or denied logins must be started again.
+Successful completion returns the same JSON data as plain login: `username` and
+`environment`. `--no-wait` and `--complete` conflict; `--timeout` requires
+`--complete`. Plain `tracel login` still waits for approval.
 
 When `TRACEL_API_KEY` is set, commands use that API key instead of the login.
 
