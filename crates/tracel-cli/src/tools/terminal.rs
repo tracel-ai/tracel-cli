@@ -119,12 +119,22 @@ impl Terminal {
     }
 
     fn require_input(&self, message: &str, flag: &str, values: &[&str]) -> anyhow::Result<()> {
+        self.require_answer(ErrorKind::Usage, message, flag, values)
+    }
+
+    fn require_answer(
+        &self,
+        kind: ErrorKind,
+        message: &str,
+        flag: &str,
+        values: &[&str],
+    ) -> anyhow::Result<()> {
         if !self.is_interactive() {
             let mut message = format!("Input needed: {}", message.trim());
             if !values.is_empty() {
                 message.push_str(&format!(" Valid values: {}.", values.join(", ")));
             }
-            return Err(CliError::new(ErrorKind::Usage, message)
+            return Err(CliError::new(kind, message)
                 .with_hint(format!("Pass --{flag} to answer without a prompt."))
                 .into());
         }
@@ -132,7 +142,7 @@ impl Terminal {
     }
 
     pub fn confirm(&self, message: &str, flag: &str, initial: bool) -> anyhow::Result<bool> {
-        self.require_input(message, flag, &[])?;
+        self.require_answer(ErrorKind::ConfirmationRequired, message, flag, &[])?;
         cliclack::confirm(message)
             .initial_value(initial)
             .interact()

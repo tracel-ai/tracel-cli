@@ -56,7 +56,8 @@ is given. `--json` and `--output` cannot be combined.
 
 All commands also accept `--no-input` to disable prompts. Prompts require stdin
 and stderr to be terminals and human output. Missing input in scripts produces
-`USAGE` with a hint naming the required flag.
+`USAGE`, and a missing yes/no confirmation produces `CONFIRMATION_REQUIRED`, each
+with a hint naming the flag to pass.
 
 Select a project with global `--project <namespace>/<name>`. It takes precedence
 over `TRACEL_NAMESPACE` and `TRACEL_PROJECT`, which each independently fall back

@@ -1,6 +1,6 @@
 use serde::Serialize;
-use tracel_client::ClientError;
 use tracel_client::console::auth::DeviceFlowError;
+use tracel_client::{ApiErrorCode, ClientError};
 
 use crate::context::ClientCreationError;
 
@@ -122,6 +122,9 @@ fn classify_client(error: &ClientError) -> ErrorKind {
         ClientError::CredentialNotAllowed => ErrorKind::Forbidden,
         ClientError::NotFound | ClientError::NotFoundWithCode(_) => ErrorKind::NotFound,
         ClientError::InternalServerError => ErrorKind::Unavailable,
+        ClientError::ApiError { body, .. } if matches!(body.code, ApiErrorCode::LimitReached) => {
+            ErrorKind::LimitReached
+        }
         ClientError::ApiError { status, .. } => match status.as_u16() {
             401 => ErrorKind::NotAuthenticated,
             403 => ErrorKind::Forbidden,
@@ -210,6 +213,21 @@ mod tests {
                 kind
             );
         }
+    }
+
+    #[test]
+    fn server_limit_code_is_limit_reached() {
+        let error = ClientError::ApiError {
+            status: 403.try_into().unwrap(),
+            body: tracel_client::error::ApiErrorBody {
+                code: ApiErrorCode::LimitReached,
+                message: "limit".into(),
+            },
+        };
+        assert_eq!(
+            classify(&anyhow::Error::new(error).context("request failed")),
+            ErrorKind::LimitReached
+        );
     }
 
     #[test]
