@@ -1,5 +1,5 @@
-use tracel_client::Client;
-use tracel_client::request::CreateModelRequest;
+use tracel_client::console::Client;
+use tracel_client::console::model::request::CreateModelRequest;
 
 use crate::context::CliContext;
 

@@ -8,7 +8,7 @@ use crate::{
         workspace::WorkspaceInfo,
     },
 };
-use tracel_client::Client;
+use tracel_client::console::Client;
 
 /// Check if current directory contains a Rust project (has Cargo.toml)
 pub fn is_cargo_workspace() -> bool {

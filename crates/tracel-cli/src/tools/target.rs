@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 
 use anyhow::Context;
 use colored::Colorize;
-use tracel_client::request::{Arch, Os};
+use tracel_client::console::project::request::{Arch, Os};
 
 /// Every (os, arch) target we offer to build for, in canonical display order.
 /// The host is surfaced separately and pulled to the front by `prompt_targets`.

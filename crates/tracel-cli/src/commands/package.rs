@@ -5,8 +5,8 @@ use std::sync::Arc;
 use anyhow::Context;
 use clap::Args;
 use sha2::{Digest, Sha256};
-use tracel_client::Client;
-use tracel_client::request::{
+use tracel_client::console::Client;
+use tracel_client::console::project::request::{
     PublishArtifactRequest, PublishBinaryRequest, PublishProjectVersionRequest,
     PublishSourceRequest,
 };
@@ -41,11 +41,11 @@ struct PreparedArtifact {
     uploads: Vec<(String, PathBuf)>,
 }
 
-pub(crate) fn handle_command(args: PackageArgs, mut context: CliContext) -> anyhow::Result<()> {
+pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<()> {
     context.terminal().command_title("Package project");
 
     // 0. Ensure we have auth and a linked project that exists on the server.
-    let client = get_client_and_login_if_needed(&mut context)?;
+    let client = get_client_and_login_if_needed(&context)?;
     let project = require_linked_project(&context)?;
     validate_project_exists_on_server(&context, &project, &client)?;
 

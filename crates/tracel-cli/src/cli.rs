@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
+use tracel_client::console::Env;
 
-use crate::app_config::Environment;
 use crate::commands;
 use crate::commands::default_command;
 use crate::context::CliContext;
@@ -29,7 +29,11 @@ pub enum Commands {
     /// Package your project for running on a remote machine.
     Package(commands::package::PackageArgs),
     /// Log in to the Tracel server.
-    Login(commands::login::LoginArgs),
+    Login,
+    /// Log out of the Tracel server.
+    Logout,
+    /// Show which credential commands use, or print an access token for scripts.
+    Auth(commands::auth::AuthArgs),
     /// Initialize a new project or reinitialize an existing one.
     Init(commands::init::InitArgs),
     /// Unlink the Tracel Console project from this repository.
@@ -46,11 +50,11 @@ pub fn cli_main() {
     let args = CliArgs::parse();
 
     let environment = if args.dev {
-        Environment::Development
+        Env::Development
     } else if let Some(version) = args.staging {
-        Environment::Staging(version)
+        Env::Staging(version)
     } else {
-        Environment::Production
+        Env::Production
     };
 
     let terminal = Terminal::default();
@@ -60,7 +64,7 @@ pub fn cli_main() {
             .print_warning("Running in development mode - using local server and dev credentials");
     }
 
-    let context = CliContext::new(terminal.clone(), environment).init();
+    let context = CliContext::new(terminal.clone(), environment);
 
     let cli_res = match args.command {
         Some(command) => handle_command(command, context),
@@ -69,6 +73,7 @@ pub fn cli_main() {
 
     if let Err(e) = cli_res {
         terminal.cancel_finalize(&format!("{e}"));
+        std::process::exit(1);
     }
 }
 
@@ -76,7 +81,9 @@ fn handle_command(command: Commands, context: CliContext) -> anyhow::Result<()> 
     match command {
         Commands::Train(run_args) => commands::training::handle_command(run_args, context),
         Commands::Package(package_args) => commands::package::handle_command(package_args, context),
-        Commands::Login(login_args) => commands::login::handle_command(login_args, context),
+        Commands::Login => commands::login::handle_command(context),
+        Commands::Logout => commands::logout::handle_command(context),
+        Commands::Auth(auth_args) => commands::auth::handle_command(auth_args, context),
         Commands::Init(init_args) => commands::init::handle_command(init_args, context),
         Commands::Unlink => commands::unlink::handle_command(context),
         Commands::Me => commands::me::handle_command(context),

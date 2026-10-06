@@ -1,3 +1,5 @@
+use std::io::IsTerminal;
+
 use cliclack::{ProgressBar, clear_screen, confirm};
 
 use colored::CustomColor;
@@ -62,10 +64,7 @@ impl Terminal {
             .expect("To be able to print message");
     }
 
-    pub fn input_password(&self, prompt: &str) -> anyhow::Result<String> {
-        cliclack::password(prompt)
-            .mask('•')
-            .interact()
-            .map_err(anyhow::Error::from)
+    pub fn is_interactive(&self) -> bool {
+        std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
     }
 }

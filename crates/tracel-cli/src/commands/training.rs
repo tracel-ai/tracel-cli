@@ -1,7 +1,9 @@
 use anyhow::Context;
 use clap::Parser;
 
-use crate::{app_config::tracel_env_value, context::CliContext, tools::cargo};
+use tracel_client::console::Env;
+
+use crate::{context::CliContext, tools::cargo};
 
 #[derive(Parser, Debug, Default)]
 pub struct TrainingArgs {
@@ -10,7 +12,7 @@ pub struct TrainingArgs {
     forwarded: Vec<String>,
 }
 
-pub(crate) fn handle_command(args: TrainingArgs, context: CliContext) -> anyhow::Result<()> {
+pub fn handle_command(args: TrainingArgs, context: CliContext) -> anyhow::Result<()> {
     run_cargo(&args.forwarded, context)
 }
 
@@ -19,7 +21,7 @@ pub(crate) fn handle_command(args: TrainingArgs, context: CliContext) -> anyhow:
 /// stdin/stdout/stderr are inherited so the run is interactive, and the child's
 /// exit code is mirrored. `tracel train -- entrypoint` is therefore equivalent to
 /// `cargo run -- entrypoint`.
-pub(crate) fn run_cargo(forwarded: &[String], context: CliContext) -> anyhow::Result<()> {
+pub fn run_cargo(forwarded: &[String], context: CliContext) -> anyhow::Result<()> {
     let mut cmd = cargo::command();
     cmd.arg("run");
 
@@ -36,4 +38,16 @@ pub(crate) fn run_cargo(forwarded: &[String], context: CliContext) -> anyhow::Re
     }
 
     Ok(())
+}
+
+/// The value the SDK expects in the `TRACEL_ENV` environment variable.
+///
+/// The SDK parses this string with an explicit match (see `discover_env` in the
+/// `tracel-core` cloud backend). This needs to match.
+fn tracel_env_value(env: &Env) -> String {
+    match env {
+        Env::Production => "Production".to_string(),
+        Env::Development => "Development".to_string(),
+        Env::Staging(version) => format!("Staging({version})"),
+    }
 }

@@ -1,19 +1,11 @@
-use crate::app_config::Environment;
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
+use tracel_client::console::Env;
 
-pub fn handle_command(mut context: CliContext) -> anyhow::Result<()> {
+pub fn handle_command(context: CliContext) -> anyhow::Result<()> {
     context.terminal().command_title("User Information");
 
-    let client = get_client_and_login_if_needed(&mut context);
-    if let Err(e) = client {
-        context.terminal().cancel_finalize(&format!(
-            "Failed to connect to the server: {}. Please run 'cargo run -- login' to authenticate.",
-            e
-        ));
-        anyhow::bail!(e);
-    }
-    let client = client.unwrap();
+    let client = get_client_and_login_if_needed(&context)?;
 
     let user = match client.get_current_user() {
         Ok(user) => user,
@@ -28,15 +20,17 @@ pub fn handle_command(mut context: CliContext) -> anyhow::Result<()> {
     context
         .terminal()
         .print(&format!("Username: {}", user.username));
-    context.terminal().print(&format!("Email: {}", user.email));
+    if let Some(email) = &user.email {
+        context.terminal().print(&format!("Email: {}", email));
+    }
     context
         .terminal()
         .print(&format!("Namespace: {}", user.namespace));
 
     let env_name = match context.environment() {
-        Environment::Development => &format!("Development ({})", context.get_api_endpoint()),
-        Environment::Staging(_) => &format!("Staging ({})", context.get_api_endpoint()),
-        Environment::Production => &format!("Production ({})", context.get_api_endpoint()),
+        Env::Development => &format!("Development ({})", context.get_api_endpoint()),
+        Env::Staging(_) => &format!("Staging ({})", context.get_api_endpoint()),
+        Env::Production => &format!("Production ({})", context.get_api_endpoint()),
     };
 
     context
