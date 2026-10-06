@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::output::OutputMode;
 use crate::tools::terminal::Terminal;
+use crate::tools::tracel_config::TracelProject;
 use tracel_client::ClientError;
 use tracel_client::console::auth::DeviceAuthClient;
 use tracel_client::console::{AppSession, Client, Env, FileSessionStore, TracelCredentials};
@@ -28,14 +29,21 @@ pub struct CliContext {
     terminal: Terminal,
     environment: Env,
     output: OutputMode,
+    project: Option<TracelProject>,
 }
 
 impl CliContext {
-    pub fn new(terminal: Terminal, environment: Env, output: OutputMode) -> Self {
+    pub fn new(
+        terminal: Terminal,
+        environment: Env,
+        output: OutputMode,
+        project: Option<TracelProject>,
+    ) -> Self {
         Self {
             terminal,
             environment,
             output,
+            project,
         }
     }
 
@@ -95,6 +103,10 @@ impl CliContext {
 
     pub fn output(&self) -> OutputMode {
         self.output
+    }
+
+    pub fn project(&self) -> Option<&TracelProject> {
+        self.project.as_ref()
     }
 
     pub fn environment_name(&self) -> String {

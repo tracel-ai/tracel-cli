@@ -25,6 +25,10 @@ pub fn run_cargo(forwarded: &[String], context: CliContext) -> anyhow::Result<()
     cmd.arg("run");
 
     cmd.env("TRACEL_ENV", tracel_env_value(&context.environment()));
+    if let Some(project) = context.project() {
+        cmd.env("TRACEL_NAMESPACE", &project.owner);
+        cmd.env("TRACEL_PROJECT", &project.name);
+    }
 
     if !forwarded.is_empty() {
         cmd.arg("--");

@@ -58,6 +58,18 @@ All commands also accept `--no-input` to disable prompts. Prompts require stdin
 and stderr to be terminals and human output. Missing input in scripts produces
 `USAGE` with a hint naming the required flag.
 
+Select a project with global `--project <namespace>/<name>`. It takes precedence
+over `TRACEL_NAMESPACE` and `TRACEL_PROJECT`, which each independently fall back
+to `tracel.toml` at the Cargo workspace root. `project` and `model upload` work
+from any directory with a flag or both variables; `package` still requires a
+Cargo workspace. Global `-C <dir>` runs as if started in that directory. `init`
+and `unlink` operate on `tracel.toml` and ignore project overrides.
+
+```bash
+tracel --project alice/demo project --json
+TRACEL_NAMESPACE=alice TRACEL_PROJECT=demo tracel -C ./trainer project --json
+```
+
 JSON results are one line on stdout: `{"ok":true,"data":{...}}` on success, or
 `{"ok":false,"error":{"code":"NOT_FOUND","message":"...","hint":null,"exit_code":5}}`
 on failure. Diagnostics go to stderr. Help and version output retain their normal
@@ -173,10 +185,10 @@ when an existing project is linked, and `url` is null when nothing changed.
 Upload a directory as a new version of a model.
 
 ```bash
-tracel model upload my-model --directory ./weights --auto-create true --description "Model weights" --json
+tracel --project alice/demo model upload my-model --directory ./weights --auto-create true --description "Model weights" --json
 ```
 
-`--namespace` and `--project` override the linked project. `--auto-create true`
+Global `--project <namespace>/<name>` selects the destination. `--auto-create true`
 creates a missing model without asking; without prompts, a missing model needs
 this flag. `--auto-create false` requires an existing model. `--description <text>`
 sets the new model's description and requires `--auto-create true`. JSON data

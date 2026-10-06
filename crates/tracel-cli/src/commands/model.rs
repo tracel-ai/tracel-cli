@@ -32,12 +32,6 @@ pub struct UploadModelArgs {
     /// Local directory containing the files to upload.
     #[arg(short, long)]
     pub directory: PathBuf,
-    /// Tracel Console namespace. Defaults to the linked project's namespace.
-    #[arg(long, short)]
-    pub namespace: Option<String>,
-    /// Tracel Console project name. Defaults to the linked project's name.
-    #[arg(long, short)]
-    pub project: Option<String>,
     /// Create a missing model (true/false); otherwise ask when interactive.
     #[arg(long, short)]
     pub auto_create: Option<bool>,
@@ -63,8 +57,10 @@ fn upload_model_version(args: UploadModelArgs, context: CliContext) -> anyhow::R
 
     context.terminal().command_title("Model upload");
 
+    let resolved = resolve_namespace_project(&context)?;
+    let namespace = resolved.project.owner;
+    let project = resolved.project.name;
     let client = crate::commands::login::get_client_and_login_if_needed(&context)?;
-    let (namespace, project) = resolve_namespace_project(args.namespace, args.project)?;
 
     context
         .terminal()
