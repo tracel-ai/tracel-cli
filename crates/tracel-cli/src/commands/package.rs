@@ -16,7 +16,9 @@ use crate::commands::init::commit_sequence;
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
-use crate::helpers::{require_linked_project, validate_project_exists_on_server};
+use crate::helpers::{
+    require_cargo_workspace, resolve_namespace_project, validate_project_exists_on_server,
+};
 use crate::tools::build_driver::{self, BuildDriver};
 use crate::tools::packager::{PackageEvent, package_workspace};
 use crate::tools::project_context::ProjectContext;
@@ -80,9 +82,15 @@ pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<
     }
     context.terminal().command_title("Package project");
 
-    // 0. Ensure we have auth and a linked project that exists on the server.
+    // 0. Require a workspace and a project that exists on the server.
+    let workspace_info = require_cargo_workspace()?;
+    let resolved = resolve_namespace_project(&context)?;
+    let project = ProjectContext {
+        workspace_info,
+        build_profile: "release".to_string(),
+        project: resolved.project,
+    };
     let client = get_client_and_login_if_needed(&context)?;
-    let project = require_linked_project()?;
     validate_project_exists_on_server(&context, &project, &client)?;
 
     // 1. Dirty check — warn and offer to commit, but allow proceeding.

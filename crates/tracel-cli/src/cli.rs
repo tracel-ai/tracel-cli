@@ -7,8 +7,10 @@ use tracel_client::console::Env;
 use crate::commands;
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind, ErrorReport};
+use crate::helpers::project::parse_project;
 use crate::output::{self, OutputMode};
 use crate::tools::terminal::Terminal;
+use crate::tools::tracel_config::TracelProject;
 
 #[derive(Parser, Debug)]
 #[clap(name = "tracel", author, version, about, long_about = None)]
@@ -27,6 +29,14 @@ pub struct CliArgs {
     /// Never prompt; fail when input is needed
     #[arg(long, global = true)]
     pub no_input: bool,
+
+    /// Tracel Console project to use
+    #[arg(long, global = true, value_name = "NAMESPACE/NAME", value_parser = parse_project)]
+    pub project: Option<TracelProject>,
+
+    /// Run as if started in this directory
+    #[arg(short = 'C', global = true, value_name = "DIR")]
+    pub working_directory: Option<std::path::PathBuf>,
 
     /// Use development environment (localhost:9001) with separate dev credentials
     #[arg(long, global = true, action = clap::ArgAction::SetTrue, hide = true, conflicts_with = "staging")]
@@ -89,6 +99,21 @@ pub fn cli_main() {
         }
     };
 
+    if let Some(directory) = &args.working_directory {
+        if let Err(error) = std::env::set_current_dir(directory) {
+            let mode = usage_output_mode(std::env::args_os().skip(1));
+            let error = CliError::new(
+                ErrorKind::Usage,
+                format!(
+                    "Cannot change directory to '{}': {error}",
+                    directory.display()
+                ),
+            );
+            report_error(&error.into(), mode, &Terminal::new(mode));
+            return;
+        }
+    }
+
     let Some(command) = args.command else {
         // A reader that closes early (`tracel | head`) is not an error.
         let _ = CliArgs::command().print_help();
@@ -125,22 +150,24 @@ pub fn cli_main() {
         mode
     };
 
-    let environment = if args.dev {
-        Env::Development
-    } else if let Some(version) = args.staging {
-        Env::Staging(version)
-    } else {
-        Env::Production
-    };
-
     let terminal = Terminal::new(mode).with_no_input(args.no_input);
+    let environment_value =
+        std::env::var_os("TRACEL_ENV").map(|value| value.to_string_lossy().into_owned());
+    let environment =
+        match resolve_environment(args.dev, args.staging, environment_value.as_deref()) {
+            Ok(environment) => environment,
+            Err(error) => {
+                report_error(&error.into(), mode, &terminal);
+                return;
+            }
+        };
 
     if args.dev {
         terminal
             .print_warning("Running in development mode - using local server and dev credentials");
     }
 
-    let context = CliContext::new(terminal.clone(), environment, mode);
+    let context = CliContext::new(terminal.clone(), environment, mode, args.project);
 
     let result = handle_command(command, context).and_then(|data| {
         if mode == OutputMode::Json {
@@ -150,6 +177,35 @@ pub fn cli_main() {
     });
     if let Err(error) = result {
         report_error(&error, mode, &terminal);
+    }
+}
+
+fn resolve_environment(
+    dev: bool,
+    version: Option<u8>,
+    value: Option<&str>,
+) -> Result<Env, CliError> {
+    if dev {
+        return Ok(Env::Development);
+    }
+    if let Some(version) = version {
+        return Ok(Env::Staging(version));
+    }
+    match value {
+        None | Some("Production" | "production") => Ok(Env::Production),
+        Some("Development" | "development") => Ok(Env::Development),
+        Some(value) => value
+            .strip_prefix("Staging(")
+            .and_then(|number| number.strip_suffix(')'))
+            .or_else(|| value.strip_prefix("staging-"))
+            .and_then(|number| number.parse::<u8>().ok())
+            .map(Env::Staging)
+            .ok_or_else(|| {
+                CliError::new(
+                    ErrorKind::Usage,
+                    format!("Invalid TRACEL_ENV value '{value}'."),
+                )
+            }),
     }
 }
 
@@ -239,6 +295,132 @@ fn handle_command(command: Commands, context: CliContext) -> anyhow::Result<Valu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_and_directory_flags_are_global() {
+        for arguments in [
+            ["tracel", "--project", "alice/demo", "-C", "/tmp", "project"],
+            ["tracel", "project", "--project", "alice/demo", "-C", "/tmp"],
+        ] {
+            let args = CliArgs::try_parse_from(arguments).unwrap();
+            let project = args.project.unwrap();
+            assert_eq!(project.owner, "alice");
+            assert_eq!(project.name, "demo");
+            assert_eq!(
+                args.working_directory.unwrap(),
+                std::path::Path::new("/tmp")
+            );
+        }
+        let args = CliArgs::try_parse_from([
+            "tracel",
+            "model",
+            "upload",
+            "weights",
+            "-d",
+            ".",
+            "--project",
+            "alice/demo",
+        ])
+        .unwrap();
+        assert!(args.working_directory.is_none());
+        assert_eq!(args.project.unwrap().name, "demo");
+        let error = CliArgs::try_parse_from(["tracel", "--project", "bad", "project"]).unwrap_err();
+        assert_eq!(error.exit_code(), 2);
+    }
+
+    #[test]
+    fn working_directory_is_separate_from_upload_directory() {
+        let args = CliArgs::try_parse_from([
+            "tracel",
+            "model",
+            "upload",
+            "weights",
+            "-d",
+            "./weights",
+            "-C",
+            "/tmp",
+        ])
+        .unwrap();
+        assert_eq!(
+            args.working_directory.unwrap(),
+            std::path::Path::new("/tmp")
+        );
+        let Some(Commands::Model(model)) = args.command else {
+            panic!("Expected model upload command");
+        };
+        let commands::model::ModelCommands::Upload(upload) = model.command;
+        assert_eq!(upload.directory, std::path::Path::new("./weights"));
+    }
+
+    #[test]
+    fn model_upload_rejects_removed_flags() {
+        for flag in ["--namespace", "-n", "-p"] {
+            let error = CliArgs::try_parse_from([
+                "tracel", "model", "upload", "weights", "-d", ".", flag, "alice",
+            ])
+            .unwrap_err();
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        }
+    }
+
+    #[test]
+    fn environment_values_match_sdk_and_lowercase_forms() {
+        for value in [None, Some("Production"), Some("production")] {
+            assert!(matches!(
+                resolve_environment(false, None, value),
+                Ok(Env::Production)
+            ));
+        }
+        for value in ["Development", "development"] {
+            assert!(matches!(
+                resolve_environment(false, None, Some(value)),
+                Ok(Env::Development)
+            ));
+        }
+        for version in [0, 1, 255] {
+            for value in [format!("Staging({version})"), format!("staging-{version}")] {
+                assert!(matches!(
+                    resolve_environment(false, None, Some(&value)),
+                    Ok(Env::Staging(number)) if number == version
+                ));
+            }
+        }
+        for value in [
+            "bogus",
+            "",
+            "Staging()",
+            "Staging(1",
+            "staging-",
+            "staging--1",
+            "Staging(256)",
+            "staging-256",
+            "Production ",
+        ] {
+            let error = resolve_environment(false, None, Some(value)).unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Usage);
+            assert!(error.to_string().contains("TRACEL_ENV"));
+        }
+    }
+
+    #[test]
+    fn environment_flags_override_variable() {
+        for value in [None, Some("Production"), Some("Development"), Some("bogus")] {
+            assert!(matches!(
+                resolve_environment(true, None, value),
+                Ok(Env::Development)
+            ));
+            assert!(matches!(
+                resolve_environment(false, Some(2), value),
+                Ok(Env::Staging(2))
+            ));
+        }
+        assert_eq!(
+            CliArgs::try_parse_from(["tracel", "--dev", "--staging", "1", "me"])
+                .unwrap_err()
+                .kind(),
+            clap::error::ErrorKind::ArgumentConflict
+        );
+    }
 
     #[test]
     fn output_flags_are_global_and_conflict() {
