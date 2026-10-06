@@ -1,10 +1,12 @@
 use anyhow::Context;
+use serde_json::{Value, json};
 
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
+use crate::error::{CliError, ErrorKind};
 use crate::helpers::require_linked_project;
 
-pub fn handle_command(context: CliContext) -> anyhow::Result<()> {
+pub fn handle_command(context: CliContext) -> anyhow::Result<Value> {
     context.terminal().command_title("Project Information");
 
     let project = require_linked_project()?;
@@ -13,11 +15,17 @@ pub fn handle_command(context: CliContext) -> anyhow::Result<()> {
     let bc_project = project.get_project();
     let project = match client.get_project(&bc_project.owner, &bc_project.name) {
         Ok(project) => project,
-        Err(e) if e.is_not_found() => anyhow::bail!(
-            "Project {}/{} not found on Tracel Console. Run 'tracel init --force' to link another project.",
-            bc_project.owner,
-            bc_project.name
-        ),
+        Err(e) if e.is_not_found() => {
+            return Err(CliError::new(
+                ErrorKind::NotFound,
+                format!(
+                    "Project {}/{} not found on Tracel Console.",
+                    bc_project.owner, bc_project.name
+                ),
+            )
+            .with_hint("Run 'tracel init --force' to link another project.")
+            .into());
+        }
         Err(e) => {
             return Err(e).with_context(|| {
                 format!(
@@ -35,5 +43,11 @@ pub fn handle_command(context: CliContext) -> anyhow::Result<()> {
     terminal.print(&format!("Created By: {}", project.created_by));
     terminal.finalize("Project information retrieved successfully.");
 
-    Ok(())
+    Ok(json!({
+        "namespace": project.namespace_name,
+        "name": project.project_name,
+        "description": project.description,
+        "created_by": project.created_by,
+        "visibility": project.visibility,
+    }))
 }

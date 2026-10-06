@@ -92,6 +92,7 @@ pub fn add_target(triple: &str) -> anyhow::Result<()> {
         .arg("target")
         .arg("add")
         .arg(triple)
+        .stdout(Stdio::from(std::io::stderr()))
         .status()
         .with_context(|| {
             format!("Failed to run `rustup target add {triple}` (is rustup installed?)")

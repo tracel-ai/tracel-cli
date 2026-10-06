@@ -1,10 +1,11 @@
 use anyhow::Context;
+use serde_json::{Value, json};
 
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use tracel_client::console::Env;
 
-pub fn handle_command(context: CliContext) -> anyhow::Result<()> {
+pub fn handle_command(context: CliContext) -> anyhow::Result<Value> {
     context.terminal().command_title("User Information");
 
     let client = get_client_and_login_if_needed(&context)?;
@@ -36,5 +37,11 @@ pub fn handle_command(context: CliContext) -> anyhow::Result<()> {
         .terminal()
         .finalize("User information retrieved successfully.");
 
-    Ok(())
+    Ok(json!({
+        "username": user.username,
+        "email": user.email,
+        "namespace": user.namespace,
+        "environment": context.environment_name(),
+        "api_url": context.get_api_endpoint(),
+    }))
 }
