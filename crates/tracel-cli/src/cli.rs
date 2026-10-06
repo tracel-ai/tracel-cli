@@ -24,6 +24,10 @@ pub struct CliArgs {
     #[arg(long, global = true, conflicts_with = "output")]
     pub json: bool,
 
+    /// Never prompt; fail when input is needed
+    #[arg(long, global = true)]
+    pub no_input: bool,
+
     /// Use development environment (localhost:9001) with separate dev credentials
     #[arg(long, global = true, action = clap::ArgAction::SetTrue, hide = true, conflicts_with = "staging")]
     pub dev: bool,
@@ -129,7 +133,7 @@ pub fn cli_main() {
         Env::Production
     };
 
-    let terminal = Terminal::new(mode);
+    let terminal = Terminal::new(mode).with_no_input(args.no_input);
 
     if args.dev {
         terminal
@@ -220,21 +224,15 @@ fn handle_command(command: Commands, context: CliContext) -> anyhow::Result<Valu
         Commands::Train(run_args) => {
             commands::training::handle_command(run_args, context).map(|()| json!({}))
         }
-        Commands::Package(package_args) => {
-            commands::package::handle_command(package_args, context).map(|()| json!({}))
-        }
-        Commands::Login => commands::login::handle_command(context).map(|()| json!({})),
+        Commands::Package(package_args) => commands::package::handle_command(package_args, context),
+        Commands::Login => commands::login::handle_command(context),
         Commands::Logout => commands::logout::handle_command(context),
         Commands::Auth(auth_args) => commands::auth::handle_command(auth_args, context),
-        Commands::Init(init_args) => {
-            commands::init::handle_command(init_args, context).map(|()| json!({}))
-        }
+        Commands::Init(init_args) => commands::init::handle_command(init_args, context),
         Commands::Unlink(unlink_args) => commands::unlink::handle_command(unlink_args, context),
         Commands::Me => commands::me::handle_command(context),
         Commands::Project => commands::project::handle_command(context),
-        Commands::Model(model_args) => {
-            commands::model::handle_command(model_args, context).map(|()| json!({}))
-        }
+        Commands::Model(model_args) => commands::model::handle_command(model_args, context),
     }
 }
 
@@ -258,5 +256,15 @@ mod tests {
         );
         let error = CliArgs::try_parse_from(["tracel", "me", "--json", "-o", "json"]).unwrap_err();
         assert_eq!(error.exit_code(), 2);
+    }
+
+    #[test]
+    fn no_input_is_global() {
+        for arguments in [
+            ["tracel", "--no-input", "unlink"],
+            ["tracel", "unlink", "--no-input"],
+        ] {
+            assert!(CliArgs::try_parse_from(arguments).unwrap().no_input);
+        }
     }
 }

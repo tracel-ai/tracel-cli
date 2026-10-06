@@ -1,3 +1,4 @@
+use serde_json::{Value, json};
 use tracel_client::console::{Client, Env, TracelCredentials};
 use url::Url;
 
@@ -102,7 +103,7 @@ fn log_in(context: &CliContext) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn handle_command(context: CliContext) -> anyhow::Result<()> {
+pub fn handle_command(context: CliContext) -> anyhow::Result<Value> {
     context.terminal().command_title("Login");
 
     log_in(&context)?;
@@ -121,5 +122,8 @@ pub fn handle_command(context: CliContext) -> anyhow::Result<()> {
         environment_suffix(&context.environment())
     ));
 
-    Ok(())
+    Ok(json!({
+        "username": client.user().username,
+        "environment": context.environment_name(),
+    }))
 }

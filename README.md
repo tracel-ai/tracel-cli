@@ -54,6 +54,10 @@ All commands accept `--json` or `-o, --output <auto|human|json>`. The default
 `TRACEL_OUTPUT=human` or `TRACEL_OUTPUT=json` sets the format when no output flag
 is given. `--json` and `--output` cannot be combined.
 
+All commands also accept `--no-input` to disable prompts. Prompts require stdin
+and stderr to be terminals and human output. Missing input in scripts produces
+`USAGE` with a hint naming the required flag.
+
 JSON results are one line on stdout: `{"ok":true,"data":{...}}` on success, or
 `{"ok":false,"error":{"code":"NOT_FOUND","message":"...","hint":null,"exit_code":5}}`
 on failure. Diagnostics go to stderr. Help and version output retain their normal
@@ -95,9 +99,22 @@ Package your project for deployment on remote compute providers.
 
 ```bash
 tracel package
+# Source packaging without prompts
+tracel package --mode source --allow-dirty --json
+# Build selected binaries and install missing targets without prompts
+tracel package --mode binary --target x86_64-unknown-linux-gnu --bin trainer --install-targets --commit --json
 ```
 
 This creates a deployable artifact containing your code, dependencies, and configurations.
+
+`--mode <binary|source>` is required without prompts. In binary mode, repeat
+`--target <triple>` to choose targets; without prompts, omitting it builds for the
+host. Use `--bin <name>` when several binaries are built. `--install-targets`
+installs missing Rust targets without asking. `--commit` commits all current
+changes before packaging; `--allow-dirty` continues with uncommitted changes.
+These two flags cannot be combined. The code version digest remains the current
+commit hash. JSON data contains `namespace`, `project`, `digest`, `version_id`,
+`mode`, `targets`, and `uploaded` (false when the commit was already packaged).
 
 ### `tracel login`
 
@@ -135,7 +152,35 @@ Initialize or reinitialize a Tracel project in the current directory.
 ```bash
 # Interactive initialization
 tracel init
+# Initialize without prompts, accepting a project that already exists
+tracel init --owner my-namespace --name my-project --description "" --yes --allow-dirty --json
 ```
+
+`--owner <namespace>` must name your own namespace or one of your organizations.
+`--name <project>` accepts alphanumeric characters, underscores, and hyphens.
+`--description <text>` supplies the new project's description; without a terminal
+it defaults to empty. These flags replace the corresponding prompts. `--yes`
+links an existing project without asking. `--commit` commits all current changes,
+including the first commit if needed; `--allow-dirty` continues without committing
+when a commit already exists. These two flags cannot be combined. A dirty
+repository needs one of them without prompts. `--force` reinitializes an already
+linked project; without it, asking for a different project fails with `CONFLICT`.
+JSON data contains `namespace`, `name`, `created`, and `url`; `created` is false
+when an existing project is linked, and `url` is null when nothing changed.
+
+### `tracel model upload`
+
+Upload a directory as a new version of a model.
+
+```bash
+tracel model upload my-model --directory ./weights --auto-create true --description "Model weights" --json
+```
+
+`--namespace` and `--project` override the linked project. `--auto-create true`
+creates a missing model without asking; without prompts, a missing model needs
+this flag. `--auto-create false` requires an existing model. `--description <text>`
+sets the new model's description and requires `--auto-create true`. JSON data
+contains `namespace`, `project`, `model`, `version`, `files`, and `bytes`.
 
 ### `tracel unlink`
 

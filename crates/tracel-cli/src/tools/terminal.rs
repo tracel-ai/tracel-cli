@@ -1,9 +1,10 @@
 use std::{fmt::Display, io::IsTerminal};
 
-use cliclack::{ProgressBar, clear_screen, confirm};
+use cliclack::{ProgressBar, clear_screen};
 
 use colored::CustomColor;
 
+use crate::error::{CliError, ErrorKind};
 use crate::output::OutputMode;
 
 #[allow(dead_code)]
@@ -16,6 +17,7 @@ pub const BURN_ORANGE: CustomColor = CustomColor {
 #[derive(Clone)]
 pub struct Terminal {
     output: OutputMode,
+    no_input: bool,
 }
 
 impl Default for Terminal {
@@ -26,7 +28,15 @@ impl Default for Terminal {
 
 impl Terminal {
     pub fn new(output: OutputMode) -> Self {
-        Self { output }
+        Self {
+            output,
+            no_input: false,
+        }
+    }
+
+    pub fn with_no_input(mut self, no_input: bool) -> Self {
+        self.no_input = no_input;
+        self
     }
 
     fn is_human(&self) -> bool {
@@ -108,8 +118,77 @@ impl Terminal {
         }
     }
 
-    pub fn confirm(&self, message: &str) -> anyhow::Result<bool> {
-        confirm(message).interact().map_err(anyhow::Error::from)
+    fn require_input(&self, message: &str, flag: &str, values: &[&str]) -> anyhow::Result<()> {
+        if !self.is_interactive() {
+            let mut message = format!("Input needed: {}", message.trim());
+            if !values.is_empty() {
+                message.push_str(&format!(" Valid values: {}.", values.join(", ")));
+            }
+            return Err(CliError::new(ErrorKind::Usage, message)
+                .with_hint(format!("Pass --{flag} to answer without a prompt."))
+                .into());
+        }
+        Ok(())
+    }
+
+    pub fn confirm(&self, message: &str, flag: &str, initial: bool) -> anyhow::Result<bool> {
+        self.require_input(message, flag, &[])?;
+        cliclack::confirm(message)
+            .initial_value(initial)
+            .interact()
+            .map_err(anyhow::Error::from)
+    }
+
+    pub fn input(&self, message: &str, flag: &str) -> anyhow::Result<String> {
+        self.input_validated(message, flag, "", |_| Ok(()))
+    }
+
+    pub fn input_validated(
+        &self,
+        message: &str,
+        flag: &str,
+        placeholder: &str,
+        validate: impl Fn(&String) -> Result<(), String> + 'static,
+    ) -> anyhow::Result<String> {
+        self.require_input(message, flag, &[])?;
+        cliclack::input(message)
+            .placeholder(placeholder)
+            .required(false)
+            .validate(validate)
+            .interact()
+            .map_err(anyhow::Error::from)
+    }
+
+    pub fn select<T: Clone + Eq>(
+        &self,
+        message: &str,
+        flag: &str,
+        items: &[(T, impl Display, impl Display)],
+        initial: Option<T>,
+        values: &[&str],
+    ) -> anyhow::Result<T> {
+        self.require_input(message, flag, values)?;
+        let mut prompt = cliclack::select(message).items(items);
+        if let Some(initial) = initial {
+            prompt = prompt.initial_value(initial);
+        }
+        prompt.interact().map_err(anyhow::Error::from)
+    }
+
+    pub fn multiselect<T: Clone + Eq>(
+        &self,
+        message: &str,
+        flag: &str,
+        items: &[(T, impl Display, impl Display)],
+        initial: Vec<T>,
+    ) -> anyhow::Result<Vec<T>> {
+        self.require_input(message, flag, &[])?;
+        cliclack::multiselect(message)
+            .items(items)
+            .initial_values(initial)
+            .required(true)
+            .interact()
+            .map_err(anyhow::Error::from)
     }
 
     pub fn command_title(&self, title: &str) {
@@ -140,7 +219,60 @@ impl Terminal {
 
     /// Whether a person can answer prompts: they read from stdin and draw on stderr.
     pub fn is_interactive(&self) -> bool {
-        std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
+        let ci = std::env::var_os("CI");
+        allows_input(
+            std::io::stdin().is_terminal(),
+            std::io::stderr().is_terminal(),
+            self.output,
+            ci.as_ref().map(|value| value.to_str().unwrap_or("true")),
+            self.no_input,
+        )
+    }
+}
+
+fn allows_input(
+    stdin_is_terminal: bool,
+    stderr_is_terminal: bool,
+    output: OutputMode,
+    ci: Option<&str>,
+    no_input: bool,
+) -> bool {
+    stdin_is_terminal
+        && stderr_is_terminal
+        && output != OutputMode::Json
+        && matches!(ci, None | Some("" | "0" | "false"))
+        && !no_input
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interactivity_requires_terminals_human_output_and_allowed_environment() {
+        for ci in [None, Some(""), Some("0"), Some("false")] {
+            for output in [OutputMode::Auto, OutputMode::Human, OutputMode::Json] {
+                for stdin in [false, true] {
+                    for stderr in [false, true] {
+                        for no_input in [false, true] {
+                            assert_eq!(
+                                allows_input(stdin, stderr, output, ci, no_input),
+                                stdin && stderr && output != OutputMode::Json && !no_input
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        for ci in ["1", "true", "yes", "FALSE", " "] {
+            assert!(!allows_input(
+                true,
+                true,
+                OutputMode::Human,
+                Some(ci),
+                false
+            ));
+        }
     }
 }
 
