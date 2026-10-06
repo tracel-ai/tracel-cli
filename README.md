@@ -114,10 +114,11 @@ tracel init
 
 ### `tracel unlink`
 
-Unlink the current directory from Tracel project.
+Unlink the current directory from Tracel project. `--yes` skips the confirmation.
 
 ```bash
 tracel unlink
+tracel unlink --yes
 ```
 
 ### `tracel me`

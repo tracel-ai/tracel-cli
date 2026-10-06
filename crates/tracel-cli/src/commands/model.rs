@@ -59,7 +59,7 @@ fn upload_model_version(args: UploadModelArgs, context: CliContext) -> anyhow::R
     context.terminal().command_title("Model upload");
 
     let client = crate::commands::login::get_client_and_login_if_needed(&context)?;
-    let (namespace, project) = resolve_namespace_project(&context, args.namespace, args.project)?;
+    let (namespace, project) = resolve_namespace_project(args.namespace, args.project)?;
 
     context
         .terminal()

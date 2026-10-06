@@ -18,9 +18,8 @@ pub fn handle_command(args: TrainingArgs, context: CliContext) -> anyhow::Result
 
 /// Run `cargo run` in the current directory, forwarding `forwarded` after `--`.
 ///
-/// stdin/stdout/stderr are inherited so the run is interactive, and the child's
-/// exit code is mirrored. `tracel train -- entrypoint` is therefore equivalent to
-/// `cargo run -- entrypoint`.
+/// `tracel train -- entrypoint` is equivalent to `cargo run -- entrypoint`: stdio is
+/// inherited and the program's exit code is the command's.
 pub fn run_cargo(forwarded: &[String], context: CliContext) -> anyhow::Result<()> {
     let mut cmd = cargo::command();
     cmd.arg("run");
@@ -32,6 +31,21 @@ pub fn run_cargo(forwarded: &[String], context: CliContext) -> anyhow::Result<()
         cmd.args(forwarded);
     }
 
+    hand_over(cmd)
+}
+
+/// Replace this process with `cmd`. `cargo run` does the same with the program it
+/// builds, so a signal sent to `tracel` reaches the program instead of orphaning it.
+#[cfg(unix)]
+fn hand_over(mut cmd: std::process::Command) -> anyhow::Result<()> {
+    use std::os::unix::process::CommandExt;
+
+    Err(cmd.exec()).context("Failed to run `cargo run`")
+}
+
+/// Windows cannot replace a process, so wait for the child and mirror its exit code.
+#[cfg(not(unix))]
+fn hand_over(mut cmd: std::process::Command) -> anyhow::Result<()> {
     let status = cmd.status().context("Failed to run `cargo run`")?;
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));

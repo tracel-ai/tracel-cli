@@ -46,7 +46,7 @@ pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<
 
     // 0. Ensure we have auth and a linked project that exists on the server.
     let client = get_client_and_login_if_needed(&context)?;
-    let project = require_linked_project(&context)?;
+    let project = require_linked_project()?;
     validate_project_exists_on_server(&context, &project, &client)?;
 
     // 1. Dirty check — warn and offer to commit, but allow proceeding.

@@ -40,8 +40,9 @@ impl Terminal {
         clear_screen().expect("Failed to clear screen");
     }
 
+    /// A URL styled for stderr, plain when stderr is not a terminal or `NO_COLOR` is set.
     pub fn format_url(&self, url: &url::Url) -> String {
-        format!("\x1b[1;34m{url}\x1b[0m")
+        console::style(url).for_stderr().blue().bold().to_string()
     }
 
     pub fn confirm(&self, message: &str) -> anyhow::Result<bool> {
@@ -64,7 +65,8 @@ impl Terminal {
             .expect("To be able to print message");
     }
 
+    /// Whether a person can answer prompts: they read from stdin and draw on stderr.
     pub fn is_interactive(&self) -> bool {
-        std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+        std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
     }
 }

@@ -28,7 +28,7 @@ pub fn handle_command(args: InitArgs, context: CliContext) -> anyhow::Result<()>
 
 pub fn prompt_init(context: &CliContext, client: &Client) -> anyhow::Result<()> {
     let user = client.get_current_user()?;
-    let workspace_info = require_cargo_workspace(context)?;
+    let workspace_info = require_cargo_workspace()?;
 
     context.terminal().command_title("Project Initialization");
 
