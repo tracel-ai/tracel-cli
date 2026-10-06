@@ -61,7 +61,7 @@ pub enum Commands {
     /// Package your project for running on a remote machine.
     Package(commands::package::PackageArgs),
     /// Log in to the Tracel server.
-    Login,
+    Login(commands::login::LoginArgs),
     /// Log out of the Tracel server.
     Logout,
     /// Show which credential commands use, or print an access token for scripts.
@@ -281,7 +281,7 @@ fn handle_command(command: Commands, context: CliContext) -> anyhow::Result<Valu
             commands::training::handle_command(run_args, context).map(|()| json!({}))
         }
         Commands::Package(package_args) => commands::package::handle_command(package_args, context),
-        Commands::Login => commands::login::handle_command(context),
+        Commands::Login(login_args) => commands::login::handle_command(login_args, context),
         Commands::Logout => commands::logout::handle_command(context),
         Commands::Auth(auth_args) => commands::auth::handle_command(auth_args, context),
         Commands::Init(init_args) => commands::init::handle_command(init_args, context),
