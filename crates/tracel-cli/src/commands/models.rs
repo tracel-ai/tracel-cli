@@ -18,9 +18,9 @@ use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
 use crate::helpers::{
-    DownloadFile, build_part_tasks, download_files, ensure_model_exists, parse_metadata,
-    resolve_namespace_project, select_artifact, upload_parts, validate_auto_create,
-    validate_rel_path,
+    DownloadFile, Resource, build_part_tasks, download_files, ensure_model_exists,
+    map_resource_error, parse_metadata, resolve_namespace_project, select_artifact, upload_parts,
+    validate_auto_create, validate_rel_path,
 };
 use crate::output::{OutputMode, write_table};
 use crate::tools::fs::{build_file_specs, collect_files};
@@ -340,14 +340,29 @@ pub fn handle_command(args: ModelsArgs, context: CliContext) -> anyhow::Result<V
         }
         ModelsCommands::Get(args) => {
             if let Some(reference) = args.version {
-                let version =
-                    client.resolve_model_version_ref(namespace, name, &args.model, &reference)?;
+                let version = client
+                    .resolve_model_version_ref(namespace, name, &args.model, &reference)
+                    .map_err(|error| {
+                        map_resource_error(
+                            error,
+                            namespace,
+                            name,
+                            Resource::ModelVersionRef {
+                                model: &args.model,
+                                reference: &reference,
+                            },
+                        )
+                    })?;
                 if human {
                     print_version(&version)?;
                 }
                 Ok(serde_json::to_value(version)?)
             } else {
-                let model = client.get_model(namespace, name, &args.model)?;
+                let model = client
+                    .get_model(namespace, name, &args.model)
+                    .map_err(|error| {
+                        map_resource_error(error, namespace, name, Resource::Model(&args.model))
+                    })?;
                 if human {
                     print_model(&model)?;
                 }
@@ -361,10 +376,13 @@ pub fn handle_command(args: ModelsArgs, context: CliContext) -> anyhow::Result<V
                     name,
                     &args.model,
                     ModelVersionListState::All,
-                )?
+                )
             } else {
-                client.list_model_versions(namespace, name, &args.model)?
-            };
+                client.list_model_versions(namespace, name, &args.model)
+            }
+            .map_err(|error| {
+                map_resource_error(error, namespace, name, Resource::Model(&args.model))
+            })?;
             if human {
                 write_table(
                     &mut std::io::stdout().lock(),
@@ -403,13 +421,26 @@ pub fn handle_command(args: ModelsArgs, context: CliContext) -> anyhow::Result<V
             Ok(serde_json::to_value(response)?)
         }
         ModelsCommands::Pull(args) => {
-            let version =
-                client.resolve_model_version_ref(namespace, name, &args.model, &args.version)?;
+            let map_error = |error| {
+                map_resource_error(
+                    error,
+                    namespace,
+                    name,
+                    Resource::ModelVersionRef {
+                        model: &args.model,
+                        reference: &args.version,
+                    },
+                )
+            };
+            let version = client
+                .resolve_model_version_ref(namespace, name, &args.model, &args.version)
+                .map_err(map_error)?;
             let directory = args
                 .directory
                 .unwrap_or_else(|| PathBuf::from(format!("./{}-v{}", args.model, version.version)));
-            let response =
-                client.presign_model_download(namespace, name, &args.model, version.version)?;
+            let response = client
+                .presign_model_download(namespace, name, &args.model, version.version)
+                .map_err(map_error)?;
             let files: Vec<_> = response
                 .files
                 .into_iter()
@@ -443,7 +474,16 @@ pub fn handle_command(args: ModelsArgs, context: CliContext) -> anyhow::Result<V
             files.expect("Push files were collected"),
         ),
         ModelsCommands::Promote(args) => {
-            let artifacts = client.list_artifacts(namespace, name, args.experiment)?;
+            let artifacts = client
+                .list_artifacts(namespace, name, args.experiment)
+                .map_err(|error| {
+                    map_resource_error(
+                        error,
+                        namespace,
+                        name,
+                        Resource::Experiment(args.experiment),
+                    )
+                })?;
             let index = select_artifact(
                 artifacts
                     .items
@@ -462,29 +502,36 @@ pub fn handle_command(args: ModelsArgs, context: CliContext) -> anyhow::Result<V
                 args.auto_create,
                 args.description,
             )?;
-            let mut version = client.promote_model_version(
-                namespace,
-                name,
-                &args.model,
-                PromoteModelVersionRequest {
-                    experiment_num: args.experiment,
-                    experiment_file_id: artifact.id.clone(),
-                    metadata: args.metadata,
-                },
-            )?;
-            if let Some(alias) = args.alias {
-                client.set_model_alias(
+            let map_error =
+                |error| map_resource_error(error, namespace, name, Resource::Model(&args.model));
+            let mut version = client
+                .promote_model_version(
                     namespace,
                     name,
                     &args.model,
-                    &alias,
-                    SetModelAliasRequest {
-                        version: version.version,
-                        expected_current_version: None,
+                    PromoteModelVersionRequest {
+                        experiment_num: args.experiment,
+                        experiment_file_id: artifact.id.clone(),
+                        metadata: args.metadata,
                     },
-                )?;
-                version =
-                    client.get_model_version(namespace, name, &args.model, version.version)?;
+                )
+                .map_err(map_error)?;
+            if let Some(alias) = args.alias {
+                client
+                    .set_model_alias(
+                        namespace,
+                        name,
+                        &args.model,
+                        &alias,
+                        SetModelAliasRequest {
+                            version: version.version,
+                            expected_current_version: None,
+                        },
+                    )
+                    .map_err(map_error)?;
+                version = client
+                    .get_model_version(namespace, name, &args.model, version.version)
+                    .map_err(map_error)?;
             }
             if human {
                 writeln!(
@@ -499,7 +546,11 @@ pub fn handle_command(args: ModelsArgs, context: CliContext) -> anyhow::Result<V
         }
         ModelsCommands::Alias(args) => match args.command {
             AliasCommands::List(args) => {
-                let response = client.list_model_aliases(namespace, name, &args.model)?;
+                let response = client
+                    .list_model_aliases(namespace, name, &args.model)
+                    .map_err(|error| {
+                        map_resource_error(error, namespace, name, Resource::Model(&args.model))
+                    })?;
                 if human {
                     write_table(
                         &mut std::io::stdout().lock(),
@@ -514,16 +565,28 @@ pub fn handle_command(args: ModelsArgs, context: CliContext) -> anyhow::Result<V
                 Ok(serde_json::to_value(response)?)
             }
             AliasCommands::Set(args) => {
-                let response = client.set_model_alias(
-                    namespace,
-                    name,
-                    &args.model,
-                    &args.alias,
-                    SetModelAliasRequest {
-                        version: args.version,
-                        expected_current_version: args.expect,
-                    },
-                )?;
+                let response = client
+                    .set_model_alias(
+                        namespace,
+                        name,
+                        &args.model,
+                        &args.alias,
+                        SetModelAliasRequest {
+                            version: args.version,
+                            expected_current_version: args.expect,
+                        },
+                    )
+                    .map_err(|error| {
+                        map_resource_error(
+                            error,
+                            namespace,
+                            name,
+                            Resource::ModelVersion {
+                                model: &args.model,
+                                version: args.version,
+                            },
+                        )
+                    })?;
                 if human {
                     writeln!(
                         std::io::stdout().lock(),
@@ -535,7 +598,19 @@ pub fn handle_command(args: ModelsArgs, context: CliContext) -> anyhow::Result<V
                 Ok(serde_json::to_value(response)?)
             }
             AliasCommands::Remove(args) => {
-                client.remove_model_alias(namespace, name, &args.model, &args.alias)?;
+                client
+                    .remove_model_alias(namespace, name, &args.model, &args.alias)
+                    .map_err(|error| {
+                        map_resource_error(
+                            error,
+                            namespace,
+                            name,
+                            Resource::ModelAlias {
+                                model: &args.model,
+                                alias: &args.alias,
+                            },
+                        )
+                    })?;
                 if human {
                     writeln!(
                         std::io::stdout().lock(),
@@ -602,16 +677,27 @@ fn push(
         .request_model_version_upload(&namespace, &project, &args.model_name, upload_request)
         .map_err(|e| {
             spinner.error("Failed to request upload URLs.");
-            anyhow::anyhow!(e)
+            map_resource_error(e, &namespace, &project, Resource::Model(&args.model_name))
         })?;
     spinner.stop(format!("Allocated model version {}.", upload.version));
 
     let tasks = build_part_tasks(&files, &file_sizes, &upload.files)?;
     upload_parts(client, tasks, context.terminal())?;
 
-    client.complete_model_version_upload(&namespace, &project, &args.model_name, upload.version)?;
-    let version =
-        client.get_model_version(&namespace, &project, &args.model_name, upload.version)?;
+    let map_error = |error| {
+        map_resource_error(
+            error,
+            &namespace,
+            &project,
+            Resource::Model(&args.model_name),
+        )
+    };
+    client
+        .complete_model_version_upload(&namespace, &project, &args.model_name, upload.version)
+        .map_err(map_error)?;
+    let version = client
+        .get_model_version(&namespace, &project, &args.model_name, upload.version)
+        .map_err(map_error)?;
 
     context.terminal().print_success(&format!(
         "Uploaded model '{}' version {} to {}/{}.",

@@ -11,4 +11,6 @@ mod download;
 mod resources;
 
 pub use download::{DownloadFile, download_files, validate_rel_path};
-pub use resources::{parse_metadata, select_artifact, validate_auto_create};
+pub use resources::{
+    Resource, map_resource_error, parse_metadata, select_artifact, validate_auto_create,
+};
