@@ -79,6 +79,44 @@ fn write_line(value: &impl Serialize) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn write_table(
+    stdout: &mut impl Write,
+    headers: &[&str],
+    rows: Vec<Vec<String>>,
+) -> std::io::Result<()> {
+    let rows: Vec<Vec<String>> =
+        std::iter::once(headers.iter().map(|header| (*header).into()).collect())
+            .chain(rows)
+            .map(|row: Vec<String>| {
+                row.into_iter()
+                    .map(|cell| cell.split_whitespace().collect::<Vec<_>>().join(" "))
+                    .collect()
+            })
+            .collect();
+    let widths: Vec<_> = (0..headers.len())
+        .map(|column| {
+            rows.iter()
+                .map(|row| console::measure_text_width(&row[column]))
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    for row in rows {
+        for (column, cell) in row.iter().enumerate() {
+            write!(stdout, "{cell}")?;
+            if column + 1 < headers.len() {
+                write!(
+                    stdout,
+                    "{}  ",
+                    " ".repeat(widths[column].saturating_sub(console::measure_text_width(cell)))
+                )?;
+            }
+        }
+        writeln!(stdout)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
