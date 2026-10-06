@@ -61,10 +61,10 @@ with a hint naming the flag to pass.
 
 Select a project with global `--project <namespace>/<name>`. It takes precedence
 over `TRACEL_NAMESPACE` and `TRACEL_PROJECT`, which each independently fall back
-to `tracel.toml` at the Cargo workspace root. `project` and `model upload` work
-from any directory with a flag or both variables; `package` still requires a
-Cargo workspace. Global `-C <dir>` runs as if started in that directory. `init`
-and `unlink` operate on `tracel.toml` and ignore project overrides.
+to `tracel.toml` at the Cargo workspace root. `project`, `models`, `artifacts`,
+and `datasets` work from any directory with a flag or both variables; `package`
+still requires a Cargo workspace. Global `-C <dir>` runs as if started in that
+directory. `init` and `unlink` operate on `tracel.toml` and ignore project overrides.
 
 ```bash
 tracel --project alice/demo project --json
@@ -205,19 +205,98 @@ linked project; without it, asking for a different project fails with `CONFLICT`
 JSON data contains `namespace`, `name`, `created`, and `url`; `created` is false
 when an existing project is linked, and `url` is null when nothing changed.
 
-### `tracel model upload`
+### `tracel models`
 
-Upload a directory as a new version of a model.
+Browse and manage models in the selected project's model registry.
 
 ```bash
-tracel --project alice/demo model upload my-model --directory ./weights --auto-create true --description "Model weights" --json
+tracel models list
+tracel models get my-model
+tracel models get my-model --version production --json
+tracel models versions my-model --all
+tracel models pull my-model --version v7 --directory ./weights --force
+tracel --project alice/demo models push my-model --directory ./weights --auto-create true --description "Model weights" --metadata '{"format":"safetensors"}' --json
+tracel models promote my-model --experiment 42 --artifact weights --alias production --metadata '{"accuracy":0.98}' --json
+tracel models alias list my-model
+tracel models alias set my-model production 7 --expect 6
+tracel models alias remove my-model production
 ```
 
-Global `--project <namespace>/<name>` selects the destination. `--auto-create true`
-creates a missing model without asking; without prompts, a missing model needs
-this flag. `--auto-create false` requires an existing model. `--description <text>`
-sets the new model's description and requires `--auto-create true`. JSON data
-contains `namespace`, `project`, `model`, `version`, `files`, and `bytes`.
+- `list` shows names, version counts, latest versions, aliases, and creation times.
+- `get <MODEL>` shows model details. `--version <REF>` shows version details,
+  files, and metadata. References accept `latest`, a number such as `7` or `v7`,
+  or an alias, and are resolved by the server.
+- `versions <MODEL>` lists ready versions. `--all` includes pending, failed,
+  and deleted versions.
+- `pull <MODEL>` defaults to `--version latest` and downloads into
+  `./<MODEL>-v<resolved version>`. `-d, --directory <DIR>` selects another
+  destination. `--force` overwrites existing files. Paths and overwrite conflicts
+  are checked before downloading; declared sizes and SHA-256 checksums are
+  verified before each file is saved.
+- `push <MODEL> -d, --directory <DIR>` uploads local files as a new version.
+  `-a, --auto-create <true|false>` creates a missing model when true and requires
+  an existing model when false. Omit it to ask when interactive; a missing model
+  without prompts requires `--auto-create true`. `--description <TEXT>` sets
+  the new model's description and requires `--auto-create true`. `--metadata
+  <JSON>` sets version metadata and must be a JSON object.
+- `promote <MODEL> --experiment <NUM> --artifact <NAME|ID>` copies an experiment
+  artifact into a ready model version. Artifact ids take precedence over names;
+  an ambiguous name requires the id. `--alias <ALIAS>` points an alias at the
+  new version. `--metadata <JSON>`, `--auto-create <true|false>`, and
+  `--description <TEXT>` have the same meaning as for `push`.
+- `alias list <MODEL>` lists aliases and their versions. `alias set <MODEL>
+  <ALIAS> <VERSION>` creates or moves an alias to a ready version; `--expect
+  <VERSION>` requires that the alias currently points at that version.
+  Version numbers must be at least 1. `alias remove <MODEL> <ALIAS>` removes it.
+
+JSON data is the server response: the model list (`items` and `total`), a
+model, a version, the version list, the alias list, or an alias. `push` and `promote`
+return the new version, including its state, source, manifest, metadata, and
+aliases. `pull` data contains `model`, the resolved version object as `version`,
+`directory`, `files` (each with `rel_path`, `path`, and downloaded `bytes`),
+and total `bytes`. `alias remove` returns `model`, `alias`, and `removed: true`.
+
+### `tracel artifacts`
+
+Browse and download artifacts using positive project-scoped experiment numbers.
+
+```bash
+tracel artifacts list 42 --name weights --json
+tracel artifacts download 42 weights --directory ./weights --force --json
+```
+
+`list <EXPERIMENT>` shows name, kind, id, manifest file count, and creation time.
+`--name <NAME>` keeps artifacts whose name contains `NAME`. `download
+<EXPERIMENT> <NAME|ID>` selects an artifact by id first, otherwise by an exact,
+unique name. Ambiguous names require an id.
+The destination defaults to `./<artifact name>` when the name is a single normal
+path component; otherwise pass `-d, --directory <DIR>`. `--force` overwrites
+existing files. Declared manifest sizes and SHA-256 checksums are verified.
+
+JSON data for `list` is the server response (`items` and `total`). `download`
+data contains `experiment`, the server's artifact object as `artifact`,
+`directory`, `files` (each with `rel_path`, `path`, and downloaded `bytes`),
+and total `bytes`.
+
+### `tracel datasets`
+
+Browse datasets in the selected project.
+
+```bash
+tracel datasets list --page 0 --per-page 25 --json
+tracel datasets get images
+tracel datasets versions images --page 0 --per-page 10 --json
+```
+
+`list` shows name, description, and id, followed by the number shown and total
+when more datasets exist. `get <DATASET>` shows details and pretty metadata.
+`versions <DATASET>` lists version, item count, source, and creation time.
+`list` and `versions` accept zero-based `--page <N>` and positive
+`--per-page <N>`; omitted values use the server's defaults.
+
+JSON data is the server response. The list responses contain `items` and
+`total_count`; dataset objects contain `id`, `name`, `description`, and
+`metadata`.
 
 ### `tracel unlink`
 
@@ -242,7 +321,17 @@ Display information about the current project.
 
 ```bash
 tracel project
+tracel project list --json
+tracel project list alice
 ```
+
+`list [NAMESPACE]` lists your own projects followed by each of your organizations'
+projects. Supply your namespace or an organization namespace to limit the list.
+It works without a linked project or `tracel.toml`. Human output shows
+`namespace/name`, visibility, description, and creation time. JSON data is an
+array of the server's project objects, including `namespace_name`.
+Bare `project` returns `namespace`, `name`, `description`, `created_by`,
+`visibility`, and project resolution `source`.
 
 ### `tracel experiments`
 

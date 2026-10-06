@@ -1,10 +1,12 @@
+pub mod artifacts;
 pub mod auth;
+pub mod datasets;
 pub mod experiments;
 pub mod init;
 pub mod login;
 pub mod logout;
 pub mod me;
-pub mod model;
+pub mod models;
 pub mod package;
 pub mod project;
 pub mod training;

@@ -75,10 +75,14 @@ pub enum Commands {
     Unlink(commands::unlink::UnlinkArgs),
     /// Display current user information.
     Me,
-    /// Display current project information.
-    Project,
-    /// Upload local files as a model version in the model registry.
-    Model(commands::model::ModelArgs),
+    /// Display the current project, or list projects.
+    Project(commands::project::ProjectArgs),
+    /// Browse and manage models in the model registry.
+    Models(commands::models::ModelsArgs),
+    /// Browse and download experiment artifacts.
+    Artifacts(commands::artifacts::ArtifactsArgs),
+    /// Browse datasets in the selected project.
+    Datasets(commands::datasets::DatasetsArgs),
 }
 
 pub fn cli_main() {
@@ -294,14 +298,24 @@ fn handle_command(command: Commands, context: CliContext) -> anyhow::Result<Valu
         Commands::Init(init_args) => commands::init::handle_command(init_args, context),
         Commands::Unlink(unlink_args) => commands::unlink::handle_command(unlink_args, context),
         Commands::Me => commands::me::handle_command(context),
-        Commands::Project => commands::project::handle_command(context),
-        Commands::Model(model_args) => commands::model::handle_command(model_args, context),
+        Commands::Project(args) => commands::project::handle_command(args, context),
+        Commands::Models(args) => commands::models::handle_command(args, context),
+        Commands::Artifacts(args) => commands::artifacts::handle_command(args, context),
+        Commands::Datasets(args) => commands::datasets::handle_command(args, context),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_definitions_are_valid() {
+        CliArgs::command().debug_assert();
+        assert!(
+            CliArgs::try_parse_from(["tracel", "model", "upload", "weights", "-d", "."]).is_err()
+        );
+    }
 
     #[test]
     fn project_and_directory_flags_are_global() {
@@ -320,8 +334,8 @@ mod tests {
         }
         let args = CliArgs::try_parse_from([
             "tracel",
-            "model",
-            "upload",
+            "models",
+            "push",
             "weights",
             "-d",
             ".",
@@ -339,8 +353,8 @@ mod tests {
     fn working_directory_is_separate_from_upload_directory() {
         let args = CliArgs::try_parse_from([
             "tracel",
-            "model",
-            "upload",
+            "models",
+            "push",
             "weights",
             "-d",
             "./weights",
@@ -352,18 +366,20 @@ mod tests {
             args.working_directory.unwrap(),
             std::path::Path::new("/tmp")
         );
-        let Some(Commands::Model(model)) = args.command else {
-            panic!("Expected model upload command");
+        let Some(Commands::Models(model)) = args.command else {
+            panic!("Expected models push command");
         };
-        let commands::model::ModelCommands::Upload(upload) = model.command;
+        let commands::models::ModelsCommands::Push(upload) = model.command else {
+            panic!("Expected models push command");
+        };
         assert_eq!(upload.directory, std::path::Path::new("./weights"));
     }
 
     #[test]
-    fn model_upload_rejects_removed_flags() {
+    fn models_push_rejects_removed_flags() {
         for flag in ["--namespace", "-n", "-p"] {
             let error = CliArgs::try_parse_from([
-                "tracel", "model", "upload", "weights", "-d", ".", flag, "alice",
+                "tracel", "models", "push", "weights", "-d", ".", flag, "alice",
             ])
             .unwrap_err();
             assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);

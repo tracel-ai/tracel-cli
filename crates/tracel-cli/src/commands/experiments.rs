@@ -18,7 +18,7 @@ use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
 use crate::helpers::project::resolve_namespace_project;
-use crate::output::{self, OutputMode};
+use crate::output::{self, OutputMode, write_table};
 use crate::tools::tracel_config::TracelProject;
 
 #[derive(Args, Debug)]
@@ -207,44 +207,6 @@ impl LogsArgs {
             metadata_filters,
         }
     }
-}
-
-fn write_table(
-    stdout: &mut impl Write,
-    headers: &[&str],
-    rows: Vec<Vec<String>>,
-) -> std::io::Result<()> {
-    let rows: Vec<Vec<String>> =
-        std::iter::once(headers.iter().map(|header| (*header).into()).collect())
-            .chain(rows)
-            .map(|row: Vec<String>| {
-                row.into_iter()
-                    .map(|cell| cell.split_whitespace().collect::<Vec<_>>().join(" "))
-                    .collect()
-            })
-            .collect();
-    let widths: Vec<_> = (0..headers.len())
-        .map(|column| {
-            rows.iter()
-                .map(|row| console::measure_text_width(&row[column]))
-                .max()
-                .unwrap_or(0)
-        })
-        .collect();
-    for row in rows {
-        for (column, cell) in row.iter().enumerate() {
-            write!(stdout, "{cell}")?;
-            if column + 1 < headers.len() {
-                write!(
-                    stdout,
-                    "{}  ",
-                    " ".repeat(widths[column].saturating_sub(console::measure_text_width(cell)))
-                )?;
-            }
-        }
-        writeln!(stdout)?;
-    }
-    Ok(())
 }
 
 fn print_list(response: &ListExperimentsResponse) -> anyhow::Result<()> {
