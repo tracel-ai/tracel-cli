@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod experiments;
 pub mod init;
 pub mod login;
 pub mod logout;

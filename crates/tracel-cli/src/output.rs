@@ -66,6 +66,12 @@ pub fn write_failure(error: &ErrorReport<'_>) -> anyhow::Result<()> {
     write_line(&Failure { ok: false, error })
 }
 
+pub fn write_stream_item(value: &impl Serialize) -> anyhow::Result<()> {
+    write_line(value)?;
+    std::io::stdout().flush()?;
+    Ok(())
+}
+
 fn write_line(value: &impl Serialize) -> anyhow::Result<()> {
     let line = serde_json::to_string(value)?;
     let mut stdout = std::io::stdout().lock();

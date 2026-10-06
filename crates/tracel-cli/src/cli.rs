@@ -66,6 +66,9 @@ pub enum Commands {
     Logout,
     /// Show which credential commands use, or print an access token for scripts.
     Auth(commands::auth::AuthArgs),
+    /// Browse project experiments, metrics, and logs.
+    #[command(visible_alias = "exp")]
+    Experiments(commands::experiments::ExperimentsArgs),
     /// Initialize a new project or reinitialize an existing one.
     Init(commands::init::InitArgs),
     /// Unlink the Tracel Console project from this repository.
@@ -169,8 +172,9 @@ pub fn cli_main() {
 
     let context = CliContext::new(terminal.clone(), environment, mode, args.project);
 
+    let streams_output = matches!(&command, Commands::Experiments(args) if args.streams_output());
     let result = handle_command(command, context).and_then(|data| {
-        if mode == OutputMode::Json {
+        if mode == OutputMode::Json && !streams_output {
             output::write_success(&data)?;
         }
         Ok(())
@@ -284,6 +288,9 @@ fn handle_command(command: Commands, context: CliContext) -> anyhow::Result<Valu
         Commands::Login(login_args) => commands::login::handle_command(login_args, context),
         Commands::Logout => commands::logout::handle_command(context),
         Commands::Auth(auth_args) => commands::auth::handle_command(auth_args, context),
+        Commands::Experiments(experiments_args) => {
+            commands::experiments::handle_command(experiments_args, context)
+        }
         Commands::Init(init_args) => commands::init::handle_command(init_args, context),
         Commands::Unlink(unlink_args) => commands::unlink::handle_command(unlink_args, context),
         Commands::Me => commands::me::handle_command(context),
