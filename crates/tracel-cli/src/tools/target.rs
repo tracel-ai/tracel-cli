@@ -7,6 +7,9 @@ use anyhow::Context;
 use colored::Colorize;
 use tracel_client::console::project::request::{Arch, Os};
 
+use crate::error::{CliError, ErrorKind};
+use crate::tools::terminal::Terminal;
+
 /// Every (os, arch) target we offer to build for, in canonical display order.
 /// The host is surfaced separately and pulled to the front by `prompt_targets`.
 /// macOS x86_64 (Intel) is intentionally omitted — we don't support it.
@@ -29,6 +32,51 @@ pub fn target_triple(os: Os, arch: Arch) -> &'static str {
         (Os::Macos, Arch::X86_64) => "x86_64-apple-darwin",
         (Os::Macos, Arch::Arm64) => "aarch64-apple-darwin",
     }
+}
+
+pub fn parse_target(triple: &str) -> Result<(Os, Arch), CliError> {
+    ALL_TARGETS
+        .iter()
+        .copied()
+        .find(|&(os, arch)| target_triple(os, arch) == triple)
+        .ok_or_else(|| {
+            let valid = ALL_TARGETS
+                .iter()
+                .map(|&(os, arch)| target_triple(os, arch))
+                .collect::<Vec<_>>()
+                .join(", ");
+            CliError::new(
+                ErrorKind::Usage,
+                format!("Invalid --target '{triple}'. Valid values: {valid}."),
+            )
+            .with_hint("Pass --target <triple> using one of the valid values.")
+        })
+}
+
+fn resolve_targets(host: (Os, Arch), requested: &[String]) -> Result<Vec<(Os, Arch)>, CliError> {
+    if requested.is_empty() {
+        return Ok(vec![host]);
+    }
+    let mut targets = Vec::new();
+    for triple in requested {
+        let target = parse_target(triple)?;
+        if !targets.contains(&target) {
+            targets.push(target);
+        }
+    }
+    Ok(targets)
+}
+
+pub fn select_targets(
+    terminal: &Terminal,
+    requested: &[String],
+    host: (Os, Arch),
+    installed: &HashSet<String>,
+) -> anyhow::Result<Vec<(Os, Arch)>> {
+    if !requested.is_empty() || !terminal.is_interactive() {
+        return resolve_targets(host, requested).map_err(anyhow::Error::from);
+    }
+    prompt_targets(terminal, host, installed)
 }
 
 /// Human-friendly name for an (os, arch) pair, e.g. "Linux x86_64".
@@ -92,6 +140,7 @@ pub fn add_target(triple: &str) -> anyhow::Result<()> {
         .arg("target")
         .arg("add")
         .arg(triple)
+        .stdin(Stdio::null())
         .stdout(Stdio::from(std::io::stderr()))
         .status()
         .with_context(|| {
@@ -107,6 +156,7 @@ pub fn add_target(triple: &str) -> anyhow::Result<()> {
 /// first and labelled "(this machine)"; cross targets not installed via rustup are
 /// dimmed and annotated with the `rustup target add` command to install them.
 pub fn prompt_targets(
+    terminal: &Terminal,
     host: (Os, Arch),
     installed: &HashSet<String>,
 ) -> anyhow::Result<Vec<(Os, Arch)>> {
@@ -143,22 +193,29 @@ pub fn prompt_targets(
         })
         .collect();
 
-    cliclack::multiselect("Select the target(s) to build for (space to toggle, enter to confirm)")
-        .items(&items)
-        .initial_values(vec![host])
-        .required(true)
-        .interact()
-        .map_err(anyhow::Error::from)
+    terminal.multiselect(
+        "Select the target(s) to build for (space to toggle, enter to confirm)",
+        "target",
+        &items,
+        vec![host],
+    )
 }
 
-pub fn install_missing_target(missing: Vec<&str>) -> anyhow::Result<()> {
+pub fn install_missing_target(
+    terminal: &Terminal,
+    missing: Vec<&str>,
+    install_targets: bool,
+) -> anyhow::Result<()> {
     if !missing.is_empty() {
         let list = missing.join(", ");
-        if cliclack::confirm(format!(
-            "These targets are not installed: {list}. Run `rustup target add` for them now?"
-        ))
-        .initial_value(true)
-        .interact()?
+        if install_targets
+            || terminal.confirm(
+                &format!(
+                    "These targets are not installed: {list}. Run `rustup target add` for them now?"
+                ),
+                "install-targets",
+                true,
+            )?
         {
             for triple in &missing {
                 add_target(triple)?;
@@ -175,4 +232,35 @@ pub fn install_missing_target(missing: Vec<&str>) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_explicit_targets_defaults_to_host() {
+        for host in ALL_TARGETS {
+            assert_eq!(resolve_targets(host, &[]).unwrap(), vec![host]);
+        }
+    }
+
+    #[test]
+    fn explicit_targets_are_validated_and_deduplicated_in_order() {
+        let host = (Os::Linux, Arch::X86_64);
+        let requested = [
+            "aarch64-unknown-linux-gnu".to_string(),
+            "x86_64-pc-windows-msvc".to_string(),
+            "aarch64-unknown-linux-gnu".to_string(),
+        ];
+        assert_eq!(
+            resolve_targets(host, &requested).unwrap(),
+            vec![(Os::Linux, Arch::Arm64), (Os::Windows, Arch::X86_64),]
+        );
+        let error = parse_target("unknown-triple").unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Usage);
+        for (os, arch) in ALL_TARGETS {
+            assert!(error.to_string().contains(target_triple(os, arch)));
+        }
+    }
 }

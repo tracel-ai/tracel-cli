@@ -1,7 +1,9 @@
+use anyhow::Context;
 use tracel_client::console::Client;
 use tracel_client::console::model::request::CreateModelRequest;
 
 use crate::context::CliContext;
+use crate::error::{CliError, ErrorKind};
 
 pub fn ensure_model_exists(
     context: &CliContext,
@@ -18,11 +20,24 @@ pub fn ensure_model_exists(
         Err(e) => return Err(e).with_context(|| format!("Failed to check model '{model_name}'")),
     }
 
+    if !context.terminal().is_interactive() && auto_create != Some(true) {
+        return Err(CliError::new(
+            ErrorKind::Usage,
+            format!("Model '{model_name}' does not exist in {namespace}/{project}."),
+        )
+        .with_hint("Pass --auto-create true to create it")
+        .into());
+    }
+
     let create = match auto_create {
         Some(create) => create,
-        None => context.terminal().confirm(&format!(
-            "Model '{model_name}' does not exist in {namespace}/{project}. Create it now?"
-        ))?,
+        None => context.terminal().confirm(
+            &format!(
+                "Model '{model_name}' does not exist in {namespace}/{project}. Create it now?"
+            ),
+            "auto-create",
+            false,
+        )?,
     };
 
     if !create {
@@ -31,12 +46,13 @@ pub fn ensure_model_exists(
 
     let description = match description {
         Some(description) => Some(description),
-        None if auto_create.is_none() => cliclack::input("Enter model description (optional)")
-            .required(false)
-            .interact::<String>()
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty()),
+        None if auto_create.is_none() => {
+            let description = context
+                .terminal()
+                .input("Enter model description (optional)", "description")?;
+            let description = description.trim().to_string();
+            (!description.is_empty()).then_some(description)
+        }
         None => None,
     };
 
@@ -55,4 +71,3 @@ pub fn ensure_model_exists(
 
     Ok(())
 }
-use anyhow::Context;

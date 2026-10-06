@@ -15,9 +15,12 @@ use tracel_client::console::Client;
 
 pub fn find_manifest() -> anyhow::Result<std::path::PathBuf> {
     try_locate_manifest().ok_or_else(|| {
-        anyhow::anyhow!(
-            "Could not locate Cargo.toml manifest. Please run this command inside a Burn project directory."
+        CliError::new(
+            CliErrorKind::Usage,
+            "Could not locate a Cargo.toml manifest.",
         )
+        .with_hint("Run this command inside a Burn project directory.")
+        .into()
     })
 }
 
@@ -32,12 +35,21 @@ pub fn is_tracel_project_linked() -> bool {
 
 /// One error that says what went wrong, why, and what to do next.
 fn explain_project_context_error(e: ProjectContextError) -> anyhow::Error {
-    let hint = match e.kind() {
-        ErrorKind::ManifestNotFound => "Run this command from a Rust project directory.",
-        ErrorKind::ProjectNotLinked => "Run 'tracel init' to link it.",
-        ErrorKind::Parsing => "Check that Cargo.toml and tracel.toml are valid.",
-        ErrorKind::ProjectInitialization => "Re-link the project with 'tracel init --force'.",
-        ErrorKind::Unexpected => "Check your project setup.",
+    let (kind, hint) = match e.kind() {
+        ErrorKind::ManifestNotFound => (
+            CliErrorKind::Usage,
+            "Run this command from a Rust project directory.",
+        ),
+        ErrorKind::ProjectNotLinked => (CliErrorKind::NotFound, "Run 'tracel init' to link it."),
+        ErrorKind::Parsing => (
+            CliErrorKind::Usage,
+            "Check that Cargo.toml and tracel.toml are valid.",
+        ),
+        ErrorKind::ProjectInitialization => (
+            CliErrorKind::Internal,
+            "Re-link the project with 'tracel init --force'.",
+        ),
+        ErrorKind::Unexpected => (CliErrorKind::Internal, "Check your project setup."),
     };
 
     let mut message = e.to_string();
@@ -47,7 +59,9 @@ fn explain_project_context_error(e: ProjectContextError) -> anyhow::Error {
         cause = err.source();
     }
 
-    anyhow::anyhow!("{message}. {hint}")
+    CliError::new(kind, format!("{message}."))
+        .with_hint(hint)
+        .into()
 }
 
 /// Require a linked Tracel Console project.

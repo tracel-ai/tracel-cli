@@ -3,10 +3,7 @@ use clap::Args;
 use serde_json::{Value, json};
 
 use crate::{
-    context::CliContext,
-    error::{CliError, ErrorKind},
-    helpers::require_linked_project,
-    tools::project_context::ProjectContext,
+    context::CliContext, helpers::require_linked_project, tools::project_context::ProjectContext,
 };
 
 #[derive(Args, Debug)]
@@ -18,31 +15,14 @@ pub struct UnlinkArgs {
 
 pub fn handle_command(args: UnlinkArgs, context: CliContext) -> anyhow::Result<Value> {
     let project = require_linked_project()?;
-
     context.terminal().command_title("Unlink");
 
     if !args.yes {
-        if !context.terminal().is_interactive() {
-            return Err(CliError::new(
-                ErrorKind::Usage,
-                "Unlinking needs confirmation: pass --yes to unlink without a prompt.",
-            )
-            .into());
-        }
-
-        let confirmed = match context.terminal().confirm(
+        let confirmed = context.terminal().confirm(
             "Are you sure you want to unlink the Tracel Console project from this repository?",
-        ) {
-            Ok(confirmed) => confirmed,
-            Err(error)
-                if error
-                    .downcast_ref::<std::io::Error>()
-                    .is_some_and(|error| error.kind() == std::io::ErrorKind::Interrupted) =>
-            {
-                false
-            }
-            Err(error) => return Err(error),
-        };
+            "yes",
+            false,
+        )?;
         if !confirmed {
             context.terminal().cancel_finalize("Cancelled");
             return Ok(json!({"unlinked": false}));

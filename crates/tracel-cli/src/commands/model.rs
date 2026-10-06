@@ -1,11 +1,13 @@
 use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
+use serde_json::{Value, json};
 use tracel_client::console::model::request::{
     ModelFileSpecRequest, RequestModelVersionUploadRequest,
 };
 
 use crate::context::CliContext;
+use crate::error::{CliError, ErrorKind};
 use crate::helpers::{
     build_part_tasks, ensure_model_exists, resolve_namespace_project, upload_parts,
 };
@@ -36,8 +38,7 @@ pub struct UploadModelArgs {
     /// Tracel Console project name. Defaults to the linked project's name.
     #[arg(long, short)]
     pub project: Option<String>,
-    /// Automatically create the model if it doesn't exist yet (true/false).
-    /// If omitted, you'll be prompted interactively.
+    /// Create a missing model (true/false); otherwise ask when interactive.
     #[arg(long, short)]
     pub auto_create: Option<bool>,
     /// Description to use when auto-creating the model. Requires --auto-create true.
@@ -45,15 +46,19 @@ pub struct UploadModelArgs {
     pub description: Option<String>,
 }
 
-pub fn handle_command(args: ModelArgs, context: CliContext) -> anyhow::Result<()> {
+pub fn handle_command(args: ModelArgs, context: CliContext) -> anyhow::Result<Value> {
     match args.command {
         ModelCommands::Upload(upload_args) => upload_model_version(upload_args, context),
     }
 }
 
-fn upload_model_version(args: UploadModelArgs, context: CliContext) -> anyhow::Result<()> {
+fn upload_model_version(args: UploadModelArgs, context: CliContext) -> anyhow::Result<Value> {
     if args.description.is_some() && args.auto_create != Some(true) {
-        anyhow::bail!("--description can only be used together with --auto-create true.");
+        return Err(CliError::new(
+            ErrorKind::Usage,
+            "--description can only be used together with --auto-create true.",
+        )
+        .into());
     }
 
     context.terminal().command_title("Model upload");
@@ -93,6 +98,7 @@ fn upload_model_version(args: UploadModelArgs, context: CliContext) -> anyhow::R
         .iter()
         .map(|f| (f.rel_path.clone(), f.size_bytes))
         .collect();
+    let bytes: u64 = file_sizes.values().sum();
 
     let spinner = context.terminal().spinner();
     spinner.start("Requesting upload URLs...");
@@ -128,5 +134,12 @@ fn upload_model_version(args: UploadModelArgs, context: CliContext) -> anyhow::R
         .terminal()
         .finalize("Model version uploaded successfully.");
 
-    Ok(())
+    Ok(json!({
+        "namespace": namespace,
+        "project": project,
+        "model": args.model_name,
+        "version": upload.version,
+        "files": files.len(),
+        "bytes": bytes,
+    }))
 }
