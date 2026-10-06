@@ -14,12 +14,10 @@ use colored::Colorize;
 use sha2::Digest as _;
 use sha2::Sha256;
 
-use crate::print_info;
 use crate::tools::event::Reporter;
 
 #[derive(Debug)]
 pub struct ArchiveMetadata {
-    pub name: String,
     pub path: PathBuf,
     pub checksum: String,
     pub size: u64,
@@ -51,7 +49,7 @@ pub fn package_workspace(
         .canonicalize()
         .map_err(|e| anyhow::anyhow!("Failed to canonicalize workspace root: {}", e))?;
 
-    print_info!(
+    tracing::info!(
         "Packaging workspace at: {}",
         workspace_root.display().to_string().bold()
     );
@@ -63,7 +61,7 @@ pub fn package_workspace(
 
     let files = list_workspace_files(&workspace_root)?;
 
-    print_info!("Found {} files to package", files.len());
+    tracing::info!("Found {} files to package", files.len());
 
     event_reporter.report_event(PackageEvent {
         message: format!("Discovered {} files", files.len()),
@@ -114,7 +112,6 @@ pub fn package_workspace(
     });
 
     let archive_data = ArchiveMetadata {
-        name: workspace_name.to_string(),
         path: archive_path,
         checksum: checksum.clone(),
         size,
@@ -132,7 +129,7 @@ fn list_workspace_files(workspace_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
     let git_repo = discover_gix_repo(workspace_root)?;
 
     if let Some(ref repo) = git_repo {
-        print_info!(
+        tracing::info!(
             "Git repository found at {}",
             repo.path().display().to_string().bold()
         );

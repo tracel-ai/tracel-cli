@@ -13,7 +13,7 @@ use url::Url;
 static TEMPORARY_ID: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Serialize, Deserialize)]
-pub(super) struct PendingLogin {
+pub struct PendingLogin {
     pub authorization: DeviceCodeResponse,
     pub expires_at: SystemTime,
 }
@@ -30,7 +30,7 @@ impl PendingLogin {
     }
 }
 
-pub(super) struct PendingLoginStore {
+pub struct PendingLoginStore {
     path: PathBuf,
 }
 
