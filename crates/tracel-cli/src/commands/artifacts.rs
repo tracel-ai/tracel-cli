@@ -8,7 +8,8 @@ use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
 use crate::helpers::{
-    DownloadFile, download_files, resolve_namespace_project, select_artifact, validate_rel_path,
+    DownloadFile, Resource, download_files, map_resource_error, resolve_namespace_project,
+    select_artifact, validate_rel_path,
 };
 use crate::output::{OutputMode, write_table};
 
@@ -106,10 +107,18 @@ pub fn handle_command(args: ArtifactsArgs, context: CliContext) -> anyhow::Resul
         ArtifactsCommands::List(args) => {
             let response = match args.name {
                 Some(filter) => {
-                    client.list_artifacts_by_name(namespace, name, args.experiment, &filter)?
+                    client.list_artifacts_by_name(namespace, name, args.experiment, &filter)
                 }
-                None => client.list_artifacts(namespace, name, args.experiment)?,
-            };
+                None => client.list_artifacts(namespace, name, args.experiment),
+            }
+            .map_err(|error| {
+                map_resource_error(
+                    error,
+                    namespace,
+                    name,
+                    Resource::Experiment(args.experiment),
+                )
+            })?;
             if human {
                 write_table(
                     &mut std::io::stdout().lock(),
@@ -134,7 +143,17 @@ pub fn handle_command(args: ArtifactsArgs, context: CliContext) -> anyhow::Resul
             Ok(serde_json::to_value(response)?)
         }
         ArtifactsCommands::Download(args) => {
-            let artifacts = client.list_artifacts(namespace, name, args.experiment)?;
+            let map_error = |error| {
+                map_resource_error(
+                    error,
+                    namespace,
+                    name,
+                    Resource::Experiment(args.experiment),
+                )
+            };
+            let artifacts = client
+                .list_artifacts(namespace, name, args.experiment)
+                .map_err(map_error)?;
             let index = select_artifact(
                 artifacts
                     .items
@@ -148,8 +167,9 @@ pub fn handle_command(args: ArtifactsArgs, context: CliContext) -> anyhow::Resul
                 Some(directory) => directory,
                 None => default_directory(&artifact.name)?,
             };
-            let response =
-                client.presign_artifact_download(namespace, name, args.experiment, &artifact.id)?;
+            let response = client
+                .presign_artifact_download(namespace, name, args.experiment, &artifact.id)
+                .map_err(map_error)?;
             let files: Vec<_> = response
                 .files
                 .into_iter()

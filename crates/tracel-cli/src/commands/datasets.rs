@@ -7,7 +7,7 @@ use tracel_client::console::dataset::response::SourceKindResponse;
 
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
-use crate::helpers::resolve_namespace_project;
+use crate::helpers::{Resource, map_resource_error, resolve_namespace_project};
 use crate::output::{OutputMode, write_table};
 
 #[derive(Args, Debug)]
@@ -94,7 +94,16 @@ pub fn handle_command(args: DatasetsArgs, context: CliContext) -> anyhow::Result
             Ok(serde_json::to_value(response)?)
         }
         DatasetsCommands::Get(args) => {
-            let dataset = client.get_dataset(&project.owner, &project.name, &args.dataset)?;
+            let dataset = client
+                .get_dataset(&project.owner, &project.name, &args.dataset)
+                .map_err(|error| {
+                    map_resource_error(
+                        error,
+                        &project.owner,
+                        &project.name,
+                        Resource::Dataset(&args.dataset),
+                    )
+                })?;
             if human {
                 let mut stdout = std::io::stdout().lock();
                 writeln!(stdout, "Name: {}", dataset.name)?;
@@ -111,15 +120,24 @@ pub fn handle_command(args: DatasetsArgs, context: CliContext) -> anyhow::Result
             Ok(serde_json::to_value(dataset)?)
         }
         DatasetsCommands::Versions(args) => {
-            let response = client.query_dataset_versions(
-                &project.owner,
-                &project.name,
-                &args.dataset,
-                QueryDatasetVersionsRequest {
-                    page: args.page,
-                    per_page: args.per_page,
-                },
-            )?;
+            let response = client
+                .query_dataset_versions(
+                    &project.owner,
+                    &project.name,
+                    &args.dataset,
+                    QueryDatasetVersionsRequest {
+                        page: args.page,
+                        per_page: args.per_page,
+                    },
+                )
+                .map_err(|error| {
+                    map_resource_error(
+                        error,
+                        &project.owner,
+                        &project.name,
+                        Resource::Dataset(&args.dataset),
+                    )
+                })?;
             if human {
                 write_table(
                     &mut std::io::stdout().lock(),
