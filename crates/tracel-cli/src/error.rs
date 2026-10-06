@@ -126,6 +126,7 @@ fn classify_client(error: &ClientError) -> ErrorKind {
             ErrorKind::LimitReached
         }
         ClientError::ApiError { status, .. } => match status.as_u16() {
+            400 | 422 => ErrorKind::Usage,
             401 => ErrorKind::NotAuthenticated,
             403 => ErrorKind::Forbidden,
             404 => ErrorKind::NotFound,
@@ -193,7 +194,8 @@ mod tests {
     #[test]
     fn api_status_determines_kind() {
         for (status, kind) in [
-            (400, ErrorKind::Internal),
+            (400, ErrorKind::Usage),
+            (422, ErrorKind::Usage),
             (401, ErrorKind::NotAuthenticated),
             (403, ErrorKind::Forbidden),
             (404, ErrorKind::NotFound),
@@ -217,17 +219,19 @@ mod tests {
 
     #[test]
     fn server_limit_code_is_limit_reached() {
-        let error = ClientError::ApiError {
-            status: 403.try_into().unwrap(),
-            body: tracel_client::error::ApiErrorBody {
-                code: ApiErrorCode::LimitReached,
-                message: "limit".into(),
-            },
-        };
-        assert_eq!(
-            classify(&anyhow::Error::new(error).context("request failed")),
-            ErrorKind::LimitReached
-        );
+        for status in [400, 403] {
+            let error = ClientError::ApiError {
+                status: status.try_into().unwrap(),
+                body: tracel_client::error::ApiErrorBody {
+                    code: ApiErrorCode::LimitReached,
+                    message: "limit".into(),
+                },
+            };
+            assert_eq!(
+                classify(&anyhow::Error::new(error).context("request failed")),
+                ErrorKind::LimitReached
+            );
+        }
     }
 
     #[test]
