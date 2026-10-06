@@ -87,7 +87,6 @@ pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<
     let resolved = resolve_namespace_project(&context)?;
     let project = ProjectContext {
         workspace_info,
-        build_profile: "release".to_string(),
         project: resolved.project,
     };
     let client = get_client_and_login_if_needed(&context)?;

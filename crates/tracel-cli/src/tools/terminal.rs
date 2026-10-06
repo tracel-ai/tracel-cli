@@ -43,7 +43,7 @@ impl Terminal {
         self.output != OutputMode::Json
     }
 
-    pub(crate) fn is_styled(&self) -> bool {
+    pub fn is_styled(&self) -> bool {
         self.is_human() && std::io::stderr().is_terminal()
     }
 
@@ -320,14 +320,6 @@ impl TerminalSpinner {
     pub fn error(&self, message: impl Display) {
         if let Some(bar) = &self.bar {
             bar.error(message);
-        } else {
-            self.terminal.print_err(&message.to_string());
-        }
-    }
-
-    pub fn cancel(&self, message: impl Display) {
-        if let Some(bar) = &self.bar {
-            bar.cancel(message);
         } else {
             self.terminal.print_err(&message.to_string());
         }

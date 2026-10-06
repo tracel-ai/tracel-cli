@@ -31,10 +31,6 @@ impl ProjectContextError {
     pub fn kind(&self) -> &ErrorKind {
         &self.kind
     }
-
-    pub fn is_project_not_linked(&self) -> bool {
-        matches!(self.kind, ErrorKind::ProjectNotLinked)
-    }
 }
 
 impl std::fmt::Display for ProjectContextError {
@@ -45,7 +41,6 @@ impl std::fmt::Display for ProjectContextError {
 
 pub struct ProjectContext {
     pub workspace_info: WorkspaceInfo,
-    pub build_profile: String,
     pub project: TracelProject,
 }
 
@@ -75,7 +70,6 @@ impl ProjectContext {
 
         Ok(Self {
             workspace_info,
-            build_profile: "release".to_string(),
             project,
         })
     }
@@ -93,7 +87,6 @@ impl ProjectContext {
 
         Ok(Self {
             workspace_info,
-            build_profile: "release".to_string(),
             project,
         })
     }
