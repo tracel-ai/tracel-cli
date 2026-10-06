@@ -15,7 +15,7 @@ pub fn ensure_model_exists(
     match client.get_model(namespace, project, model_name) {
         Ok(_) => return Ok(()),
         Err(e) if e.is_not_found() => {}
-        Err(e) => anyhow::bail!("Failed to check model '{model_name}': {e}"),
+        Err(e) => return Err(e).with_context(|| format!("Failed to check model '{model_name}'")),
     }
 
     let create = match auto_create {
@@ -55,3 +55,4 @@ pub fn ensure_model_exists(
 
     Ok(())
 }
+use anyhow::Context;

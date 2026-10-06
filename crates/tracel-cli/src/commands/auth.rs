@@ -1,11 +1,15 @@
 use std::time::SystemTime;
 
+use chrono::{DateTime, Utc};
 use clap::{Args, Subcommand};
+use serde_json::{Value, json};
 use tracel_client::ClientError;
 use tracel_client::console::TracelCredentials;
 
 use crate::commands::login::environment_suffix;
 use crate::context::{CliContext, ClientCreationError};
+use crate::error::{CliError, ErrorKind};
+use crate::output::OutputMode;
 
 #[derive(Args, Debug)]
 pub struct AuthArgs {
@@ -22,28 +26,39 @@ pub enum AuthCommands {
     Status,
 }
 
-pub fn handle_command(args: AuthArgs, context: CliContext) -> anyhow::Result<()> {
+pub fn handle_command(args: AuthArgs, context: CliContext) -> anyhow::Result<Value> {
     match args.command {
         AuthCommands::Token => print_token(&context),
         AuthCommands::Status => show_status(&context),
     }
 }
 
-fn print_token(context: &CliContext) -> anyhow::Result<()> {
-    let access_token = context.app_session()?.access_token().map_err(|e| match e {
-        ClientError::AppSessionEnded => anyhow::anyhow!(
-            "Not logged in{}. Run 'tracel login' first.",
-            environment_suffix(&context.environment())
-        ),
-        e => e.into(),
-    })?;
+fn print_token(context: &CliContext) -> anyhow::Result<Value> {
+    let access_token = context
+        .app_session()?
+        .access_token()
+        .map_err(|e| -> anyhow::Error {
+            match e {
+                ClientError::AppSessionEnded => CliError::new(
+                    ErrorKind::NotAuthenticated,
+                    format!(
+                        "Not logged in{}. Run 'tracel login' first.",
+                        environment_suffix(&context.environment())
+                    ),
+                )
+                .into(),
+                e => e.into(),
+            }
+        })?;
 
-    println!("{}", access_token.as_str());
+    if context.output() == OutputMode::Human {
+        println!("{}", access_token.as_str());
+    }
 
-    Ok(())
+    Ok(json!({"access_token": access_token.as_str()}))
 }
 
-fn show_status(context: &CliContext) -> anyhow::Result<()> {
+fn show_status(context: &CliContext) -> anyhow::Result<Value> {
     context.terminal().command_title("Authentication Status");
 
     let client = context.create_client();
@@ -76,13 +91,22 @@ fn show_status(context: &CliContext) -> anyhow::Result<()> {
                 client.user().username,
                 env_msg
             ));
-            Ok(())
+            Ok(json!({
+                "credential": if credential == "TRACEL_API_KEY" { "api_key" } else { credential },
+                "login_ends_at": login.as_ref().map(|login| DateTime::<Utc>::from(login.refresh_token_expires_at).to_rfc3339()),
+                "user": {"username": client.user().username, "namespace": client.user().namespace},
+                "environment": context.environment_name(),
+            }))
         }
         Err(ClientCreationError::NoCredentials | ClientCreationError::InvalidCredentials) => {
-            anyhow::bail!(
-                "Not logged in{}. Run 'tracel login' or set TRACEL_API_KEY.",
-                env_msg
+            Err(CliError::new(
+                ErrorKind::NotAuthenticated,
+                format!(
+                    "Not logged in{}. Run 'tracel login' or set TRACEL_API_KEY.",
+                    env_msg
+                ),
             )
+            .into())
         }
         Err(e) => Err(e.into()),
     }

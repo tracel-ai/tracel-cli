@@ -1,7 +1,10 @@
 //! Project helpers for CLI operations
 
+use anyhow::Context;
+
 use crate::{
     context::CliContext,
+    error::{CliError, ErrorKind as CliErrorKind},
     tools::{
         cargo::try_locate_manifest,
         project_context::{ErrorKind, ProjectContext, ProjectContextError},
@@ -117,18 +120,22 @@ pub fn validate_project_exists_on_server(
             context.terminal().print(
                 "Run 'tracel init --force' to reinitialize and link to a different project.",
             );
-            anyhow::bail!(
-                "Project {}/{} not found on Tracel Console",
-                bc_project.owner,
-                bc_project.name
+            Err(CliError::new(
+                CliErrorKind::NotFound,
+                format!(
+                    "Project {}/{} not found on Tracel Console",
+                    bc_project.owner, bc_project.name
+                ),
             )
+            .with_hint("Run 'tracel init --force' to link another project.")
+            .into())
         }
         Err(e) => {
             context.terminal().print_err(&format!(
                 "Failed to verify project on Tracel Console: {}",
                 e
             ));
-            anyhow::bail!("Failed to verify project exists on server: {}", e)
+            Err(e).context("Failed to verify project exists on server")
         }
     }
 }

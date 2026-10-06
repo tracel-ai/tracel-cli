@@ -58,7 +58,7 @@ pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<
             .initial_value(true)
             .interact()?
         {
-            commit_sequence()?;
+            commit_sequence(context.terminal())?;
         }
     }
 
@@ -317,7 +317,7 @@ fn upload(
             std::fs::read(&path).with_context(|| format!("Failed to read {}", path.display()))?;
         client.upload_bytes_to_url(url, bytes).map_err(|e| {
             spinner.error("Upload failed.");
-            anyhow::anyhow!("Failed to upload `{key}`: {e}")
+            anyhow::Error::new(e).context(format!("Failed to upload `{key}`"))
         })?;
     }
     spinner.stop("Artifacts uploaded.");

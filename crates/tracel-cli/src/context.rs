@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::output::OutputMode;
 use crate::tools::terminal::Terminal;
 use tracel_client::ClientError;
 use tracel_client::console::auth::DeviceAuthClient;
@@ -26,13 +27,15 @@ pub enum ClientCreationError {
 pub struct CliContext {
     terminal: Terminal,
     environment: Env,
+    output: OutputMode,
 }
 
 impl CliContext {
-    pub fn new(terminal: Terminal, environment: Env) -> Self {
+    pub fn new(terminal: Terminal, environment: Env, output: OutputMode) -> Self {
         Self {
             terminal,
             environment,
+            output,
         }
     }
 
@@ -88,6 +91,18 @@ impl CliContext {
 
     pub fn environment(&self) -> Env {
         self.environment.clone()
+    }
+
+    pub fn output(&self) -> OutputMode {
+        self.output
+    }
+
+    pub fn environment_name(&self) -> String {
+        match self.environment {
+            Env::Production => "production".to_string(),
+            Env::Development => "development".to_string(),
+            Env::Staging(version) => format!("staging-{version}"),
+        }
     }
 
     pub fn get_api_endpoint(&self) -> String {

@@ -34,7 +34,7 @@ pub fn prompt_init(context: &CliContext, client: &Client) -> anyhow::Result<()> 
 
     let terminal = context.terminal();
 
-    ensure_git_repo_initialized(&workspace_info.get_ws_root())?;
+    ensure_git_repo_initialized(&workspace_info.get_ws_root(), terminal)?;
     ensure_git_repo_clean(terminal)?;
 
     let first_commit_hash = git::get_first_commit_hash();
@@ -54,9 +54,9 @@ pub fn prompt_init(context: &CliContext, client: &Client) -> anyhow::Result<()> 
         ProjectKind::Organization(org_name) => org_name.as_str(),
     };
     let project_info = match client.get_project(owner_name, &project_name) {
-        Ok(project) => handle_existing_project(&project)?,
+        Ok(project) => handle_existing_project(&project, terminal)?,
         Err(e) if e.is_not_found() => {
-            create_new_project(client, project_owner.clone(), &project_name)?
+            create_new_project(client, project_owner.clone(), &project_name, terminal)?
         }
         Err(e) => {
             terminal.cancel_finalize(&format!("Failed to check for existing project: {e}"));
@@ -135,7 +135,10 @@ pub fn prompt_project_name(workspace_name: &str) -> anyhow::Result<String> {
     Ok(input)
 }
 
-fn handle_existing_project(project: &ProjectResponse) -> anyhow::Result<TracelProject> {
+fn handle_existing_project(
+    project: &ProjectResponse,
+    terminal: &Terminal,
+) -> anyhow::Result<TracelProject> {
     let confirmed = cliclack::confirm(format!(
         "Project \"{}\" already exists under owner \"{}\". Do you want to link it?",
         project.project_name, project.namespace_name
@@ -148,7 +151,7 @@ fn handle_existing_project(project: &ProjectResponse) -> anyhow::Result<TracelPr
             name: project.project_name.clone(),
         })
     } else {
-        cliclack::outro_cancel("Project initialization cancelled")?;
+        terminal.outro_cancel("Project initialization cancelled");
         Err(anyhow::anyhow!("Project initialization cancelled by user"))
     }
 }
@@ -163,6 +166,7 @@ fn create_new_project(
     client: &Client,
     project_kind: ProjectKind,
     name: &str,
+    terminal: &Terminal,
 ) -> anyhow::Result<TracelProject> {
     let description = cliclack::input("Enter the project description (default empty)")
         .required(false)
@@ -189,19 +193,22 @@ fn create_new_project(
             name: project.project_name,
         }),
         Err(e) => {
-            cliclack::outro_cancel(format!("Failed to create project: {e}"))?;
-            Err(anyhow::anyhow!("Failed to create project: {}", e))
+            terminal.outro_cancel(&format!("Failed to create project: {e}"));
+            Err(e).context("Failed to create project")
         }
     }
 }
 
-pub fn ensure_git_repo_initialized(ws_root: &std::path::Path) -> anyhow::Result<()> {
+pub fn ensure_git_repo_initialized(
+    ws_root: &std::path::Path,
+    terminal: &Terminal,
+) -> anyhow::Result<()> {
     if !git::is_repo_initialized() {
         let repo = git::init_repo(ws_root)?;
-        cliclack::log::step(format!(
+        terminal.step(&format!(
             "No git repository found. Initialized new git repository at: {}",
             repo.path().display()
-        ))?;
+        ));
     }
     Ok(())
 }
@@ -213,13 +220,13 @@ pub fn ensure_git_repo_clean(terminal: &Terminal) -> anyhow::Result<()> {
             terminal.print(
                 "Repository is dirty. Tracel Console needs a valid commit hash to associated your code with your repository.",
             );
-            commit_sequence().map_err(|e| anyhow::anyhow!("Failed to make initial commit: {}", e))
+            commit_sequence(terminal).context("Failed to make initial commit")
         }
         Err(e) if e.to_string().contains("does not have any commits") => {
             terminal.print(
                 "Repository is dirty. Please commit or stash your changes before proceeding.",
             );
-            commit_sequence().map_err(|e| anyhow::anyhow!("Failed to make initial commit: {}", e))
+            commit_sequence(terminal).context("Failed to make initial commit")
         }
         Err(_) => Err(anyhow::anyhow!(
             "Failed to check if the repository is dirty."
@@ -227,7 +234,7 @@ pub fn ensure_git_repo_clean(terminal: &Terminal) -> anyhow::Result<()> {
     }
 }
 
-pub fn commit_sequence() -> anyhow::Result<()> {
+pub fn commit_sequence(terminal: &Terminal) -> anyhow::Result<()> {
     let do_commit =
         cliclack::confirm("Do you want to automatically commit all files?").interact()?;
     if do_commit {
@@ -250,9 +257,9 @@ pub fn commit_sequence() -> anyhow::Result<()> {
         if !status.success() {
             return Err(anyhow::anyhow!("Failed to commit files to git"));
         }
-        cliclack::log::success("Committed all files to git.")?;
+        terminal.print_success("Committed all files to git.");
     } else {
-        let spinner = cliclack::spinner();
+        let spinner = terminal.spinner();
         let message = format!(
             "{}\n{}\n\n{}",
             console::style("Waiting for manual commit").bold(),
@@ -269,12 +276,12 @@ pub fn commit_sequence() -> anyhow::Result<()> {
             match term.read_key() {
                 Ok(console::Key::Escape) => {
                     spinner.cancel("Manual commit");
-                    cliclack::outro_cancel("Cancelled")?;
+                    terminal.outro_cancel("Cancelled");
                     return Err(anyhow::anyhow!("Manual commit cancelled"));
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
                     spinner.error("Manual commit");
-                    cliclack::outro_cancel("Interrupted")?;
+                    terminal.outro_cancel("Interrupted");
                     return Err(anyhow::anyhow!("Manual commit interrupted"));
                 }
                 _ => {

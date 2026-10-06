@@ -49,6 +49,31 @@ After installation, the `tracel` command will be available in your terminal.
 
 ## Commands
 
+All commands accept `--json` or `-o, --output <auto|human|json>`. The default
+`auto` format uses human output on a terminal and JSON when stdout is redirected.
+`TRACEL_OUTPUT=human` or `TRACEL_OUTPUT=json` sets the format when no output flag
+is given. `--json` and `--output` cannot be combined.
+
+JSON results are one line on stdout: `{"ok":true,"data":{...}}` on success, or
+`{"ok":false,"error":{"code":"NOT_FOUND","message":"...","hint":null,"exit_code":5}}`
+on failure. Diagnostics go to stderr. Help and version output retain their normal
+format, and `train` inherits the executed program's output and exit code.
+
+| Error code | Exit code |
+| --- | --- |
+| Success | 0 |
+| `INTERNAL` | 1 |
+| `USAGE` | 2 |
+| `NOT_AUTHENTICATED` | 3 |
+| `FORBIDDEN` | 4 |
+| `NOT_FOUND` | 5 |
+| `CONFLICT` | 6 |
+| `CONFIRMATION_REQUIRED` | 7 |
+| `LIMIT_REACHED` | 8 |
+| `UNAVAILABLE` | 11 |
+
+Exit codes 9 and 10 are reserved.
+
 ### `tracel train`
 
 Run your project locally. This is a thin alias for `cargo run`: every argument

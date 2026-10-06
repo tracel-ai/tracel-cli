@@ -2,6 +2,8 @@ use tracel_client::console::{Client, Env, TracelCredentials};
 use url::Url;
 
 use crate::context::{CliContext, ClientCreationError};
+use crate::error::{CliError, ErrorKind};
+use crate::output::OutputMode;
 
 pub fn get_client_and_login_if_needed(context: &CliContext) -> anyhow::Result<Client> {
     const MAX_RETRIES: u32 = 3;
@@ -21,14 +23,22 @@ pub fn get_client_and_login_if_needed(context: &CliContext) -> anyhow::Result<Cl
                     ClientCreationError::InvalidCredentials
                     | ClientCreationError::NoCredentials => {
                         if attempts > MAX_RETRIES {
-                            return Err(anyhow::anyhow!("Maximum login attempts exceeded"));
+                            return Err(CliError::new(
+                                ErrorKind::NotAuthenticated,
+                                "Maximum login attempts exceeded",
+                            )
+                            .into());
                         }
                         let env_msg = environment_suffix(&context.environment());
                         if !context.terminal().is_interactive() {
-                            anyhow::bail!(
-                                "Not logged in{}. Run 'tracel login' or set TRACEL_API_KEY.",
-                                env_msg
-                            );
+                            return Err(CliError::new(
+                                ErrorKind::NotAuthenticated,
+                                format!(
+                                    "Not logged in{}. Run 'tracel login' or set TRACEL_API_KEY.",
+                                    env_msg
+                                ),
+                            )
+                            .into());
                         }
                         context.terminal().print_err(&format!(
                             "Not logged in{}. Log in below, or press Ctrl+C to exit.",
@@ -39,10 +49,11 @@ pub fn get_client_and_login_if_needed(context: &CliContext) -> anyhow::Result<Cl
                     }
                     ClientCreationError::ServerConnectionError(msg) => {
                         if attempts > MAX_RETRIES {
-                            return Err(anyhow::anyhow!(
-                                "Server connection failed after maximum retries: {}",
-                                msg
-                            ));
+                            return Err(CliError::new(
+                                ErrorKind::Unavailable,
+                                format!("Server connection failed after maximum retries: {}", msg),
+                            )
+                            .into());
                         }
                         context.terminal().print_err(&format!(
                             "Failed to connect to the server: {msg}. Retrying..."
@@ -68,11 +79,16 @@ fn log_in(context: &CliContext) -> anyhow::Result<()> {
     let device_auth = context.device_auth();
 
     let authorization = device_auth.start()?;
-    terminal.print(&format!(
+    let instructions = format!(
         "Open {} and check that it shows the code {}.",
         terminal.format_url(&Url::parse(&authorization.verification_uri_complete)?),
         console::style(&authorization.user_code).bold()
-    ));
+    );
+    if context.output() == OutputMode::Json {
+        eprintln!("{}", console::strip_ansi_codes(&instructions));
+    } else {
+        terminal.print(&instructions);
+    }
 
     let spinner = terminal.spinner();
     spinner.start("Waiting for approval... Press Ctrl+C to cancel.");

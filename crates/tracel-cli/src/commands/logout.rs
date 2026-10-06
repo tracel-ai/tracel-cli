@@ -1,7 +1,7 @@
 use crate::commands::login::environment_suffix;
 use crate::context::CliContext;
 
-pub fn handle_command(context: CliContext) -> anyhow::Result<()> {
+pub fn handle_command(context: CliContext) -> anyhow::Result<Value> {
     context.terminal().command_title("Logout");
 
     let app_session = context.app_session()?;
@@ -19,5 +19,6 @@ pub fn handle_command(context: CliContext) -> anyhow::Result<()> {
             .finalize(&format!("Nobody was logged in{}.", env_msg));
     }
 
-    Ok(())
+    Ok(json!({"logged_out": was_logged_in}))
 }
+use serde_json::{Value, json};

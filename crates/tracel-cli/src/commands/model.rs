@@ -116,7 +116,7 @@ fn upload_model_version(args: UploadModelArgs, context: CliContext) -> anyhow::R
     spinner.stop(format!("Allocated model version {}.", upload.version));
 
     let tasks = build_part_tasks(&files, &file_sizes, &upload.files)?;
-    upload_parts(&client, tasks)?;
+    upload_parts(&client, tasks, context.terminal())?;
 
     client.complete_model_version_upload(&namespace, &project, &args.model_name, upload.version)?;
 
