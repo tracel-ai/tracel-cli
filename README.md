@@ -94,12 +94,11 @@ Tracel Console, creating the project if it doesn't exist. The link is saved in
 
 ```bash
 tracel init
-tracel init --owner my-org --name mnist --yes --allow-dirty
+tracel init --owner my-org --name mnist --yes
 tracel unlink
 ```
 
-`init` needs a git commit, and offers to commit your changes. `--force` links a
-workspace that is already linked to another project.
+`--force` links a workspace that is already linked to another project.
 
 ### `tracel project`
 
