@@ -75,6 +75,7 @@ return:
 | `models alias set` | the alias |
 | `models alias remove` | `model`, `alias`, `removed` |
 | `artifacts download` | `experiment`, `artifact`, `directory`, `files`, `bytes` |
+| `experiments compare` | `base`, `other`, `config` and `attributes` (each difference `path`, `base`, `other`), `metrics` (each `metric`, `group`, `base`, `other`, `delta`) |
 | `jobs cancel`, `jobs wait` | the job, as read afterwards |
 | `run --remote` | `job_num` (null when the Tracel Console doesn't return it), `job_id`, `group`, `digest`, `version_id`, `command`, `uploaded` |
 | `run --remote --dry-run` | `namespace`, `project`, `group`, `mode`, `digest`, `command` |
@@ -119,7 +120,7 @@ A command that works on a project uses the first of these:
 3. `tracel.toml` at the root of the Cargo workspace, which `tracel init` writes
    with the keys `namespace` and `project`.
 
-With the flag or both variables, `project`, `experiments`, `models`,
+With the flag or both variables, `project`, `experiments`, `jobs`, `models`,
 `artifacts` and `datasets` work in any directory. `package` and `run` need
 the Cargo workspace, and `init` and `unlink` change `tracel.toml` whatever
 selects the project. `-C <dir>` runs a command as if it started in `<dir>`.
@@ -184,6 +185,14 @@ Each file's size and SHA-256 checksum are checked before it is saved.
   shows them oldest first. `--after <seq>` reads from a sequence number and
   can't be combined with `--from`, `--to` or `--offset`. `--follow` reads from
   there until the experiment finishes.
+- `experiments compare <base> <other>` lists where the two experiments' config
+  and attributes differ, at dotted paths with array indices such as
+  `optimizer.betas[1]`; a key that is empty or holds `.`, `[` or `]` is written
+  `["key"]`. A difference leaves out the side where the path doesn't exist.
+  It then pairs each metric's summary value by group, for each `--metric`, or
+  else every metric either experiment has, with `delta` being `other - base`.
+  The Tracel Console doesn't say whether lower or higher is better, so neither
+  does `compare`.
 
 ## Jobs
 

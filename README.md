@@ -139,7 +139,7 @@ tracel package --mode source
 ### `tracel experiments`
 
 Browse the project's experiments by their number, along with their metrics and
-logs. `exp` is short for `experiments`.
+logs, and compare two of them. `exp` is short for `experiments`.
 
 ```bash
 tracel experiments list --sort created_at,desc --limit 10
@@ -147,6 +147,7 @@ tracel exp get latest
 tracel exp metrics 42 --metric loss
 tracel exp logs 42 --level warn --level error
 tracel exp logs 42 --follow
+tracel exp compare 41 42 --metric loss
 ```
 
 ### `tracel models`

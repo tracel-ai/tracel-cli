@@ -84,7 +84,7 @@ pub enum Commands {
     Logout,
     /// Show your login, or print an access token
     Auth(commands::auth::AuthArgs),
-    /// Browse experiments, their metrics and logs
+    /// Browse and compare experiments, their metrics and logs
     #[command(visible_alias = "exp")]
     Experiments(commands::experiments::ExperimentsArgs),
     /// Browse, follow and cancel jobs
