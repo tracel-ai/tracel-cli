@@ -1,81 +1,85 @@
 use std::fmt::Display;
-use std::io::IsTerminal;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::io::{self, IsTerminal, Write};
+use std::sync::Arc;
 
-use cliclack::{MultiProgress, ProgressBar};
+use cliclack::ProgressBar;
 
+use super::Format;
+use super::screen::{Ending, Screen};
 use crate::error::{CliError, ErrorKind, ErrorReport};
-use crate::output::Format;
-
-/// Whether `command_title` opened a frame that is still open. Stderr is one per
-/// process, and so is the frame drawn on it.
-static FRAMED: AtomicBool = AtomicBool::new(false);
 
 /// Stderr, for the person running a command: what it is doing, its progress, and
 /// questions for them. With JSON output it carries only errors and the instructions
 /// a person must follow, as plain lines.
 #[derive(Clone)]
 pub struct Terminal {
-    format: Format,
+    screen: Arc<Screen>,
     no_input: bool,
 }
 
 impl Terminal {
-    pub fn new(format: Format) -> Self {
-        Self {
-            format,
-            no_input: false,
-        }
-    }
-
-    pub fn with_no_input(mut self, no_input: bool) -> Self {
-        self.no_input = no_input;
-        self
+    pub fn new(screen: Arc<Screen>, no_input: bool) -> Self {
+        Self { screen, no_input }
     }
 
     fn is_human(&self) -> bool {
-        self.format == Format::Human
+        self.screen.format() == Format::Human
     }
 
     fn is_styled(&self) -> bool {
-        self.is_human() && std::io::stderr().is_terminal()
+        self.screen.is_styled()
+    }
+
+    /// Draws with cliclack once nothing else is drawing.
+    fn draw(&self, draw: impl FnOnce() -> io::Result<()>) {
+        self.screen.settle(Ending::Done);
+        let _ = draw();
+    }
+
+    /// A plain line, for stderr that is not a styled terminal.
+    fn line(&self, text: impl Display) {
+        let _ = writeln!(
+            io::stderr(),
+            "{}",
+            console::strip_ansi_codes(&text.to_string())
+        );
     }
 
     pub fn print_warning(&self, message: &str) {
         if self.is_styled() {
-            cliclack::log::warning(message).expect("To be able to print remark");
+            self.draw(|| cliclack::log::warning(message));
         } else if self.is_human() {
-            eprintln!("warning: {}", console::strip_ansi_codes(message));
+            self.line(format_args!("warning: {message}"));
         }
     }
 
     pub fn print(&self, message: &str) {
         if self.is_styled() {
-            cliclack::log::info(message).expect("To be able to print message");
+            self.draw(|| cliclack::log::info(message));
         } else if self.is_human() {
-            eprintln!("{}", console::strip_ansi_codes(message));
+            self.line(message);
         }
     }
 
     pub fn print_err(&self, message: &str) {
         if self.is_styled() {
-            cliclack::log::error(message).expect("To be able to print message");
+            self.draw(|| cliclack::log::error(message));
         } else if self.is_human() {
-            eprintln!("error: {}", console::strip_ansi_codes(message));
+            self.line(format_args!("error: {message}"));
         }
     }
 
     pub fn print_success(&self, message: &str) {
         if self.is_styled() {
-            cliclack::log::success(message).expect("To be able to print success message");
+            self.draw(|| cliclack::log::success(message));
         } else if self.is_human() {
-            eprintln!("{}", console::strip_ansi_codes(message));
+            self.line(message);
         }
     }
 
     pub fn step(&self, message: &str) {
         if self.is_styled() {
-            cliclack::log::step(message).expect("To be able to print message");
+            self.draw(|| cliclack::log::step(message));
         } else {
             self.print(message);
         }
@@ -87,53 +91,58 @@ impl Terminal {
         if self.is_human() {
             self.print(message);
         } else {
-            eprintln!("{}", console::strip_ansi_codes(message));
+            self.line(message);
         }
     }
 
     /// Reports a failed command: the message and hint here, the envelope on stdout
     /// with JSON output. An open frame ends with the hint, or with the error itself.
     pub fn error(&self, report: &ErrorReport<'_>) {
+        self.screen.settle(Ending::Failed);
         if !self.is_human() {
-            eprintln!("error: {}", one_line(&report.message));
-        } else if self.is_styled() && FRAMED.load(Ordering::Relaxed) {
+            self.line(format_args!("error: {}", one_line(&report.message)));
+        } else if self.is_styled() && self.screen.frame_open() {
             match report.hint {
                 Some(hint) => {
-                    cliclack::log::error(&report.message).expect("To be able to print message");
-                    cliclack::outro_cancel(hint).expect("To be able to print message");
-                    FRAMED.store(false, Ordering::Relaxed);
+                    self.draw(|| {
+                        cliclack::log::error(&report.message)?;
+                        cliclack::outro_cancel(hint)
+                    });
+                    self.screen.set_frame(false);
                 }
                 None => self.cancel_finalize(&report.message),
             }
         } else {
             let label = console::style("error:").for_stderr().red().bold();
-            eprintln!("{label} {}", report.message);
+            let _ = writeln!(io::stderr(), "{label} {}", report.message);
             if let Some(hint) = report.hint {
-                eprintln!("{hint}");
+                let _ = writeln!(io::stderr(), "{hint}");
             }
         }
     }
 
     pub fn spinner(&self) -> TerminalSpinner {
         TerminalSpinner {
-            bar: self.is_styled().then(cliclack::spinner),
             terminal: self.clone(),
+            id: self.screen.next_id(),
         }
     }
 
     /// A bar that counts `total` steps under `title`.
     pub fn progress(&self, title: &str, total: u64) -> TerminalProgress {
-        let bars = self.is_styled().then(|| {
-            let group = cliclack::multi_progress(title);
-            let bar = group.add(ProgressBar::new(total).with_download_template());
-            (group, bar)
-        });
-        if bars.is_none() {
+        let id = self.screen.next_id();
+        if self.is_styled() {
+            self.screen.show(id, String::new(), || {
+                let group = cliclack::multi_progress(title);
+                let bar = group.add(ProgressBar::new(total).with_download_template());
+                (bar, Some(group))
+            });
+        } else {
             self.print(title);
         }
         TerminalProgress {
-            bars,
             terminal: self.clone(),
+            id,
         }
     }
 
@@ -150,6 +159,7 @@ impl Terminal {
         self.require_answer(ErrorKind::Usage, message, flag, values)
     }
 
+    /// Fails when nobody can answer, and otherwise clears the screen for a prompt.
     fn require_answer(
         &self,
         kind: ErrorKind,
@@ -166,6 +176,7 @@ impl Terminal {
                 .with_hint(format!("Pass --{flag} to answer without a prompt."))
                 .into());
         }
+        self.screen.settle(Ending::Done);
         Ok(())
     }
 
@@ -232,18 +243,17 @@ impl Terminal {
     /// Opens the frame that an action's progress is drawn in.
     pub fn command_title(&self, title: &str) {
         if self.is_styled() {
-            let title = format!(" {} {} ", "▶", title);
-            cliclack::intro(console::style(title).black().on_green())
-                .expect("To be able to print title");
-            FRAMED.store(true, Ordering::Relaxed);
+            let title = console::style(format!(" ▶ {title} ")).black().on_green();
+            self.draw(|| cliclack::intro(title));
+            self.screen.set_frame(true);
         }
     }
 
     pub fn finalize(&self, msg: &str) {
         if self.is_styled() {
-            cliclack::outro(console::style(format!(" {} ", msg)).black().on_green())
-                .expect("To be able to print message");
-            FRAMED.store(false, Ordering::Relaxed);
+            let message = console::style(format!(" {msg} ")).black().on_green();
+            self.draw(|| cliclack::outro(message));
+            self.screen.set_frame(false);
         } else {
             self.print_success(msg);
         }
@@ -251,9 +261,9 @@ impl Terminal {
 
     pub fn cancel_finalize(&self, msg: &str) {
         if self.is_styled() {
-            cliclack::outro_cancel(console::style(format!(" {} ", msg)).black().on_red())
-                .expect("To be able to print message");
-            FRAMED.store(false, Ordering::Relaxed);
+            let message = console::style(format!(" {msg} ")).black().on_red();
+            self.draw(|| cliclack::outro_cancel(message));
+            self.screen.set_frame(false);
         } else {
             self.print_err(msg);
         }
@@ -263,9 +273,9 @@ impl Terminal {
     pub fn is_interactive(&self) -> bool {
         let ci = std::env::var_os("CI");
         allows_input(
-            std::io::stdin().is_terminal(),
-            std::io::stderr().is_terminal(),
-            self.format,
+            io::stdin().is_terminal(),
+            io::stderr().is_terminal(),
+            self.screen.format(),
             ci.as_ref().map(|value| value.to_str().unwrap_or("true")),
             self.no_input,
         )
@@ -293,6 +303,92 @@ fn one_line(message: &str) -> String {
         .join(" ")
 }
 
+/// A spinner for one step. It is drawn when started, and stops early when something
+/// else draws before it ends; its last message then appears as a plain line.
+#[derive(Clone)]
+pub struct TerminalSpinner {
+    terminal: Terminal,
+    id: u64,
+}
+
+impl TerminalSpinner {
+    pub fn start(&self, message: impl Display) {
+        if self.terminal.is_styled() {
+            self.terminal
+                .screen
+                .show(self.id, message.to_string(), || (cliclack::spinner(), None));
+        } else {
+            self.terminal.print(&message.to_string());
+        }
+    }
+
+    pub fn set_message(&self, message: impl Display) {
+        if self.terminal.is_styled() {
+            self.terminal
+                .screen
+                .update(self.id, message.to_string(), None);
+        } else {
+            self.terminal.print(&message.to_string());
+        }
+    }
+
+    pub fn stop(&self, message: impl Display) {
+        let message = message.to_string();
+        if !self.terminal.is_styled()
+            || !self.terminal.screen.finish(self.id, Ending::Done, &message)
+        {
+            self.terminal.print_success(&message);
+        }
+    }
+
+    pub fn error(&self, message: impl Display) {
+        let message = message.to_string();
+        if !self.terminal.is_styled()
+            || !self
+                .terminal
+                .screen
+                .finish(self.id, Ending::Failed, &message)
+        {
+            self.terminal.print_err(&message);
+        }
+    }
+}
+
+/// A bar counting the steps of one task, drawn from creation until it ends.
+pub struct TerminalProgress {
+    terminal: Terminal,
+    id: u64,
+}
+
+impl TerminalProgress {
+    pub fn set(&self, done: u64, message: impl Display) {
+        self.terminal
+            .screen
+            .update(self.id, message.to_string(), Some(done));
+    }
+
+    pub fn stop(&self, message: impl Display) {
+        let message = message.to_string();
+        if !self.terminal.is_styled()
+            || !self.terminal.screen.finish(self.id, Ending::Done, &message)
+        {
+            self.terminal.print_success(&message);
+        }
+    }
+
+    pub fn error(&self, message: impl Display) {
+        let message = message.to_string();
+        if !self.terminal.is_styled()
+            || !self
+                .terminal
+                .screen
+                .finish(self.id, Ending::Failed, &message)
+        {
+            self.terminal.print_err(&message);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,86 +411,6 @@ mod tests {
         }
         for ci in ["1", "true", "yes", "FALSE", " "] {
             assert!(!allows_input(true, true, Format::Human, Some(ci), false));
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct TerminalSpinner {
-    bar: Option<ProgressBar>,
-    terminal: Terminal,
-}
-
-impl TerminalSpinner {
-    pub fn start(&self, message: impl Display) {
-        if let Some(bar) = &self.bar {
-            bar.start(message);
-        } else {
-            self.terminal.print(&message.to_string());
-        }
-    }
-
-    pub fn set_message(&self, message: impl Display) {
-        if let Some(bar) = &self.bar {
-            bar.set_message(message);
-        } else {
-            self.terminal.print(&message.to_string());
-        }
-    }
-
-    pub fn stop(&self, message: impl Display) {
-        if let Some(bar) = &self.bar {
-            bar.stop(message);
-        } else {
-            self.terminal.print_success(&message.to_string());
-        }
-    }
-
-    pub fn error(&self, message: impl Display) {
-        if let Some(bar) = &self.bar {
-            bar.error(message);
-        } else {
-            self.terminal.print_err(&message.to_string());
-        }
-    }
-}
-
-pub struct TerminalProgress {
-    bars: Option<(MultiProgress, ProgressBar)>,
-    terminal: Terminal,
-}
-
-impl TerminalProgress {
-    pub fn start(&self, message: impl Display) {
-        if let Some((_, bar)) = &self.bars {
-            bar.start(message);
-        }
-    }
-
-    pub fn set(&self, done: u64, message: impl Display) {
-        if let Some((_, bar)) = &self.bars {
-            bar.set_position(done);
-            bar.set_message(message);
-        }
-    }
-
-    pub fn stop(&self, message: impl Display) {
-        match &self.bars {
-            Some((group, bar)) => {
-                bar.stop(message);
-                group.stop();
-            }
-            None => self.terminal.print_success(&message.to_string()),
-        }
-    }
-
-    pub fn error(&self, message: impl Display) {
-        match &self.bars {
-            Some((group, bar)) => {
-                bar.error(&message);
-                group.error(message);
-            }
-            None => self.terminal.print_err(&message.to_string()),
         }
     }
 }

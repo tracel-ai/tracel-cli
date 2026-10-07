@@ -1,15 +1,18 @@
 use std::io::{self, Write};
+use std::sync::Arc;
 
 use serde::Serialize;
 
 use super::Format;
+use super::human::{Human, Style};
+use super::screen::Screen;
 use crate::error::ErrorReport;
 
 /// A command result: serialized for JSON output, written as text for people.
 pub trait Render: Serialize {
     /// The text a person reads on stdout. The default writes nothing, for actions
     /// that report what they did on stderr as they go.
-    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         let _ = out;
         Ok(())
     }
@@ -33,7 +36,7 @@ impl<T: Render + 'static> From<T> for Outcome {
 
 trait Report {
     fn write_json(&self, out: &mut dyn Write) -> serde_json::Result<()>;
-    fn write_text(&self, out: &mut dyn Write) -> io::Result<()>;
+    fn write_text(&self, out: &mut Human<'_>) -> io::Result<()>;
 }
 
 impl<T: Render> Report for T {
@@ -47,7 +50,7 @@ impl<T: Render> Report for T {
         )
     }
 
-    fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
+    fn write_text(&self, out: &mut Human<'_>) -> io::Result<()> {
         self.render(out)
     }
 }
@@ -70,50 +73,57 @@ struct Failure<'a> {
 pub struct StdoutClosed;
 
 /// Stdout, which carries only command results, in the format the user chose.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Output {
-    format: Format,
+    screen: Arc<Screen>,
 }
 
 impl Output {
-    pub fn new(format: Format) -> Self {
-        Self { format }
+    pub fn new(screen: Arc<Screen>) -> Self {
+        Self { screen }
     }
 
     /// Writes the result of a finished command.
     pub fn finish(&self, outcome: Outcome) -> anyhow::Result<()> {
-        write_stdout(|out| finish(self.format, outcome, out))
+        let format = self.screen.format();
+        let style = self.screen.text_style();
+        self.write_stdout(|out| finish(format, style, outcome, out))
     }
 
     /// Writes one event of a stream as it happens: an NDJSON line, or its text.
     pub fn event(&self, event: &impl Render) -> anyhow::Result<()> {
-        write_stdout(|out| {
-            write_event(self.format, event, out)?;
+        let format = self.screen.format();
+        let style = self.screen.text_style();
+        self.write_stdout(|out| {
+            write_event(format, style, event, out)?;
             out.flush()
         })
     }
 
     /// Writes the error envelope of a failed command; text errors go to stderr.
     pub fn error(&self, report: &ErrorReport<'_>) {
-        if self.format == Format::Json {
-            let _ = write_stdout(|out| write_failure(report, out));
+        if self.screen.format() == Format::Json {
+            let _ = self.write_stdout(|out| write_failure(report, out));
+        }
+    }
+
+    fn write_stdout(
+        &self,
+        write: impl FnOnce(&mut dyn Write) -> io::Result<()>,
+    ) -> anyhow::Result<()> {
+        match write(&mut self.screen.stdout()) {
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Err(StdoutClosed.into()),
+            result => Ok(result?),
         }
     }
 }
 
-fn write_stdout(write: impl FnOnce(&mut dyn Write) -> io::Result<()>) -> anyhow::Result<()> {
-    match write(&mut io::stdout().lock()) {
-        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Err(StdoutClosed.into()),
-        result => Ok(result?),
-    }
-}
-
-fn finish(format: Format, outcome: Outcome, out: &mut dyn Write) -> io::Result<()> {
+fn finish(format: Format, style: Style, outcome: Outcome, out: &mut dyn Write) -> io::Result<()> {
     let Some(report) = outcome.0 else {
         return Ok(());
     };
     match format {
-        Format::Human => report.write_text(out),
+        Format::Human => report.write_text(&mut Human::new(out, style)),
         Format::Json => {
             report.write_json(out)?;
             writeln!(out)
@@ -121,9 +131,14 @@ fn finish(format: Format, outcome: Outcome, out: &mut dyn Write) -> io::Result<(
     }
 }
 
-fn write_event(format: Format, event: &impl Render, out: &mut dyn Write) -> io::Result<()> {
+fn write_event(
+    format: Format,
+    style: Style,
+    event: &impl Render,
+    out: &mut dyn Write,
+) -> io::Result<()> {
     match format {
-        Format::Human => event.render(out),
+        Format::Human => event.render(&mut Human::new(out, style)),
         Format::Json => {
             serde_json::to_writer(&mut *out, event)?;
             writeln!(out)
@@ -153,7 +168,7 @@ mod tests {
     }
 
     impl Render for Greeting {
-        fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+        fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
             writeln!(out, "Hello, {}.", self.name)
         }
     }
@@ -173,15 +188,15 @@ mod tests {
     fn results_are_an_envelope_or_their_text() {
         let greeting = || Outcome::from(Greeting { name: "Ada" });
         assert_eq!(
-            written(|out| finish(Format::Json, greeting(), out)),
+            written(|out| finish(Format::Json, Style::plain(), greeting(), out)),
             "{\"ok\":true,\"data\":{\"name\":\"Ada\"}}\n"
         );
         assert_eq!(
-            written(|out| finish(Format::Human, greeting(), out)),
+            written(|out| finish(Format::Human, Style::plain(), greeting(), out)),
             "Hello, Ada.\n"
         );
         assert_eq!(
-            written(|out| finish(Format::Human, Done {}.into(), out)),
+            written(|out| finish(Format::Human, Style::plain(), Done {}.into(), out)),
             ""
         );
     }
@@ -189,7 +204,10 @@ mod tests {
     #[test]
     fn streamed_output_is_not_followed_by_an_envelope() {
         for format in [Format::Human, Format::Json] {
-            assert_eq!(written(|out| finish(format, Outcome::streamed(), out)), "");
+            assert_eq!(
+                written(|out| finish(format, Style::plain(), Outcome::streamed(), out)),
+                ""
+            );
         }
     }
 
@@ -197,11 +215,11 @@ mod tests {
     fn events_are_bare_json_lines_or_their_text() {
         let event = Greeting { name: "Ada" };
         assert_eq!(
-            written(|out| write_event(Format::Json, &event, out)),
+            written(|out| write_event(Format::Json, Style::plain(), &event, out)),
             "{\"name\":\"Ada\"}\n"
         );
         assert_eq!(
-            written(|out| write_event(Format::Human, &event, out)),
+            written(|out| write_event(Format::Human, Style::plain(), &event, out)),
             "Hello, Ada.\n"
         );
     }

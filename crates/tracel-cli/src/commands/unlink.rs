@@ -5,8 +5,8 @@ use serde::Serialize;
 use crate::{
     context::CliContext,
     helpers::require_linked_project,
-    output::{Outcome, Render},
     tools::project_context::ProjectContext,
+    ui::{Outcome, Render},
 };
 
 #[derive(Args, Debug)]

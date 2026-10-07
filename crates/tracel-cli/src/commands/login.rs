@@ -12,7 +12,7 @@ use url::Url;
 use self::pending::{PendingLogin, PendingLoginStore};
 use crate::context::{CliContext, ClientCreationError};
 use crate::error::{CliError, ErrorKind, classify};
-use crate::output::{Outcome, Render, Timestamp};
+use crate::ui::{Outcome, Render, Timestamp};
 
 #[derive(Args, Debug)]
 pub struct LoginArgs {

@@ -81,7 +81,8 @@ tables and details of commands that read, while progress, prompts, warnings,
 and errors go to stderr. Commands that change something, such as `init`,
 `login`, `models push`, or `artifacts download`, report on stderr and print
 nothing on stdout. `auth token` prints the bare token unless JSON is requested,
-even when stdout is redirected.
+even when stdout is redirected. On a terminal, tables shorten long descriptions
+to fit its width; redirected output is never shortened.
 
 | Error code | Exit code |
 | --- | --- |

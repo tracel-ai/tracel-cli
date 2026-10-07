@@ -1,11 +1,10 @@
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
 use crate::helpers::{can_initialize_project, require_cargo_workspace, require_linked_project};
-use crate::output::{Outcome, Render};
-use crate::terminal::Terminal;
 use crate::tools::git;
 use crate::tools::project_context::ProjectContext;
 use crate::tools::tracel_config::TracelProject;
+use crate::ui::{Outcome, Render, Terminal};
 use anyhow::Context;
 use clap::Args;
 use serde::Serialize;

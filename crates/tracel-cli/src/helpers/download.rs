@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use tracel_client::console::Client;
 
 use crate::error::{CliError, ErrorKind};
-use crate::terminal::Terminal;
+use crate::ui::Terminal;
 
 pub struct DownloadFile {
     pub rel_path: String,

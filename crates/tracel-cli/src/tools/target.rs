@@ -8,7 +8,7 @@ use colored::Colorize;
 use tracel_client::console::project::request::{Arch, Os};
 
 use crate::error::{CliError, ErrorKind};
-use crate::terminal::Terminal;
+use crate::ui::Terminal;
 
 /// Every (os, arch) target we offer to build for, in canonical display order.
 /// The host is surfaced separately and pulled to the front by `prompt_targets`.

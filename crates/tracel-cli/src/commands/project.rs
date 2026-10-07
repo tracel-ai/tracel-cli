@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io;
 
 use anyhow::Context;
 use clap::{Args, Subcommand};
@@ -11,7 +11,7 @@ use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
 use crate::helpers::project::ProjectSource;
 use crate::helpers::resolve_namespace_project;
-use crate::output::{Details, Outcome, Render, Table};
+use crate::ui::{Details, Human, Outcome, Render, Table};
 
 #[derive(Args, Debug)]
 pub struct ProjectArgs {
@@ -37,8 +37,9 @@ pub struct ListArgs {
 struct Projects(Vec<ProjectResponse>);
 
 impl Render for Projects {
-    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         Table::new(["PROJECT", "VISIBILITY", "DESCRIPTION", "CREATED AT"])
+            .shrink("DESCRIPTION")
             .rows(self.0.iter().map(|project| {
                 [
                     format!("{}/{}", project.namespace_name, project.project_name),
@@ -62,7 +63,7 @@ struct ProjectInfo {
 }
 
 impl Render for ProjectInfo {
-    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         Details::new()
             .field("Project", &self.name)
             .field("Namespace", &self.namespace)

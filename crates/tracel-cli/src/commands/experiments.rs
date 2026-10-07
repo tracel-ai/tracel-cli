@@ -18,8 +18,8 @@ use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
 use crate::helpers::project::resolve_namespace_project;
-use crate::output::{Details, Outcome, Output, Render, Table, json_section};
 use crate::tools::tracel_config::TracelProject;
+use crate::ui::{Details, Human, Outcome, Output, Render, Table, json_section};
 
 #[derive(Args, Debug)]
 pub struct ExperimentsArgs {
@@ -201,8 +201,9 @@ impl LogsArgs {
 }
 
 impl Render for ListExperimentsResponse {
-    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         Table::new(["NUMBER", "NAME", "STATUS", "CREATED AT", "CREATED BY"])
+            .shrink("NAME")
             .rows(self.items.iter().map(|experiment| {
                 [
                     experiment.experiment_num.to_string(),
@@ -218,7 +219,7 @@ impl Render for ListExperimentsResponse {
 }
 
 impl Render for ExperimentDetailsResponse {
-    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         Details::new()
             .field("Number", self.experiment_num)
             .field("ID", self.id)
@@ -236,7 +237,7 @@ impl Render for ExperimentDetailsResponse {
 }
 
 impl Render for MetricMetadataResponse {
-    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         Table::new(["METRIC"])
             .rows(self.metric_types.iter().map(|name| [name.clone()]))
             .write(out)?;
@@ -248,7 +249,7 @@ impl Render for MetricMetadataResponse {
 }
 
 impl Render for Option<MetricResponse> {
-    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         let Some(metrics) = self else {
             return writeln!(out, "No metric series available.");
         };
@@ -270,7 +271,7 @@ impl Render for Option<MetricResponse> {
 }
 
 impl Render for Option<MetricSummaryResponse> {
-    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         let Some(summary) = self else {
             return writeln!(out, "No metric summary available.");
         };
@@ -287,12 +288,12 @@ impl Render for Option<MetricSummaryResponse> {
 }
 
 impl Render for ExperimentLogQueryResponse {
-    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         self.items.iter().try_for_each(|item| write_log(out, item))
     }
 }
 
-fn write_log(out: &mut dyn Write, item: &ExperimentLogItemResponse) -> io::Result<()> {
+fn write_log(out: &mut Human<'_>, item: &ExperimentLogItemResponse) -> io::Result<()> {
     let level = match item.log_level {
         LogLevelResponse::Trace => "trace",
         LogLevelResponse::Debug => "debug",
@@ -313,7 +314,7 @@ enum LogEvent<'a> {
 }
 
 impl Render for LogEvent<'_> {
-    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         match self {
             Self::Log(item) => write_log(out, item),
             Self::End { .. } => Ok(()),
@@ -609,8 +610,9 @@ mod tests {
             json!({"type": "end", "running": false})
         );
         let mut text = Vec::new();
-        LogEvent::Log(&item).render(&mut text).unwrap();
-        LogEvent::End { running: false }.render(&mut text).unwrap();
+        let mut out = Human::plain(&mut text);
+        LogEvent::Log(&item).render(&mut out).unwrap();
+        LogEvent::End { running: false }.render(&mut out).unwrap();
         assert_eq!(
             String::from_utf8(text).unwrap(),
             "2026-10-07T00:00:00Z warn loss spiked\n"
