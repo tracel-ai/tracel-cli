@@ -34,6 +34,11 @@ impl Human<'_> {
         self.width
     }
 
+    /// Whether the text may be colored.
+    pub fn color(&self) -> bool {
+        self.styled
+    }
+
     fn styled(&self, text: impl Display, style: console::Style) -> String {
         if self.styled {
             style.force_styling(true).apply_to(text).to_string()

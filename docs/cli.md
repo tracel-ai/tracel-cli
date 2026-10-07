@@ -227,10 +227,16 @@ Each file's size and SHA-256 checksum are checked before it is saved.
   `target/tracel/jobs.json` until the binary changes.
 - `run <job>` starts from the job's example input, or from the input of the
   experiment `--like <number|latest>` names. Each `-c <file>` is merged onto it
-  as a JSON merge patch (RFC 7386), then each `--set <path>=<value>` sets one
-  value at a dotted path with array indices, such as `layers[0].size`. A value
-  that isn't JSON is a string. An input that doesn't match the job's schema
-  fails with `USAGE`.
+  as a JSON merge patch (RFC 7386), then the job's flags set their fields, then
+  each `--set <path>=<value>` sets one value at a dotted path with array
+  indices, such as `layers[0].size`. A value that isn't JSON is a string. An
+  input that doesn't match the job's schema fails with `USAGE`.
+- A job's flags are its binary's: one per field of its input, typed by the
+  input schema or else the example input. A nested field's flag joins the keys
+  with dots and writes `_` as `-`, as in `--optimizer.weight-decay`. A boolean
+  flag without a value is `true`, and an array, a map or a `null` field takes
+  JSON. A field whose flag has the name of one of `run`'s own, such as
+  `offline`, is set with `--set`.
 - The job runs as `<binary> <job> <input>`, with stdin closed. With JSON
   output, its stdout goes to stderr.
 - The run is recorded on the Tracel Console when a project is linked and a

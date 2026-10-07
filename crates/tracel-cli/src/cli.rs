@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::io::IsTerminal;
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use tracel_client::console::Env;
 
 use crate::commands;
@@ -63,12 +63,27 @@ pub struct CliArgs {
 
 impl CliArgs {
     /// Parse the arguments `tracel` was started with.
+    ///
+    /// `tracel run <job>` also takes the job's own flags: each long flag `run` doesn't take
+    /// is kept in `RunArgs::job_flags`, to be read once the job is described.
     pub fn try_parse_args<I, T>(args: I) -> Result<Self, clap::Error>
     where
         I: IntoIterator<Item = T>,
-        T: Into<OsString> + Clone,
+        T: Into<OsString>,
     {
-        Self::try_parse_from(args)
+        let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+        let mut matches =
+            commands::run::with_job_flags(Self::command(), &args).try_get_matches_from(&args)?;
+        let job_flags = matches
+            .subcommand_matches("run")
+            .map(commands::run::job_flags)
+            .unwrap_or_default();
+        let mut args = Self::from_arg_matches_mut(&mut matches)
+            .map_err(|error| error.format(&mut Self::command()))?;
+        if let Some(Commands::Run(run)) = &mut args.command {
+            run.job_flags = job_flags;
+        }
+        Ok(args)
     }
 }
 
@@ -197,6 +212,21 @@ pub fn cli_main() {
             ),
         );
         fail_early(&error.into(), format.unwrap_or(auto));
+    }
+
+    // Help is text whatever the output format or TRACEL_ENV say, as clap's own help is, so it
+    // comes before the environment is resolved and ignores the format.
+    if let Some(Commands::Run(run)) = &args.command
+        && run.help
+    {
+        let (output, terminal) =
+            ui::channels(Format::Human, args.no_input, Layout::Bare, Place::default());
+        if let Err(error) = commands::run::help(run, CliArgs::command(), &terminal)
+            .and_then(|help| output.finish(help.into()))
+        {
+            fail(&error, &output, &terminal);
+        }
+        return;
     }
 
     let Some(command) = args.command else {

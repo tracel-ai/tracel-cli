@@ -1,101 +1,40 @@
 use std::path::Path;
 
-use serde::{Deserialize, Serialize};
+use tracel_job::{PROTOCOL, ReportedExperiment, RunReport, RunStatus};
 
 use crate::error::{CliError, ErrorKind};
 
-/// The runner protocol version this CLI reads.
-const PROTOCOL: u32 = 1;
-
-/// The report a program writes to the path in `TRACEL_REPORT_FILE` when its experiment is
-/// created, and again when the experiment ends.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunReport {
-    pub protocol: u32,
-    pub job: String,
-    pub experiment: ReportedExperiment,
-    pub status: RunStatus,
-    pub started_at: String,
-    #[serde(default)]
-    pub finished_at: Option<String>,
-    #[serde(default)]
-    pub error: Option<String>,
-}
-
-/// Where a run records its experiment: its number and Console page, or the directory of an
-/// offline run.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReportedExperiment {
-    #[serde(default)]
-    pub num: Option<u64>,
-    #[serde(default)]
-    pub url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dir: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum RunStatus {
-    Running,
-    Completed,
-    Failed,
-    Cancelled,
-}
-
-impl RunStatus {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Running => "running",
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-            Self::Cancelled => "cancelled",
-        }
-    }
-}
-
-/// The report in `contents`, or why it is not a report of this protocol version.
-pub fn parse_report(contents: &str) -> Result<RunReport, String> {
-    let report = serde_json::from_str::<RunReport>(contents).map_err(|error| error.to_string())?;
-    if report.protocol != PROTOCOL {
-        return Err(format!(
+/// The report at `path`, `None` when the program wrote none, or why the file is not a report
+/// of the protocol this CLI reads.
+pub fn read_report(path: &Path) -> Result<Option<RunReport>, String> {
+    match RunReport::read(path) {
+        Ok(report) if report.protocol == PROTOCOL => Ok(Some(report)),
+        Ok(report) => Err(format!(
             "protocol {} is not supported, expected {PROTOCOL}",
             report.protocol
-        ));
-    }
-    Ok(report)
-}
-
-/// The report at `path`, `None` when the program wrote none, or why the file is not a report.
-pub fn read_report(path: &Path) -> Result<Option<RunReport>, String> {
-    match std::fs::read_to_string(path) {
-        Ok(contents) => parse_report(&contents).map(Some),
+        )),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.to_string()),
     }
 }
 
-impl RunReport {
-    /// Where the run is recorded, once the experiment is created.
-    pub fn location(&self) -> Option<String> {
-        let experiment = &self.experiment;
-        match (experiment.num, &experiment.url, &experiment.dir) {
-            (_, _, Some(dir)) => Some(format!("offline run {dir}")),
-            (Some(num), Some(url), None) => Some(format!("experiment {num}, {url}")),
-            (Some(num), None, None) => Some(format!("experiment {num}")),
-            (None, _, None) => None,
-        }
+/// Where `experiment` is recorded, once it is created.
+fn location(experiment: &ReportedExperiment) -> Option<String> {
+    match (experiment.num, &experiment.url, &experiment.dir) {
+        (_, _, Some(dir)) => Some(format!("offline run {}", dir.display())),
+        (Some(num), Some(url), None) => Some(format!("experiment {num}, {url}")),
+        (Some(num), None, None) => Some(format!("experiment {num}")),
+        (None, _, None) => None,
     }
+}
 
-    /// The line announcing where the run is recorded.
-    pub fn announcement(&self) -> Option<String> {
-        let experiment = &self.experiment;
-        match (experiment.num, &experiment.url, &experiment.dir) {
-            (_, _, Some(dir)) => Some(format!("Recording offline in {dir}")),
-            (Some(num), Some(url), None) => Some(format!("Recording experiment {num}: {url}")),
-            (Some(num), None, None) => Some(format!("Recording experiment {num}")),
-            (None, _, None) => None,
-        }
+/// The line announcing where `experiment` is recorded, once it is created.
+pub fn announcement(experiment: &ReportedExperiment) -> Option<String> {
+    match (experiment.num, &experiment.url, &experiment.dir) {
+        (_, _, Some(dir)) => Some(format!("Recording offline in {}", dir.display())),
+        (Some(num), Some(url), None) => Some(format!("Recording experiment {num}: {url}")),
+        (Some(num), None, None) => Some(format!("Recording experiment {num}")),
+        (None, _, None) => None,
     }
 }
 
@@ -158,7 +97,7 @@ pub fn ending(report: Option<&RunReport>, exit: ProgramExit) -> Ending {
 /// cancelled, `USAGE` when the program rejected it.
 pub fn ending_error(job: &str, ending: &Ending, report: Option<&RunReport>) -> Option<CliError> {
     let location = report
-        .and_then(RunReport::location)
+        .and_then(|report| location(&report.experiment))
         .map(|location| format!(" ({location})"))
         .unwrap_or_default();
     let error = match ending {
@@ -174,17 +113,11 @@ pub fn ending_error(job: &str, ending: &Ending, report: Option<&RunReport>) -> O
         }
         Ending::Failed { reason } => CliError::new(
             ErrorKind::JobFailed,
-            format!(
-                "Job '{job}' ended with status {}{location}: {reason}",
-                RunStatus::Failed.as_str()
-            ),
+            format!("Job '{job}' ended with status failed{location}: {reason}"),
         ),
         Ending::Cancelled => CliError::new(
             ErrorKind::JobFailed,
-            format!(
-                "Job '{job}' ended with status {}{location}.",
-                RunStatus::Cancelled.as_str()
-            ),
+            format!("Job '{job}' ended with status cancelled{location}."),
         ),
     };
     let console_experiment = report
@@ -202,28 +135,37 @@ pub fn ending_error(job: &str, ending: &Ending, report: Option<&RunReport>) -> O
 mod tests {
     use super::*;
 
+    const STARTED_AT: &str = "2026-10-06T12:00:00Z";
+
+    fn console_experiment() -> ReportedExperiment {
+        ReportedExperiment {
+            num: Some(42),
+            url: Some("https://console.tracel.ai/users/alice/projects/demo/experiments/42".into()),
+            dir: None,
+        }
+    }
+
+    fn offline_run() -> ReportedExperiment {
+        ReportedExperiment {
+            num: Some(3),
+            url: None,
+            dir: Some("runs/mnist/3".into()),
+        }
+    }
+
     /// A report as the SDK writes it, for a Console experiment or an offline run.
-    fn report(status: &str, console: bool) -> RunReport {
+    fn report(status: RunStatus, console: bool) -> RunReport {
         let experiment = if console {
-            r#"{"num": 42, "url": "https://console.tracel.ai/users/alice/projects/demo/experiments/42"}"#
+            console_experiment()
         } else {
-            r#"{"num": 3, "url": null, "dir": "runs/mnist/3"}"#
+            offline_run()
         };
-        let finished_at = if status == "running" {
-            "null"
-        } else {
-            r#""2026-10-06T12:05:00Z""#
-        };
-        let error = if status == "failed" {
-            r#""loss is NaN""#
-        } else {
-            "null"
-        };
-        parse_report(&format!(
-            r#"{{"protocol": 1, "job": "mnist", "experiment": {experiment}, "status": "{status}",
-                "started_at": "2026-10-06T12:00:00Z", "finished_at": {finished_at}, "error": {error}}}"#
-        ))
-        .unwrap()
+        RunReport {
+            status,
+            finished_at: (status != RunStatus::Running).then(|| "2026-10-06T12:05:00Z".into()),
+            error: (status == RunStatus::Failed).then(|| "loss is NaN".into()),
+            ..RunReport::new("mnist", experiment, STARTED_AT)
+        }
     }
 
     fn exited(code: i32) -> ProgramExit {
@@ -235,75 +177,82 @@ mod tests {
     }
 
     #[test]
-    fn reports_parse_with_optional_fields() {
-        let failed = report("failed", true);
-        assert_eq!(failed.job, "mnist");
-        assert_eq!(failed.status, RunStatus::Failed);
-        assert_eq!(failed.experiment.num, Some(42));
-        assert_eq!(failed.error.as_deref(), Some("loss is NaN"));
+    fn announcements_name_the_experiment_or_the_offline_run() {
         assert_eq!(
-            failed.announcement().unwrap(),
+            announcement(&console_experiment()).unwrap(),
             "Recording experiment 42: https://console.tracel.ai/users/alice/projects/demo/experiments/42"
         );
-
-        let offline = report("running", false);
-        assert_eq!(offline.experiment.dir.as_deref(), Some("runs/mnist/3"));
-        assert_eq!(offline.finished_at, None);
         assert_eq!(
-            offline.announcement().unwrap(),
+            announcement(&offline_run()).unwrap(),
             "Recording offline in runs/mnist/3"
         );
-        assert_eq!(offline.location().unwrap(), "offline run runs/mnist/3");
         assert_eq!(
-            serde_json::to_value(&offline).unwrap()["experiment"]["dir"],
-            "runs/mnist/3"
+            location(&offline_run()).unwrap(),
+            "offline run runs/mnist/3"
         );
-
-        let without_page = parse_report(
-            r#"{"protocol": 1, "job": "mnist", "experiment": {"num": 7, "url": null},
-                "status": "running", "started_at": "2026-10-06T12:00:00Z"}"#,
-        )
-        .unwrap();
+        let without_page = ReportedExperiment {
+            url: None,
+            ..console_experiment()
+        };
         assert_eq!(
-            without_page.announcement().unwrap(),
-            "Recording experiment 7"
+            announcement(&without_page).unwrap(),
+            "Recording experiment 42"
         );
-        assert!(
-            serde_json::to_value(&without_page).unwrap()["experiment"]
-                .get("dir")
-                .is_none()
-        );
+        let not_created = ReportedExperiment {
+            num: None,
+            url: None,
+            dir: None,
+        };
+        assert_eq!(announcement(&not_created), None);
+        assert_eq!(location(&not_created), None);
     }
 
     #[test]
-    fn other_protocols_and_partial_files_are_not_reports() {
+    fn only_reports_of_this_protocol_are_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("report.json");
+        assert_eq!(read_report(&path), Ok(None));
+
+        let running = report(RunStatus::Running, false);
+        running.write(&path).unwrap();
+        assert_eq!(read_report(&path), Ok(Some(running.clone())));
+
+        RunReport {
+            protocol: 2,
+            ..running
+        }
+        .write(&path)
+        .unwrap();
+        assert_eq!(
+            read_report(&path),
+            Err("protocol 2 is not supported, expected 1".to_string())
+        );
         for contents in [
-            r#"{"protocol": 2, "job": "mnist", "experiment": {}, "status": "running", "started_at": "now"}"#,
             r#"{"protocol": 1, "job": "mnist", "experiment": {}, "status": "paused", "started_at": "now"}"#,
             r#"{"protocol": 1, "job": "mnist", "status": "running", "started_at": "now"}"#,
             r#"{"protocol": 1, "job": "mnist", "status": "running"#,
             "",
         ] {
-            assert!(parse_report(contents).is_err(), "{contents}");
+            std::fs::write(&path, contents).unwrap();
+            assert!(read_report(&path).is_err(), "{contents}");
         }
-        assert_eq!(read_report(Path::new("/nonexistent/report.json")), Ok(None));
     }
 
     #[test]
     fn a_final_report_status_decides_the_ending() {
         for code in [0, 1, 2, 130] {
             assert_eq!(
-                ending(Some(&report("completed", true)), exited(code)),
+                ending(Some(&report(RunStatus::Completed, true)), exited(code)),
                 Ending::Completed
             );
             assert_eq!(
-                ending(Some(&report("failed", true)), exited(code)),
+                ending(Some(&report(RunStatus::Failed, true)), exited(code)),
                 Ending::Failed {
                     reason: "loss is NaN".to_string()
                 }
             );
             assert_eq!(
-                ending(Some(&report("cancelled", true)), exited(code)),
+                ending(Some(&report(RunStatus::Cancelled, true)), exited(code)),
                 Ending::Cancelled
             );
         }
@@ -311,7 +260,7 @@ mod tests {
 
     #[test]
     fn without_a_final_report_the_exit_code_decides() {
-        for report in [None, Some(report("running", true))] {
+        for report in [None, Some(report(RunStatus::Running, true))] {
             let report = report.as_ref();
             assert_eq!(ending(report, exited(0)), Ending::Completed);
             assert_eq!(ending(report, exited(2)), Ending::Rejected);
@@ -347,7 +296,7 @@ mod tests {
     fn failures_are_job_failed_and_point_at_the_experiment() {
         assert!(ending_error("mnist", &Ending::Completed, None).is_none());
 
-        let failed = report("failed", true);
+        let failed = report(RunStatus::Failed, true);
         let error =
             ending_error("mnist", &ending(Some(&failed), exited(1)), Some(&failed)).unwrap();
         assert_eq!(error.kind, ErrorKind::JobFailed);
@@ -362,7 +311,7 @@ mod tests {
             Some("Read its logs with `tracel experiments logs 42`.")
         );
 
-        let cancelled = report("cancelled", false);
+        let cancelled = report(RunStatus::Cancelled, false);
         let error = ending_error("mnist", &Ending::Cancelled, Some(&cancelled)).unwrap();
         assert_eq!(error.kind, ErrorKind::JobFailed);
         assert_eq!(
