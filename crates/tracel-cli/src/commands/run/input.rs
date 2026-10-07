@@ -266,7 +266,6 @@ pub fn invalid_input(job: &str, violations: &[Violation]) -> CliError {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use tracel_job::JobKind;
 
     use super::*;
 
@@ -454,7 +453,6 @@ mod tests {
     fn job(example: Value) -> JobDefinition {
         JobDefinition {
             name: "train".to_string(),
-            kind: JobKind::Experiment,
             description: None,
             input_schema: None,
             input_example: Some(example),

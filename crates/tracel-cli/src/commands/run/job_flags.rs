@@ -176,7 +176,6 @@ mod tests {
     use clap::CommandFactory;
     use clap::error::ErrorKind as ClapErrorKind;
     use serde_json::json;
-    use tracel_job::JobKind;
 
     use super::*;
     use crate::cli::{CliArgs, Commands};
@@ -187,7 +186,6 @@ mod tests {
     fn toy() -> JobDefinition {
         JobDefinition {
             name: "toy".to_string(),
-            kind: JobKind::Experiment,
             description: Some("Train a toy model".to_string()),
             input_schema: Some(json!({
                 "type": "object",

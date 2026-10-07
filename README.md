@@ -144,12 +144,11 @@ job. It must do so within 10 seconds, or it is killed and the command fails with
 under the SHA-256 of the binary, so the binary only describes its jobs again
 after it changes.
 
-`--list` prints a `NAME`, `KIND`, `DESCRIPTION` table. JSON data is the
-definitions file; `kind` is `experiment` or `inference`, and `input_schema` and
-`input_example` are `null` when the job has none:
+`--list` prints a `NAME`, `DESCRIPTION` table. JSON data is the definitions
+file; `input_schema` and `input_example` are `null` when the job has none:
 
 ```json
-{"protocol":1,"sdk_version":"0.10.0","runner":"cli","jobs":[{"name":"mnist","kind":"experiment","description":"Train the MNIST classifier","input_schema":{"type":"object","properties":{"num_epochs":{"type":"integer"}}},"input_example":{"num_epochs":10,"optimizer":{"lr":0.001}}}]}
+{"protocol":1,"sdk_version":"0.10.0","runner":"cli","jobs":[{"name":"mnist","description":"Train the MNIST classifier","input_schema":{"type":"object","properties":{"num_epochs":{"type":"integer"}}},"input_example":{"num_epochs":10,"optimizer":{"lr":0.001}}}]}
 ```
 
 `tracel run <JOB>` also takes the job's own flags, the ones its binary's command

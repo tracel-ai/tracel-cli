@@ -14,7 +14,7 @@ use clap::{ArgAction, ArgGroup, Args, Command};
 use serde::Serialize;
 use serde_json::Value;
 use tracel_client::console::Env;
-use tracel_job::{DefinitionsFile, JobKind, RunReport};
+use tracel_job::{DefinitionsFile, RunReport};
 
 pub use job_flags::{job_flags, with_job_flags};
 
@@ -123,16 +123,11 @@ fn list_jobs(args: &RunArgs, context: &CliContext) -> anyhow::Result<Definitions
 
 impl Render for DefinitionsFile {
     fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
-        Table::new(["NAME", "KIND", "DESCRIPTION"])
+        Table::new(["NAME", "DESCRIPTION"])
             .shrink("DESCRIPTION")
             .rows(self.jobs.iter().map(|job| {
-                let kind = match job.kind {
-                    JobKind::Experiment => "experiment",
-                    JobKind::Inference => "inference",
-                };
                 [
                     job.name.clone(),
-                    kind.to_string(),
                     job.description.clone().unwrap_or_default(),
                 ]
             }))
@@ -390,6 +385,7 @@ mod tests {
     use clap::CommandFactory;
     use clap::error::ErrorKind;
     use serde_json::json;
+    use tracel_job::JobDefinition;
 
     use super::*;
     use crate::cli::{CliArgs, Commands};
@@ -612,6 +608,33 @@ mod tests {
             assert_eq!(error.kind(), ErrorKind::ArgumentConflict, "{flag}");
         }
         assert!(parse(&["tracel", "run", "--remote", "gpu", "--yes", "--follow"]).is_ok());
+    }
+
+    #[test]
+    fn the_job_list_names_and_describes_each_job() {
+        let job = |name: &str, description: Option<&str>| JobDefinition {
+            name: name.to_string(),
+            description: description.map(str::to_string),
+            input_schema: None,
+            input_example: None,
+        };
+        let definitions = DefinitionsFile::new(
+            "cli",
+            vec![
+                job("toy-training", Some("Run a toy training loop")),
+                job("wordtok", None),
+            ],
+        );
+
+        let mut text = Vec::new();
+        definitions.render(&mut Human::plain(&mut text)).unwrap();
+
+        assert_eq!(
+            String::from_utf8(text).unwrap(),
+            "NAME          DESCRIPTION\n\
+             toy-training  Run a toy training loop\n\
+             wordtok       -\n"
+        );
     }
 
     #[test]

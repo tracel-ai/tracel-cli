@@ -332,7 +332,6 @@ fn read_definitions(path: &Path, name: &str) -> anyhow::Result<DefinitionsFile> 
 #[cfg(test)]
 mod tests {
     use serde_json::Value;
-    use tracel_job::JobKind;
 
     use super::*;
 
@@ -343,14 +342,12 @@ mod tests {
         "jobs": [
             {
                 "name": "toy-training",
-                "kind": "experiment",
                 "description": "Run a toy training loop",
                 "input_schema": {"type": "object"},
                 "input_example": {"epochs": 3}
             },
             {
                 "name": "wordtok",
-                "kind": "inference",
                 "description": null,
                 "input_schema": null,
                 "input_example": null
@@ -393,7 +390,6 @@ mod tests {
         assert_eq!(definitions.sdk_version, "0.10.0");
         assert_eq!(definitions.runner, "cli");
         let job = find_job(&definitions, "toy-training").unwrap();
-        assert_eq!(job.kind, JobKind::Experiment);
         assert_eq!(job.input_example, Some(json!({"epochs": 3})));
         assert_eq!(
             find_job(&definitions, "wordtok").unwrap().input_schema,
