@@ -98,6 +98,16 @@ pub enum ProjectSource {
     TracelToml,
 }
 
+impl std::fmt::Display for ProjectSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Flag => "--project",
+            Self::Env => "TRACEL_NAMESPACE or TRACEL_PROJECT",
+            Self::TracelToml => "tracel.toml",
+        })
+    }
+}
+
 #[derive(Debug)]
 pub struct ResolvedProject {
     pub project: TracelProject,
@@ -215,7 +225,6 @@ pub fn can_initialize_project(context: &CliContext, force: bool) -> anyhow::Resu
 
 /// Validate that the linked project exists on Tracel Console server
 pub fn validate_project_exists_on_server(
-    context: &CliContext,
     project: &ProjectContext,
     client: &Client,
 ) -> anyhow::Result<()> {
@@ -223,34 +232,16 @@ pub fn validate_project_exists_on_server(
 
     match client.get_project(&bc_project.owner, &bc_project.name) {
         Ok(_) => Ok(()),
-        Err(e) if e.is_not_found() => {
-            context.terminal().print_err(&format!(
-                "Project {}/{} does not exist on Tracel Console.",
+        Err(e) if e.is_not_found() => Err(CliError::new(
+            CliErrorKind::NotFound,
+            format!(
+                "Project {}/{} not found on Tracel Console. It may have been deleted or renamed.",
                 bc_project.owner, bc_project.name
-            ));
-            context
-                .terminal()
-                .print("The linked project may have been deleted or renamed on the server.");
-            context.terminal().print(
-                "Run 'tracel init --force' to reinitialize and link to a different project.",
-            );
-            Err(CliError::new(
-                CliErrorKind::NotFound,
-                format!(
-                    "Project {}/{} not found on Tracel Console",
-                    bc_project.owner, bc_project.name
-                ),
-            )
-            .with_hint("Run 'tracel init --force' to link another project.")
-            .into())
-        }
-        Err(e) => {
-            context.terminal().print_err(&format!(
-                "Failed to verify project on Tracel Console: {}",
-                e
-            ));
-            Err(e).context("Failed to verify project exists on server")
-        }
+            ),
+        )
+        .with_hint("Run 'tracel init --force' to link another project.")
+        .into()),
+        Err(e) => Err(e).context("Failed to verify project exists on server"),
     }
 }
 

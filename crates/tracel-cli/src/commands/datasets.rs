@@ -1,14 +1,15 @@
-use std::io::Write;
+use std::io::{self, Write};
 
 use clap::{Args, Subcommand};
-use serde_json::Value;
 use tracel_client::console::dataset::request::{QueryDatasetVersionsRequest, QueryDatasetsRequest};
-use tracel_client::console::dataset::response::SourceKindResponse;
+use tracel_client::console::dataset::response::{
+    DatasetListResponse, DatasetResponse, DatasetVersionListResponse, SourceKindResponse,
+};
 
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::helpers::{Resource, map_resource_error, resolve_namespace_project};
-use crate::output::{OutputMode, write_table};
+use crate::output::{Details, Outcome, Render, Table, json_section};
 
 #[derive(Args, Debug)]
 pub struct DatasetsArgs {
@@ -54,114 +55,96 @@ pub struct VersionsArgs {
     pub per_page: Option<u32>,
 }
 
-pub fn handle_command(args: DatasetsArgs, context: CliContext) -> anyhow::Result<Value> {
-    context.terminal().command_title("Datasets");
+pub fn handle_command(args: DatasetsArgs, context: CliContext) -> anyhow::Result<Outcome> {
     let project = resolve_namespace_project(&context)?.project;
     let client = get_client_and_login_if_needed(&context)?;
-    let human = context.output() == OutputMode::Human;
     match args.command {
-        DatasetsCommands::List(args) => {
-            let response = client.query_datasets(
+        DatasetsCommands::List(args) => Ok(client
+            .query_datasets(
                 &project.owner,
                 &project.name,
                 QueryDatasetsRequest {
                     page: args.page,
                     per_page: args.per_page,
                 },
-            )?;
-            if human {
-                let mut stdout = std::io::stdout().lock();
-                write_table(
-                    &mut stdout,
-                    &["NAME", "DESCRIPTION", "ID"],
-                    response
-                        .items
-                        .iter()
-                        .map(|dataset| {
-                            vec![
-                                dataset.name.clone(),
-                                dataset.description.clone().unwrap_or_default(),
-                                dataset.id.clone(),
-                            ]
-                        })
-                        .collect(),
-                )?;
-                let shown = response.items.len() as u64;
-                if shown < response.total_count {
-                    writeln!(stdout, "Showing {shown} of {}", response.total_count)?;
-                }
-            }
-            Ok(serde_json::to_value(response)?)
-        }
-        DatasetsCommands::Get(args) => {
-            let dataset = client
-                .get_dataset(&project.owner, &project.name, &args.dataset)
-                .map_err(|error| {
-                    map_resource_error(
-                        error,
-                        &project.owner,
-                        &project.name,
-                        Resource::Dataset(&args.dataset),
-                    )
-                })?;
-            if human {
-                let mut stdout = std::io::stdout().lock();
-                writeln!(stdout, "Name: {}", dataset.name)?;
-                writeln!(stdout, "ID: {}", dataset.id)?;
-                writeln!(
-                    stdout,
-                    "Description: {}",
-                    dataset.description.as_deref().unwrap_or("")
-                )?;
-                writeln!(stdout, "Metadata:")?;
-                serde_json::to_writer_pretty(&mut stdout, &dataset.metadata)?;
-                writeln!(stdout)?;
-            }
-            Ok(serde_json::to_value(dataset)?)
-        }
-        DatasetsCommands::Versions(args) => {
-            let response = client
-                .query_dataset_versions(
+            )?
+            .into()),
+        DatasetsCommands::Get(args) => Ok(client
+            .get_dataset(&project.owner, &project.name, &args.dataset)
+            .map_err(|error| {
+                map_resource_error(
+                    error,
                     &project.owner,
                     &project.name,
-                    &args.dataset,
-                    QueryDatasetVersionsRequest {
-                        page: args.page,
-                        per_page: args.per_page,
-                    },
+                    Resource::Dataset(&args.dataset),
                 )
-                .map_err(|error| {
-                    map_resource_error(
-                        error,
-                        &project.owner,
-                        &project.name,
-                        Resource::Dataset(&args.dataset),
-                    )
-                })?;
-            if human {
-                write_table(
-                    &mut std::io::stdout().lock(),
-                    &["VERSION", "ITEMS", "SOURCE", "CREATED AT"],
-                    response
-                        .items
-                        .iter()
-                        .map(|version| {
-                            let source = match version.source_kind {
-                                SourceKindResponse::AnnotationSet => "annotation_set",
-                                SourceKindResponse::DirectUpload => "direct_upload",
-                            };
-                            vec![
-                                version.version.to_string(),
-                                version.item_count.to_string(),
-                                source.into(),
-                                version.created_at.clone(),
-                            ]
-                        })
-                        .collect(),
-                )?;
-            }
-            Ok(serde_json::to_value(response)?)
-        }
+            })?
+            .into()),
+        DatasetsCommands::Versions(args) => Ok(client
+            .query_dataset_versions(
+                &project.owner,
+                &project.name,
+                &args.dataset,
+                QueryDatasetVersionsRequest {
+                    page: args.page,
+                    per_page: args.per_page,
+                },
+            )
+            .map_err(|error| {
+                map_resource_error(
+                    error,
+                    &project.owner,
+                    &project.name,
+                    Resource::Dataset(&args.dataset),
+                )
+            })?
+            .into()),
+    }
+}
+
+impl Render for DatasetListResponse {
+    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+        Table::new(["NAME", "DESCRIPTION", "ID"])
+            .rows(self.items.iter().map(|dataset| {
+                [
+                    dataset.name.clone(),
+                    dataset.description.clone().unwrap_or_default(),
+                    dataset.id.clone(),
+                ]
+            }))
+            .total(self.total_count)
+            .write(out)
+    }
+}
+
+impl Render for DatasetResponse {
+    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+        Details::new()
+            .field("Name", &self.name)
+            .field("ID", &self.id)
+            .optional("Description", self.description.as_ref())
+            .write(out)?;
+        json_section(out, "Metadata", &self.metadata)
+    }
+}
+
+impl Render for DatasetVersionListResponse {
+    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+        Table::new(["VERSION", "ITEMS", "SOURCE", "CREATED AT"])
+            .rows(self.items.iter().map(|version| {
+                let source = match version.source_kind {
+                    SourceKindResponse::AnnotationSet => "annotation_set",
+                    SourceKindResponse::DirectUpload => "direct_upload",
+                };
+                [
+                    version.version.to_string(),
+                    version.item_count.to_string(),
+                    source.into(),
+                    version.created_at.clone(),
+                ]
+            }))
+            .total(self.total_count)
+            .write(out)
     }
 }
 

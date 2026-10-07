@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tracel_client::ClientError;
 
-use crate::tools::terminal::Terminal;
+use crate::terminal::Terminal;
 
 use super::parts::PartUploadTask;
 
@@ -103,17 +103,11 @@ pub fn upload_parts(
     let cancelled = AtomicBool::new(false);
     let completed = AtomicU64::new(0);
 
-    let message = format!("Uploading {total_parts} part(s) with {worker_count} worker(s)");
-    let progress = if terminal.is_styled() {
-        let multi = cliclack::multi_progress(&message);
-        let bar =
-            multi.add(cliclack::ProgressBar::new(total_parts as u64).with_download_template());
-        bar.start(format!("Uploading (0/{total_parts})"));
-        Some((multi, bar))
-    } else {
-        terminal.print(&message);
-        None
-    };
+    let progress = terminal.progress(
+        &format!("Uploading {total_parts} part(s) with {worker_count} worker(s)"),
+        total_parts as u64,
+    );
+    progress.start(format!("Uploading (0/{total_parts})"));
 
     let failure = std::thread::scope(|scope| {
         let handles: Vec<_> = chunks
@@ -129,10 +123,7 @@ pub fn upload_parts(
         while handles.iter().any(|handle| !handle.is_finished()) {
             let done = completed.load(Ordering::Relaxed);
             if done > reported {
-                if let Some((_, bar)) = &progress {
-                    bar.inc(done - reported);
-                    bar.set_message(format!("Uploading ({done}/{total_parts})"));
-                }
+                progress.set(done, format!("Uploading ({done}/{total_parts})"));
                 reported = done;
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -151,28 +142,13 @@ pub fn upload_parts(
             .next()
     });
 
-    let done = completed.load(Ordering::Relaxed);
-    if let Some((_, bar)) = &progress {
-        bar.set_message(format!("Uploading ({done}/{total_parts})"));
-    }
-
     match failure {
         Some(e) => {
-            if let Some((multi, bar)) = &progress {
-                bar.error(format!("Upload failed: {e}"));
-                multi.error("Model upload failed");
-            } else {
-                terminal.print_err(&format!("Upload failed: {e}"));
-            }
+            progress.error("Upload failed.");
             Err(e.context("Failed to upload model file part"))
         }
         None => {
-            if let Some((multi, bar)) = &progress {
-                bar.stop(format!("Uploaded {total_parts}/{total_parts}"));
-                multi.stop();
-            } else {
-                terminal.print_success(&format!("Uploaded {total_parts}/{total_parts}"));
-            }
+            progress.stop(format!("Uploaded {total_parts}/{total_parts}"));
             Ok(())
         }
     }
@@ -181,6 +157,7 @@ pub fn upload_parts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::output::Format;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::Mutex as StdMutex;
@@ -245,7 +222,7 @@ mod tests {
         ];
         let uploader = FakeUploader::new(None);
 
-        let result = upload_parts(&uploader, tasks, &Terminal::default());
+        let result = upload_parts(&uploader, tasks, &Terminal::new(Format::Json));
 
         assert!(result.is_ok());
         assert_eq!(uploader.calls.lock().unwrap().len(), 2);
@@ -262,7 +239,7 @@ mod tests {
         ];
         let uploader = FakeUploader::new(Some("https://example.com/b"));
 
-        let result = upload_parts(&uploader, tasks, &Terminal::default());
+        let result = upload_parts(&uploader, tasks, &Terminal::new(Format::Json));
 
         assert!(result.is_err());
 

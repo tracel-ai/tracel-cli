@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use clap::{Args, ValueEnum};
-use serde_json::{Value, json};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tracel_client::console::Client;
 use tracel_client::console::project::request::{
@@ -19,6 +19,7 @@ use crate::error::{CliError, ErrorKind};
 use crate::helpers::{
     require_cargo_workspace, resolve_namespace_project, validate_project_exists_on_server,
 };
+use crate::output::{Outcome, Render};
 use crate::tools::build_driver::{self, BuildDriver};
 use crate::tools::packager::{PackageEvent, package_workspace};
 use crate::tools::project_context::ProjectContext;
@@ -46,7 +47,8 @@ pub struct PackageArgs {
     pub commit: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Mode {
     Binary,
     Source,
@@ -61,7 +63,21 @@ struct PreparedArtifact {
     targets: Vec<String>,
 }
 
-pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<Value> {
+/// A code version of the project. `uploaded` is false when it was already packaged.
+#[derive(Serialize)]
+struct Packaged {
+    namespace: String,
+    project: String,
+    digest: String,
+    version_id: String,
+    mode: Mode,
+    targets: Vec<String>,
+    uploaded: bool,
+}
+
+impl Render for Packaged {}
+
+pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<Outcome> {
     if args.mode.is_none() && !context.terminal().is_interactive() {
         return Err(CliError::new(
             ErrorKind::Usage,
@@ -90,7 +106,7 @@ pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<
         project: resolved.project,
     };
     let client = get_client_and_login_if_needed(&context)?;
-    validate_project_exists_on_server(&context, &project, &client)?;
+    validate_project_exists_on_server(&project, &client)?;
 
     // 1. Dirty check — warn and offer to commit, but allow proceeding.
     let has_commit = git::get_last_commit_hash().is_ok();
@@ -171,7 +187,7 @@ pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<
     };
 
     // 4. Upload.
-    upload(&context, &client, &project, &digest, mode, artifact)
+    Ok(upload(&context, &client, &project, &digest, mode, artifact)?.into())
 }
 
 fn build_source_artifact(
@@ -390,7 +406,7 @@ fn upload(
     digest: &str,
     mode: Mode,
     prepared: PreparedArtifact,
-) -> anyhow::Result<Value> {
+) -> anyhow::Result<Packaged> {
     let bc_project = project.get_project();
 
     let response = client
@@ -409,16 +425,14 @@ fn upload(
             )
         })?;
 
-    let data = |uploaded| {
-        json!({
-            "namespace": bc_project.owner,
-            "project": bc_project.name,
-            "digest": digest,
-            "version_id": response.id,
-            "mode": match mode { Mode::Binary => "binary", Mode::Source => "source" },
-            "targets": prepared.targets,
-            "uploaded": uploaded,
-        })
+    let packaged = |uploaded| Packaged {
+        namespace: bc_project.owner.clone(),
+        project: bc_project.name.clone(),
+        digest: digest.to_string(),
+        version_id: response.id.clone(),
+        mode,
+        targets: prepared.targets.clone(),
+        uploaded,
     };
     let Some(urls) = response.urls else {
         context.terminal().print_success(&format!(
@@ -426,7 +440,7 @@ fn upload(
             response.id
         ));
         context.terminal().finalize("Nothing to upload.");
-        return Ok(data(false));
+        return Ok(packaged(false));
     };
 
     let spinner = context.terminal().spinner();
@@ -460,5 +474,5 @@ fn upload(
     context
         .terminal()
         .finalize("Project packaged successfully.");
-    Ok(data(true))
+    Ok(packaged(true))
 }

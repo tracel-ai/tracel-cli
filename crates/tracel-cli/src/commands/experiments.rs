@@ -1,39 +1,30 @@
-use std::io::Write;
+use std::io::{self, Write};
 use std::time::Duration;
 
 use clap::{Args, Subcommand, ValueEnum};
 use serde::Serialize;
-use serde_json::{Value, json};
 use tracel_client::console::Client;
 use tracel_client::console::experiment::request::{
     ExperimentLogQueryRequest, ListExperimentsQuery, LogLevelRequest, MetadataFilterRequest,
     MetricAggregatedQuery, MetricSummaryQuery,
 };
 use tracel_client::console::experiment::response::{
-    ExperimentDetailsResponse, ExperimentLogItemResponse, ListExperimentsResponse,
-    LogLevelResponse, MetricMetadataResponse, MetricResponse, MetricSummaryResponse,
+    ExperimentDetailsResponse, ExperimentLogItemResponse, ExperimentLogQueryResponse,
+    ListExperimentsResponse, LogLevelResponse, MetricMetadataResponse, MetricResponse,
+    MetricSummaryResponse,
 };
 
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
 use crate::helpers::project::resolve_namespace_project;
-use crate::output::{self, OutputMode, write_table};
+use crate::output::{Details, Outcome, Output, Render, Table, json_section};
 use crate::tools::tracel_config::TracelProject;
 
 #[derive(Args, Debug)]
 pub struct ExperimentsArgs {
     #[command(subcommand)]
     pub command: ExperimentsCommands,
-}
-
-impl ExperimentsArgs {
-    pub fn streams_output(&self) -> bool {
-        matches!(
-            &self.command,
-            ExperimentsCommands::Logs(LogsArgs { follow: true, .. })
-        )
-    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -209,148 +200,125 @@ impl LogsArgs {
     }
 }
 
-fn print_list(response: &ListExperimentsResponse) -> anyhow::Result<()> {
-    let rows = response
-        .items
-        .iter()
-        .map(|experiment| {
-            vec![
-                experiment.experiment_num.to_string(),
-                experiment.name.clone().unwrap_or_default(),
-                experiment.status.clone(),
-                experiment.created_at.clone(),
-                experiment.created_by.username.clone(),
-            ]
-        })
-        .collect();
-    let mut stdout = std::io::stdout().lock();
-    write_table(
-        &mut stdout,
-        &["NUMBER", "NAME", "STATUS", "CREATED AT", "CREATED BY"],
-        rows,
-    )?;
-    let shown = response.items.len() as u64;
-    let end = u64::from(response.page)
-        .saturating_mul(u64::from(response.per_page))
-        .saturating_add(shown);
-    if end < response.total {
-        writeln!(stdout, "Showing {shown} of {}", response.total)?;
-    }
-    Ok(())
-}
-
-fn print_experiment(experiment: &ExperimentDetailsResponse) -> anyhow::Result<()> {
-    let mut stdout = std::io::stdout().lock();
-    writeln!(stdout, "Number: {}", experiment.experiment_num)?;
-    writeln!(stdout, "ID: {}", experiment.id)?;
-    writeln!(stdout, "Project ID: {}", experiment.project_id)?;
-    writeln!(stdout, "Name: {}", experiment.name.as_deref().unwrap_or(""))?;
-    writeln!(stdout, "Status: {}", experiment.status)?;
-    writeln!(stdout, "Description: {}", experiment.description)?;
-    writeln!(stdout, "Created at: {}", experiment.created_at)?;
-    writeln!(stdout, "Created by: {}", experiment.created_by.username)?;
-    writeln!(stdout, "Config:")?;
-    serde_json::to_writer_pretty(&mut stdout, &experiment.config)?;
-    writeln!(stdout, "\nConfigurations:")?;
-    serde_json::to_writer_pretty(&mut stdout, &experiment.configurations)?;
-    writeln!(stdout, "\nAttributes:")?;
-    serde_json::to_writer_pretty(&mut stdout, &experiment.attributes)?;
-    writeln!(stdout)?;
-    Ok(())
-}
-
-fn print_metric_metadata(metadata: &MetricMetadataResponse) -> anyhow::Result<()> {
-    let mut stdout = std::io::stdout().lock();
-    write_table(
-        &mut stdout,
-        &["METRIC"],
-        metadata
-            .metric_types
-            .iter()
-            .map(|name| vec![name.clone()])
-            .collect(),
-    )?;
-    writeln!(stdout)?;
-    write_table(
-        &mut stdout,
-        &["GROUP"],
-        metadata
-            .groups
-            .iter()
-            .map(|name| vec![name.clone()])
-            .collect(),
-    )?;
-    Ok(())
-}
-
-fn print_metrics(response: &MetricResponse) -> anyhow::Result<()> {
-    let rows = response
-        .groups
-        .iter()
-        .flat_map(|group| {
-            group.entries.iter().map(|entry| {
-                vec![
-                    group.name.clone(),
-                    entry.epoch.to_string(),
-                    entry.iteration.to_string(),
-                    entry.value.to_string(),
-                    entry.low.to_string(),
-                    entry.high.to_string(),
+impl Render for ListExperimentsResponse {
+    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+        Table::new(["NUMBER", "NAME", "STATUS", "CREATED AT", "CREATED BY"])
+            .rows(self.items.iter().map(|experiment| {
+                [
+                    experiment.experiment_num.to_string(),
+                    experiment.name.clone().unwrap_or_default(),
+                    experiment.status.clone(),
+                    experiment.created_at.clone(),
+                    experiment.created_by.username.clone(),
                 ]
-            })
-        })
-        .collect();
-    write_table(
-        &mut std::io::stdout().lock(),
-        &["GROUP", "EPOCH", "ITERATION", "VALUE", "LOW", "HIGH"],
-        rows,
-    )?;
-    Ok(())
-}
-
-fn print_metric_summary(response: &MetricSummaryResponse) -> anyhow::Result<()> {
-    let rows = response
-        .groups
-        .iter()
-        .map(|group| {
-            vec![
-                group.group.clone(),
-                group.optimal_value.to_string(),
-                group.epoch.to_string(),
-            ]
-        })
-        .collect();
-    write_table(
-        &mut std::io::stdout().lock(),
-        &["GROUP", "OPTIMAL VALUE", "EPOCH"],
-        rows,
-    )?;
-    Ok(())
-}
-
-fn print_logs(items: &[ExperimentLogItemResponse]) -> anyhow::Result<()> {
-    let mut stdout = std::io::stdout().lock();
-    for item in items {
-        let level = match item.log_level {
-            LogLevelResponse::Trace => "trace",
-            LogLevelResponse::Debug => "debug",
-            LogLevelResponse::Info => "info",
-            LogLevelResponse::Warn => "warn",
-            LogLevelResponse::Error => "error",
-        };
-        let message = item.message.replace(['\r', '\n'], " ");
-        writeln!(stdout, "{} {level} {message}", item.timestamp)?;
+            }))
+            .total(self.total)
+            .write(out)
     }
-    stdout.flush()?;
-    Ok(())
 }
 
+impl Render for ExperimentDetailsResponse {
+    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+        Details::new()
+            .field("Number", self.experiment_num)
+            .field("ID", self.id)
+            .field("Project ID", self.project_id)
+            .optional("Name", self.name.as_ref())
+            .field("Status", &self.status)
+            .field("Description", &self.description)
+            .field("Created at", &self.created_at)
+            .field("Created by", &self.created_by.username)
+            .write(out)?;
+        json_section(out, "Config", &self.config)?;
+        json_section(out, "Configurations", &self.configurations)?;
+        json_section(out, "Attributes", &self.attributes)
+    }
+}
+
+impl Render for MetricMetadataResponse {
+    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+        Table::new(["METRIC"])
+            .rows(self.metric_types.iter().map(|name| [name.clone()]))
+            .write(out)?;
+        writeln!(out)?;
+        Table::new(["GROUP"])
+            .rows(self.groups.iter().map(|name| [name.clone()]))
+            .write(out)
+    }
+}
+
+impl Render for Option<MetricResponse> {
+    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+        let Some(metrics) = self else {
+            return writeln!(out, "No metric series available.");
+        };
+        Table::new(["GROUP", "EPOCH", "ITERATION", "VALUE", "LOW", "HIGH"])
+            .rows(metrics.groups.iter().flat_map(|group| {
+                group.entries.iter().map(|entry| {
+                    [
+                        group.name.clone(),
+                        entry.epoch.to_string(),
+                        entry.iteration.to_string(),
+                        entry.value.to_string(),
+                        entry.low.to_string(),
+                        entry.high.to_string(),
+                    ]
+                })
+            }))
+            .write(out)
+    }
+}
+
+impl Render for Option<MetricSummaryResponse> {
+    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+        let Some(summary) = self else {
+            return writeln!(out, "No metric summary available.");
+        };
+        Table::new(["GROUP", "OPTIMAL VALUE", "EPOCH"])
+            .rows(summary.groups.iter().map(|group| {
+                [
+                    group.group.clone(),
+                    group.optimal_value.to_string(),
+                    group.epoch.to_string(),
+                ]
+            }))
+            .write(out)
+    }
+}
+
+impl Render for ExperimentLogQueryResponse {
+    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+        self.items.iter().try_for_each(|item| write_log(out, item))
+    }
+}
+
+fn write_log(out: &mut dyn Write, item: &ExperimentLogItemResponse) -> io::Result<()> {
+    let level = match item.log_level {
+        LogLevelResponse::Trace => "trace",
+        LogLevelResponse::Debug => "debug",
+        LogLevelResponse::Info => "info",
+        LogLevelResponse::Warn => "warn",
+        LogLevelResponse::Error => "error",
+    };
+    let message = item.message.replace(['\r', '\n'], " ");
+    writeln!(out, "{} {level} {message}", item.timestamp)
+}
+
+/// An event of `logs --follow`. As JSON, a log item gains `"type": "log"`.
 #[derive(Serialize)]
-struct LogEvent<'a> {
-    #[serde(rename = "type")]
-    event_type: &'static str,
-    #[serde(flatten)]
-    item: &'a ExperimentLogItemResponse,
+#[serde(tag = "type", rename_all = "snake_case")]
+enum LogEvent<'a> {
+    Log(&'a ExperimentLogItemResponse),
+    End { running: bool },
+}
+
+impl Render for LogEvent<'_> {
+    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+        match self {
+            Self::Log(item) => write_log(out, item),
+            Self::End { .. } => Ok(()),
+        }
+    }
 }
 
 fn follow_logs(
@@ -358,20 +326,13 @@ fn follow_logs(
     project: &TracelProject,
     num: i32,
     mut request: ExperimentLogQueryRequest,
-    mode: OutputMode,
-) -> anyhow::Result<Value> {
+    output: &Output,
+) -> anyhow::Result<()> {
     loop {
         let response =
             client.query_experiment_logs(&project.owner, &project.name, num, request.clone())?;
-        if mode == OutputMode::Json {
-            for item in &response.items {
-                output::write_stream_item(&LogEvent {
-                    event_type: "log",
-                    item,
-                })?;
-            }
-        } else {
-            print_logs(&response.items)?;
+        for item in &response.items {
+            output.event(&LogEvent::Log(item))?;
         }
         let previous = request.after.unwrap_or(0);
         let cursor = response
@@ -383,11 +344,7 @@ fn follow_logs(
             .max(previous);
         request.after = Some(cursor);
         if !response.running && !response.has_more {
-            let end = json!({"type": "end", "running": false});
-            if mode == OutputMode::Json {
-                output::write_stream_item(&end)?;
-            }
-            return Ok(end);
+            return output.event(&LogEvent::End { running: false });
         }
         if response.has_more && cursor == previous {
             return Err(CliError::new(
@@ -403,86 +360,54 @@ fn follow_logs(
     }
 }
 
-pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Result<Value> {
-    context.terminal().command_title("Experiments");
+pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Result<Outcome> {
     let client = get_client_and_login_if_needed(&context)?;
     let project = resolve_namespace_project(&context)?.project;
-    let human = context.output() == OutputMode::Human;
+    let (owner, name) = (&project.owner, &project.name);
     match args.command {
-        ExperimentsCommands::List(args) => {
-            let response = client.get_project_experiments(
-                &project.owner,
-                &project.name,
+        ExperimentsCommands::List(args) => Ok(client
+            .get_project_experiments(
+                owner,
+                name,
                 ListExperimentsQuery {
                     page: args.page,
                     limit: args.limit,
                     sort: args.sort,
                 },
-            )?;
-            if human {
-                print_list(&response)?;
-            }
-            Ok(serde_json::to_value(response)?)
-        }
+            )?
+            .into()),
         ExperimentsCommands::Get(args) => {
             let experiment = match args.experiment {
-                ExperimentSelector::Number(num) => {
-                    client.get_experiment(&project.owner, &project.name, num)?
-                }
+                ExperimentSelector::Number(num) => client.get_experiment(owner, name, num)?,
                 ExperimentSelector::Latest => client
-                    .get_project_latest_experiment(&project.owner, &project.name)?
+                    .get_project_latest_experiment(owner, name)?
                     .ok_or_else(|| {
                         CliError::new(ErrorKind::NotFound, "No experiments found in this project.")
                     })?,
             };
-            if human {
-                print_experiment(&experiment)?;
-            }
-            Ok(serde_json::to_value(experiment)?)
+            Ok(experiment.into())
         }
         ExperimentsCommands::Metrics(args) => {
             let Some(metric) = args.metric else {
-                let metadata =
-                    client.get_metric_metadata(&project.owner, &project.name, args.num)?;
-                if human {
-                    print_metric_metadata(&metadata)?;
-                }
-                return Ok(serde_json::to_value(metadata)?);
+                return Ok(client.get_metric_metadata(owner, name, args.num)?.into());
             };
             if args.summary {
-                let response = client.get_metric_summary(
-                    &project.owner,
-                    &project.name,
-                    args.num,
-                    MetricSummaryQuery { metric },
-                )?;
-                if human {
-                    if let Some(response) = &response {
-                        print_metric_summary(response)?;
-                    } else {
-                        context.terminal().print("No metric summary available.");
-                    }
-                }
-                Ok(serde_json::to_value(response)?)
+                Ok(client
+                    .get_metric_summary(owner, name, args.num, MetricSummaryQuery { metric })?
+                    .into())
             } else {
-                let response = client.get_metrics(
-                    &project.owner,
-                    &project.name,
-                    args.num,
-                    MetricAggregatedQuery {
-                        metric,
-                        max_points: args.max_points,
-                        downsampling_factor: args.downsampling,
-                    },
-                )?;
-                if human {
-                    if let Some(response) = &response {
-                        print_metrics(response)?;
-                    } else {
-                        context.terminal().print("No metric series available.");
-                    }
-                }
-                Ok(serde_json::to_value(response)?)
+                Ok(client
+                    .get_metrics(
+                        owner,
+                        name,
+                        args.num,
+                        MetricAggregatedQuery {
+                            metric,
+                            max_points: args.max_points,
+                            downsampling_factor: args.downsampling,
+                        },
+                    )?
+                    .into())
             }
         }
         ExperimentsCommands::Logs(args) => {
@@ -490,14 +415,12 @@ pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Res
             let follow = args.follow;
             let request = args.into_request();
             if follow {
-                return follow_logs(&client, &project, num, request, context.output());
+                follow_logs(&client, &project, num, request, context.output())?;
+                return Ok(Outcome::streamed());
             }
-            let response =
-                client.query_experiment_logs(&project.owner, &project.name, num, request)?;
-            if human {
-                print_logs(&response.items)?;
-            }
-            Ok(serde_json::to_value(response)?)
+            Ok(client
+                .query_experiment_logs(owner, name, num, request)?
+                .into())
         }
     }
 }
@@ -505,6 +428,7 @@ pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Res
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser};
+    use serde_json::json;
 
     use super::*;
     use crate::cli::{CliArgs, Commands};
@@ -602,7 +526,6 @@ mod tests {
             "--metadata-exists",
             "epoch",
         ]);
-        assert!(!args.streams_output());
         let ExperimentsCommands::Logs(args) = args.command else {
             panic!("Expected logs command");
         };
@@ -628,14 +551,13 @@ mod tests {
     }
 
     #[test]
-    fn follow_uses_a_sequence_cursor_and_streams_output() {
+    fn follow_starts_from_a_sequence_cursor() {
         for after in [None, Some("12")] {
             let mut arguments = vec!["tracel", "exp", "logs", "42", "--follow", "--json"];
             if let Some(after) = after {
                 arguments.extend(["--after", after]);
             }
             let args = parse_command(&arguments);
-            assert!(args.streams_output());
             let ExperimentsCommands::Logs(args) = args.command else {
                 panic!("Expected logs command");
             };
@@ -660,5 +582,38 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn followed_logs_are_typed_events() {
+        let item = ExperimentLogItemResponse {
+            seq: 7,
+            log_level: LogLevelResponse::Warn,
+            timestamp: "2026-10-07T00:00:00Z".into(),
+            message: "loss\nspiked".into(),
+            metadata: json!({"epoch": 3}),
+        };
+        assert_eq!(
+            serde_json::to_value(LogEvent::Log(&item)).unwrap(),
+            json!({
+                "type": "log",
+                "seq": 7,
+                "log_level": "warn",
+                "timestamp": "2026-10-07T00:00:00Z",
+                "message": "loss\nspiked",
+                "metadata": {"epoch": 3},
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(LogEvent::End { running: false }).unwrap(),
+            json!({"type": "end", "running": false})
+        );
+        let mut text = Vec::new();
+        LogEvent::Log(&item).render(&mut text).unwrap();
+        LogEvent::End { running: false }.render(&mut text).unwrap();
+        assert_eq!(
+            String::from_utf8(text).unwrap(),
+            "2026-10-07T00:00:00Z warn loss spiked\n"
+        );
     }
 }
