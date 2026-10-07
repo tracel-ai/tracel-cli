@@ -38,7 +38,6 @@ cargo_metadata = { version = "0.20.0", features = ["builder"] }
 walkdir = "2"
 zip = { version = "6.0.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 ignore = "0.4.30"
-gix = { version = "0.77.0", default-features = false, features = ["dirwalk"] }
 chrono = "0.4.45"
 strum = { version = "0.27.2", features = ["derive"] }
 jsonschema = { version = "0.58.6", default-features = false }

@@ -1,14 +1,12 @@
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
 use crate::helpers::{can_initialize_project, require_cargo_workspace, require_linked_project};
-use crate::tools::git;
 use crate::tools::project_context::ProjectContext;
 use crate::tools::tracel_config::TracelProject;
 use crate::ui::{Declined, Outcome, Terminal, Unanswered};
 use anyhow::Context;
 use clap::Args;
 use serde::Serialize;
-use std::path::Path;
 use tracel_client::console::Client;
 use tracel_client::console::project::request::Visibility;
 use tracel_client::console::project::response::ProjectResponse;
@@ -89,8 +87,6 @@ fn link(args: InitArgs, context: &CliContext, client: &Client) -> anyhow::Result
     let user = client.get_current_user()?;
     let workspace_info = require_cargo_workspace()?;
     let terminal = context.terminal();
-
-    ensure_git_repo_initialized(&workspace_info.workspace_root, terminal)?;
 
     let namespace = choose_namespace(
         &user.username,
@@ -311,16 +307,6 @@ fn create_project(
         namespace: project.namespace_name,
         name: project.project_name,
     })
-}
-
-/// Make a git repository at the workspace root when there is none, so that packaging
-/// follows `.gitignore`.
-fn ensure_git_repo_initialized(ws_root: &Path, terminal: &Terminal) -> anyhow::Result<()> {
-    if !git::is_repo_initialized() {
-        git::init_repo(ws_root)?;
-        terminal.step("Created a git repository");
-    }
-    Ok(())
 }
 
 #[cfg(test)]

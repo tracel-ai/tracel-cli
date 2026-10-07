@@ -154,8 +154,11 @@ false when it was already packaged.
   the binary when the build makes several. On Linux, building for another
   architecture needs its linker, and building for another OS needs
   `cargo-zigbuild` or, for Windows, `cargo-xwin`.
-- `--mode source` uploads the workspace's files, without what git ignores, to
-  be built where the code runs.
+- `--mode source` uploads the workspace's files, to be built where the code
+  runs. It leaves out what `.gitignore`, `.ignore`, `.git/info/exclude` and
+  git's global excludes file match, with or without a git repository, and
+  always `.git` and `target`. Hidden files are packaged only in a git
+  repository. Packaging no file fails with `USAGE`.
 - `--install-targets` installs missing Rust targets with rustup without asking.
 
 ## Downloads
