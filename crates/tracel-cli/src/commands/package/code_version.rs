@@ -12,7 +12,7 @@ use tracel_client::console::project::request::{
 use super::{Mode, PackageArgs, check_targets_allowed};
 use crate::context::CliContext;
 use crate::tools::build_driver::{self, BuildDriver};
-use crate::tools::fs::{file_sha256_and_size, manifest_digest};
+use crate::tools::fs::file_sha256_and_size;
 use crate::tools::packager::{self, PackageEvent};
 use crate::tools::project_context::ProjectContext;
 use crate::tools::{cargo, target};
@@ -131,6 +131,9 @@ fn build_binary_package(
         .collect();
     target::install_missing_target(context.terminal(), missing, args.install_targets)?;
 
+    // Only the binaries are uploaded, but the code version is the source they are built from.
+    let digest = packager::workspace_digest(&project.workspace_info)?;
+
     let root = project.get_workspace_root();
     let drivers = build_driver::detect();
     let mut binaries = Vec::new();
@@ -170,14 +173,6 @@ fn build_binary_package(
         });
         uploads.push((triple.to_string(), path));
     }
-
-    // The code version digest covers each uploaded binary and the target it is uploaded for.
-    let digest = manifest_digest(binaries.iter().map(|binary| {
-        (
-            target::target_triple(binary.os, binary.architecture),
-            binary.checksum.as_str(),
-        )
-    }));
 
     Ok(BuiltPackage {
         mode: Mode::Binary,

@@ -1,7 +1,7 @@
 //! Workspace packaging for Tracel Console.
 //!
 //! Packages an entire workspace as a single zip archive, respecting ignore files,
-//! and computes the code version digest from the packaged files.
+//! and computes the code version digest from the files a source package holds.
 
 use std::{
     collections::BTreeMap,
@@ -45,10 +45,7 @@ pub fn package_workspace(
     workspace: &WorkspaceInfo,
     event_reporter: Arc<PackageEventReporter>,
 ) -> anyhow::Result<ArchiveMetadata> {
-    let workspace_root = workspace
-        .workspace_root
-        .canonicalize()
-        .context("Failed to canonicalize workspace root")?;
+    let workspace_root = canonical_root(workspace)?;
 
     tracing::info!(
         "Packaging workspace at: {}",
@@ -113,6 +110,20 @@ pub fn package_workspace(
         checksum,
         size,
     })
+}
+
+/// The code version digest of the workspace, without packaging it: the digest of the files a
+/// source package holds. Binary packages use it too, so every package of the same source, in
+/// either mode and for any target, belongs to one code version.
+pub fn workspace_digest(workspace: &WorkspaceInfo) -> anyhow::Result<String> {
+    source_digest(&list_workspace_files(&canonical_root(workspace)?)?)
+}
+
+fn canonical_root(workspace: &WorkspaceInfo) -> anyhow::Result<PathBuf> {
+    workspace
+        .workspace_root
+        .canonicalize()
+        .context("Failed to canonicalize workspace root")
 }
 
 /// The code version digest of a source package: SHA-256 over the sorted `path:sha256` lines

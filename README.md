@@ -278,11 +278,13 @@ without a git repository. `.git` and `target` directories are always left out.
 Hidden files (names starting with `.`) are packaged inside a git repository unless
 ignored, and left out otherwise. Packaging fails with `USAGE` when no file is left.
 
-The code version digest is a SHA-256 of the packaged content: the hex digest of
-`name:sha256` lines sorted by name, one per packaged file. In source mode the
-names are the workspace-relative paths of the archived files; in binary mode they
-are the target triples of the uploaded binaries. Packaging the same content again
-gives the same digest, and any change gives a new one. JSON data contains
+The code version digest is a SHA-256 of the workspace's source: the hex digest of
+`path:sha256` lines sorted by path, one per file a source package holds. Binary
+mode uses the same digest but uploads only the binaries, so the source stays on
+your machine. Every package of the same source, in either mode and for any
+target, belongs to one code version: Console adds the new binaries or source to
+it, replacing a binary already uploaded for the same target. Any change to the
+source gives a new code version. JSON data contains
 `namespace`, `project`, `digest`, `version_id`, `mode`, `targets`, and `uploaded`
 (false when the same content was already packaged).
 
