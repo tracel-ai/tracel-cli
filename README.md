@@ -74,7 +74,7 @@ TRACEL_NAMESPACE=alice TRACEL_PROJECT=demo tracel -C ./trainer project --json
 JSON results are one line on stdout: `{"ok":true,"data":{...}}` on success, or
 `{"ok":false,"error":{"code":"NOT_FOUND","message":"...","hint":null,"exit_code":5}}`
 on failure. Diagnostics go to stderr. Help and version output retain their normal
-format, and `train` inherits the executed program's output and exit code.
+format, and `run` inherits the executed program's output and exit code.
 
 Human output keeps the same split: stdout carries only results, such as the
 tables and details of commands that read, while progress, prompts, warnings,
@@ -99,19 +99,20 @@ to fit its width; redirected output is never shortened.
 | `TIMEOUT` | 10 |
 | `UNAVAILABLE` | 11 |
 
-### `tracel train`
+### `tracel run`
 
-Run your project locally. This is a thin alias for `cargo run`: every argument
-after `--` is forwarded to your binary, so `tracel train -- <args>` is equivalent
-to `cargo run -- <args>`. stdin/stdout/stderr are inherited and the binary's
-exit code is propagated.
+Run your project locally. This is a thin wrapper around `cargo run`: arguments
+are forwarded to your binary only after `--`, so `tracel run -- <args>` is
+equivalent to `cargo run -- <args>`, and `tracel run` runs the default binary
+with no arguments. stdin/stdout/stderr are inherited and the binary's exit code
+is propagated.
 
 ```bash
 # Equivalent to `cargo run`
-tracel train
+tracel run
 
 # Equivalent to `cargo run -- train mnist --epochs 100`
-tracel train -- train mnist --epochs 100
+tracel run -- train mnist --epochs 100
 ```
 
 ### `tracel package`

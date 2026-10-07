@@ -10,5 +10,5 @@ pub mod me;
 pub mod models;
 pub mod package;
 pub mod project;
-pub mod training;
+pub mod run;
 pub mod unlink;

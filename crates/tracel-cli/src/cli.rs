@@ -54,7 +54,7 @@ pub struct CliArgs {
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Run your project locally via `cargo run` (forwards args after `--`).
-    Train(commands::training::TrainingArgs),
+    Run(commands::run::RunArgs),
 
     /// Package your project for running on a remote machine.
     Package(commands::package::PackageArgs),
@@ -88,10 +88,10 @@ pub enum Commands {
 impl Commands {
     /// What `auto` output means: human on a terminal and JSON otherwise, except where
     /// stdout carries plain text: the bare token for `$(tracel auth token)`, or the
-    /// output of the program `train` runs.
+    /// output of the program `run` runs.
     fn auto_format(&self, stdout_is_terminal: bool) -> Format {
         match self {
-            Self::Train(_)
+            Self::Run(_)
             | Self::Auth(commands::auth::AuthArgs {
                 command: commands::auth::AuthCommands::Token,
             }) => Format::Human,
@@ -259,7 +259,7 @@ fn usage_format(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> Form
 
 fn handle_command(command: Commands, context: CliContext) -> anyhow::Result<Outcome> {
     match command {
-        Commands::Train(run_args) => commands::training::handle_command(run_args, context),
+        Commands::Run(run_args) => commands::run::handle_command(run_args, context),
         Commands::Package(package_args) => commands::package::handle_command(package_args, context),
         Commands::Login(login_args) => commands::login::handle_command(login_args, context),
         Commands::Logout => commands::logout::handle_command(context),
@@ -288,6 +288,30 @@ mod tests {
         assert!(
             CliArgs::try_parse_from(["tracel", "model", "upload", "weights", "-d", "."]).is_err()
         );
+    }
+
+    #[test]
+    fn run_forwards_only_arguments_after_double_dash() {
+        let forwarded = |arguments: &[&str]| {
+            let Some(Commands::Run(run)) = CliArgs::try_parse_from(arguments).unwrap().command
+            else {
+                panic!("Expected run command");
+            };
+            run.forwarded
+        };
+        assert!(forwarded(&["tracel", "run"]).is_empty());
+        assert_eq!(
+            forwarded(&["tracel", "run", "--", "train", "--epochs", "10"]),
+            ["train", "--epochs", "10"]
+        );
+        assert_eq!(
+            forwarded(&["tracel", "run", "--json", "--", "--json"]),
+            ["--json"]
+        );
+        for arguments in [["tracel", "run", "train"], ["tracel", "run", "--epochs"]] {
+            let error = CliArgs::try_parse_from(arguments).unwrap_err();
+            assert_eq!(error.exit_code(), 2);
+        }
     }
 
     #[test]
@@ -440,7 +464,7 @@ mod tests {
     fn auto_output_is_text_where_another_program_reads_stdout() {
         for arguments in [
             vec!["tracel", "auth", "token"],
-            vec!["tracel", "train", "--", "--epochs", "1"],
+            vec!["tracel", "run", "--", "--epochs", "1"],
         ] {
             let command = CliArgs::try_parse_from(arguments).unwrap().command.unwrap();
             for stdout_is_terminal in [false, true] {
