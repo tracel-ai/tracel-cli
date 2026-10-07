@@ -11,6 +11,7 @@ pub enum Resource<'a> {
     ModelAlias { model: &'a str, alias: &'a str },
     Experiment(i32),
     Dataset(&'a str),
+    Job(i32),
 }
 
 pub fn map_resource_error(
@@ -70,6 +71,10 @@ pub fn map_resource_error(
         (ClientError::NotFoundWithCode(ApiErrorCode::Dataset), Resource::Dataset(dataset)) => (
             format!("No dataset '{dataset}' in {namespace}/{project}."),
             "List datasets with `tracel datasets list`.".to_string(),
+        ),
+        (ClientError::NotFoundWithCode(ApiErrorCode::ComputeProviderJob), Resource::Job(job)) => (
+            format!("No job {job} in {namespace}/{project}."),
+            "List jobs with `tracel jobs list`.".to_string(),
         ),
         _ => return error.into(),
     };
@@ -251,6 +256,12 @@ mod tests {
                 "No dataset 'images' in alice/demo.",
                 "List datasets with `tracel datasets list`.",
             ),
+            (
+                ClientError::NotFoundWithCode(ApiErrorCode::ComputeProviderJob),
+                Resource::Job(12),
+                "No job 12 in alice/demo.",
+                "List jobs with `tracel jobs list`.",
+            ),
         ] {
             let error = map_resource_error(client_error, "alice", "demo", resource);
             assert_eq!(
@@ -282,6 +293,7 @@ mod tests {
             },
             Resource::Experiment(99),
             Resource::Dataset("images"),
+            Resource::Job(12),
         ] {
             for client_error in [
                 ClientError::Unauthenticated,
@@ -337,6 +349,15 @@ mod tests {
             (
                 ClientError::NotFoundWithCode(ApiErrorCode::Dataset),
                 Resource::Model("weights"),
+            ),
+            (ClientError::NotFound, Resource::Job(12)),
+            (
+                ClientError::NotFoundWithCode(ApiErrorCode::Unknown),
+                Resource::Job(12),
+            ),
+            (
+                ClientError::NotFoundWithCode(ApiErrorCode::ComputeProviderJob),
+                Resource::Experiment(99),
             ),
         ] {
             let original = format!("{client_error:?}");

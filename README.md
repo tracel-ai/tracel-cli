@@ -95,10 +95,9 @@ to fit its width; redirected output is never shortened.
 | `CONFLICT` | 6 |
 | `CONFIRMATION_REQUIRED` | 7 |
 | `LIMIT_REACHED` | 8 |
+| `JOB_FAILED` | 9 |
 | `TIMEOUT` | 10 |
 | `UNAVAILABLE` | 11 |
-
-Exit code 9 is reserved.
 
 ### `tracel train`
 
@@ -369,6 +368,49 @@ or summary. Following logs emits NDJSON instead of a success envelope: each log
 item has `"type":"log"` added, followed by `{"type":"end","running":false}`.
 Errors still use the standard error envelope. Human output uses tables, experiment
 key/value lines, or one timestamp, level, and message line per log entry.
+
+### `tracel jobs`
+
+Browse, follow and cancel jobs in the selected project. Jobs are selected by
+positive project-scoped job numbers.
+
+```bash
+tracel jobs list
+tracel jobs get 12 --json
+tracel jobs logs 12 --start 204800
+tracel jobs logs 12 --follow --json
+tracel jobs cancel 12 --yes
+tracel jobs wait 12 --timeout 3600 --interval 10
+```
+
+- `list` shows number, status, command, and creation, start, and completion times,
+  newest first. On a terminal, long commands are shortened to fit.
+- `get <NUM>` shows status, status message, command, code version, compute
+  provider, cost, and times.
+- `logs <NUM>` reads one page of the job's log file, up to the server's page size.
+  `--start <BYTE>` reads from a byte offset; each page's `end` is the next
+  `start`. `--follow` reads from that offset, polls every two seconds until the
+  job is completed, failed, or cancelled, then reads the remaining logs.
+- `cancel <NUM>` cancels a new, queued, or running job and asks for confirmation
+  first; `-y, --yes` skips it. Without prompts, `--yes` is required, otherwise
+  the command fails with `CONFIRMATION_REQUIRED` (exit code 7). A running job
+  moves to `pending_cancellation` until its compute provider stops it. Cancelling
+  a job in any other status fails with `CONFLICT`.
+- `wait <NUM>` checks the job's status every `--interval <SECONDS>` (default 5)
+  until it is completed, failed, or cancelled. A completed job exits 0. A failed
+  or cancelled job fails with `JOB_FAILED` (exit code 9). `--timeout <SECONDS>`
+  stops waiting after that many seconds with `TIMEOUT` (exit code 10); there is no
+  limit by default, and the job keeps running either way.
+
+JSON data is the server response: the job list (`jobs`), a job, or a log page
+(`logs`, `start`, `end`, `total_size`, and `has_more`). `cancel` and a completed
+`wait` return the job as read afterwards. Job statuses are `new`, `queued`,
+`running`, `pending_cancellation`, `completed`, `failed`, and `cancelled`.
+Following logs emits NDJSON instead of a success envelope: each non-empty log page
+has `"type":"log"` added, followed by `{"type":"end","status":"<status>"}`.
+Errors still use the standard error envelope. Human output uses a table, job
+key/value lines, or the raw log text; a page with more logs after it ends with
+the `--start` of the next page.
 
 ## Project Structure
 

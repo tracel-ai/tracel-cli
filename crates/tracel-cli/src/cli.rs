@@ -67,6 +67,8 @@ pub enum Commands {
     /// Browse project experiments, metrics, and logs.
     #[command(visible_alias = "exp")]
     Experiments(commands::experiments::ExperimentsArgs),
+    /// Browse, follow and cancel jobs in the selected project.
+    Jobs(commands::jobs::JobsArgs),
     /// Initialize a new project or reinitialize an existing one.
     Init(commands::init::InitArgs),
     /// Unlink the Tracel Console project from this repository.
@@ -265,6 +267,7 @@ fn handle_command(command: Commands, context: CliContext) -> anyhow::Result<Outc
         Commands::Experiments(experiments_args) => {
             commands::experiments::handle_command(experiments_args, context)
         }
+        Commands::Jobs(jobs_args) => commands::jobs::handle_command(jobs_args, context),
         Commands::Init(init_args) => commands::init::handle_command(init_args, context),
         Commands::Unlink(unlink_args) => commands::unlink::handle_command(unlink_args, context),
         Commands::Me => commands::me::handle_command(context),
