@@ -202,17 +202,14 @@ Initialize or reinitialize a Tracel project in the current directory.
 # Interactive initialization
 tracel init
 # Initialize without prompts, accepting a project that already exists
-tracel init --owner my-namespace --name my-project --description "" --yes --allow-dirty --json
+tracel init --owner my-namespace --name my-project --description "" --yes --json
 ```
 
 `--owner <namespace>` must name your own namespace or one of your organizations.
 `--name <project>` accepts alphanumeric characters, underscores, and hyphens.
 `--description <text>` supplies the new project's description; without a terminal
 it defaults to empty. These flags replace the corresponding prompts. `--yes`
-links an existing project without asking. `--commit` commits all current changes,
-including the first commit if needed; `--allow-dirty` continues without committing
-when a commit already exists. These two flags cannot be combined. A dirty
-repository needs one of them without prompts. `--force` reinitializes an already
+links an existing project without asking. `--force` reinitializes an already
 linked project; without it, asking for a different project fails with `CONFLICT`.
 JSON data contains `namespace`, `name`, `created`, and `url`; `created` is false
 when an existing project is linked, and `url` is null when nothing changed.

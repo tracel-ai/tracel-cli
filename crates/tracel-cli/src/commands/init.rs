@@ -8,6 +8,7 @@ use crate::ui::{Outcome, Render, Terminal};
 use anyhow::Context;
 use clap::Args;
 use serde::Serialize;
+use std::path::Path;
 use tracel_client::console::Client;
 use tracel_client::console::project::request::Visibility;
 use tracel_client::console::project::response::ProjectResponse;
@@ -29,12 +30,6 @@ pub struct InitArgs {
     /// Link an existing project without asking for confirmation
     #[arg(long, short = 'y')]
     pub yes: bool,
-    /// Commit all current changes, creating the first commit if needed
-    #[arg(long, conflicts_with = "allow_dirty")]
-    pub commit: bool,
-    /// Continue with uncommitted changes
-    #[arg(long)]
-    pub allow_dirty: bool,
 }
 
 /// The project the repository is linked to. `url` is null when it already was.
@@ -97,10 +92,7 @@ fn prompt_init(
 
     let terminal = context.terminal();
 
-    ensure_git_repo_initialized(&workspace_info.get_ws_root(), terminal)?;
-    ensure_git_repo_clean(terminal, args.commit, args.allow_dirty)?;
-
-    git::get_first_commit_hash().context("The repository needs an initial commit")?;
+    ensure_git_repo_initialized(&workspace_info.workspace_root, terminal)?;
 
     let project_owner = prompt_owner_name(
         &user.username,
@@ -335,10 +327,9 @@ fn create_new_project(
     })
 }
 
-pub fn ensure_git_repo_initialized(
-    ws_root: &std::path::Path,
-    terminal: &Terminal,
-) -> anyhow::Result<()> {
+/// Initializes a git repository at the workspace root when there is none, so that
+/// `.gitignore` rules apply when packaging.
+fn ensure_git_repo_initialized(ws_root: &Path, terminal: &Terminal) -> anyhow::Result<()> {
     if !git::is_repo_initialized() {
         let repo = git::init_repo(ws_root)?;
         terminal.step(&format!(
@@ -346,88 +337,6 @@ pub fn ensure_git_repo_initialized(
             repo.path().display()
         ));
     }
-    Ok(())
-}
-
-pub fn ensure_git_repo_clean(
-    terminal: &Terminal,
-    commit: bool,
-    allow_dirty: bool,
-) -> anyhow::Result<()> {
-    let has_commit = git::has_commit();
-    let dirty = match git::is_repo_dirty() {
-        Ok(dirty) => dirty,
-        Err(_) if !has_commit => true,
-        Err(error) => return Err(error).context("Failed to check if the repository is dirty"),
-    };
-    if !dirty && has_commit {
-        return Ok(());
-    }
-    if commit {
-        return commit_sequence(terminal, true);
-    }
-    if allow_dirty && has_commit {
-        return Ok(());
-    }
-    if allow_dirty {
-        return Err(
-            CliError::new(ErrorKind::Usage, "The repository needs an initial commit.")
-                .with_hint("Pass --commit to create the first commit.")
-                .into(),
-        );
-    }
-    if !terminal.is_interactive() {
-        return Err(commit_required().into());
-    }
-    terminal.print(
-        "Repository is dirty. Tracel Console needs a valid commit hash to associate your code with your repository.",
-    );
-    commit_sequence(terminal, false).context("Failed to make initial commit")
-}
-
-fn commit_required() -> CliError {
-    CliError::new(ErrorKind::Usage, "The repository has uncommitted changes.")
-        .with_hint("Commit your changes, or pass --commit or --allow-dirty")
-}
-
-fn commit_sequence(terminal: &Terminal, commit: bool) -> anyhow::Result<()> {
-    if commit
-        || terminal.confirm(
-            "Do you want to automatically commit all files?",
-            "commit",
-            false,
-        )?
-    {
-        let commit_message = "Automatic commit by Tracel Console CLI";
-        let status = std::process::Command::new("git")
-            .args(["add", "--all"])
-            .stdin(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .status()
-            .context("Failed to run `git add .`")?;
-        if !status.success() {
-            return Err(anyhow::anyhow!("Failed to add files to git"));
-        }
-        let mut command = std::process::Command::new("git");
-        command.args(["commit", "-m", commit_message]);
-        if !git::has_commit() {
-            command.arg("--allow-empty");
-        }
-        let status = command
-            .stdin(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .status()
-            .context("Failed to run `git commit -m`")?;
-        if !status.success() {
-            return Err(anyhow::anyhow!("Failed to commit files to git"));
-        }
-        terminal.print_success("Committed all files to git.");
-    } else {
-        return Err(commit_required().into());
-    }
-
     Ok(())
 }
 
