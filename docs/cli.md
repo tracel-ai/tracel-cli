@@ -120,8 +120,8 @@ A command that works on a project uses the first of these:
 1. `--project <namespace>/<name>`;
 2. `TRACEL_NAMESPACE` and `TRACEL_PROJECT`, each of which can also override
    its half of `tracel.toml`;
-3. `tracel.toml` at the root of the Cargo workspace, which `tracel init` writes
-   with the keys `namespace` and `project`.
+3. `tracel.toml` at the root of the Cargo workspace, which `tracel init` writes.
+   Its only keys are `namespace` and `project`.
 
 With the flag or both variables, `project`, `experiments`, `jobs`, `models`,
 `artifacts` and `datasets` work in any directory. `package` and `run` need
