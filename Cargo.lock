@@ -3081,7 +3081,7 @@ dependencies = [
 [[package]]
 name = "tracel-job"
 version = "0.10.0"
-source = "git+https://github.com/tracel-ai/tracel?rev=8f560a980168e6e1c0fa0393bc8d85deccde3d53#8f560a980168e6e1c0fa0393bc8d85deccde3d53"
+source = "git+https://github.com/tracel-ai/tracel?rev=3d4be1d9787776e8e0ebed2c41897faad6aea0e3#3d4be1d9787776e8e0ebed2c41897faad6aea0e3"
 dependencies = [
  "clap",
  "clap_complete",

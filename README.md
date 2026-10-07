@@ -208,21 +208,24 @@ offline. The program gets:
 
 The program writes the run report to `TRACEL_REPORT_FILE` when it creates the
 experiment, and again when the experiment ends. Offline, the experiment's `url`
-is `null` and `dir` names the run directory. `status` is `running`, `completed`, `failed`,
-or `cancelled`:
+is `null` and `dir` names the run directory. `status` is `running`, `completed`,
+or `failed`:
 
 ```json
 {"protocol":1,"job":"mnist","experiment":{"num":42,"url":"https://console.tracel.ai/..."},"status":"completed","started_at":"2026-10-06T12:00:00Z","finished_at":"2026-10-06T12:30:00Z","error":null}
 ```
 
 Human output names the experiment and its URL, or the offline run directory, as
-soon as the report does. The command exits 0 when the report says `completed`,
-and fails with `JOB_FAILED` (exit code 9) naming the job, its status, and the
-experiment when it says `failed` or `cancelled`. Without a final report, the
+soon as the report does. The job is stopped when `tracel` asked it to stop, as
+below, or when the program exits with code 130, as a program asked to stop does.
+A stopped job fails with `JOB_FAILED` (exit code 9) saying so, and what its
+experiment ended as when the report says, such as
+`Job 'mnist' was stopped (experiment 42 completed).` Otherwise, the command exits
+0 when the report says `completed`, and fails with `JOB_FAILED` naming the job,
+its status, and the experiment when it says `failed`. Without a final report, the
 program's exit code decides: 0 is completed, 2 fails with `USAGE` (the program
-rejected the job or its input, and printed why), 130 is cancelled, and any other
-code is failed; a program ended by a signal is cancelled when `tracel` stopped it,
-and failed otherwise. JSON data is
+rejected the job or its input, and printed why), and any other code, or a signal,
+is failed. JSON data is
 `{"job":"mnist","input":{...},"target":"console","exit_code":0,"report":{...}}`,
 with `report` `null` when the program wrote none.
 
