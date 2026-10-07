@@ -14,8 +14,8 @@ questions, warnings and errors. The format is the first of these that is set:
 4. `auto`: human on a terminal, and JSON when stdout goes to a file or another
    program.
 
-`auth token` and `train` are plain text under `auto` too: `auth token` prints
-the bare token, and `train` writes what the program it runs writes. Help and
+`auth token` and `run` are plain text under `auto` too: `auth token` prints
+the bare token, and `run` writes what the program it runs writes. Help and
 version output keep clap's own format.
 
 On a terminal, a command that reads shows its result in a frame titled with a
@@ -94,7 +94,7 @@ Times are RFC 3339 in UTC.
 | `TIMEOUT` | 10 |
 | `UNAVAILABLE` | 11 |
 
-`train` exits with the code of the program it runs.
+`run` exits with the code of the program it runs.
 
 ## Questions
 
@@ -116,7 +116,7 @@ A command that works on a project uses the first of these:
    with the keys `namespace` and `project`.
 
 With the flag or both variables, `project`, `experiments`, `models`,
-`artifacts` and `datasets` work in any directory. `package` and `train` need
+`artifacts` and `datasets` work in any directory. `package` and `run` need
 the Cargo workspace, and `init` and `unlink` change `tracel.toml` whatever
 selects the project. `-C <dir>` runs a command as if it started in `<dir>`.
 

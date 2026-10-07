@@ -44,7 +44,7 @@ project.
 ```bash
 tracel login      # approve the login in your browser
 tracel init       # link this workspace to a Console project
-tracel train      # run it locally with `cargo run`
+tracel run        # run it locally with `cargo run`
 tracel experiments list
 ```
 
@@ -112,13 +112,13 @@ tracel project list
 tracel project list my-org
 ```
 
-### `tracel train`
+### `tracel run`
 
 Run the workspace locally with `cargo run`. Arguments after `--` go to your
 program, and its output and exit code are the command's.
 
 ```bash
-tracel train -- --epochs 10
+tracel run -- --epochs 10
 ```
 
 ### `tracel package`

@@ -75,7 +75,7 @@ impl CliArgs {
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Run the workspace locally with `cargo run`
-    Train(commands::training::TrainingArgs),
+    Run(commands::run::RunArgs),
     /// Upload a code version of the workspace
     Package(commands::package::PackageArgs),
     /// Log in to the Tracel Console
@@ -109,7 +109,7 @@ impl Commands {
     /// How the command draws on a terminal.
     fn layout(&self) -> Layout {
         match self {
-            Self::Train(_) => Layout::Bare,
+            Self::Run(_) => Layout::Bare,
             Self::Auth(args) => args.layout(),
             Self::Package(_) => Layout::flow("Package a code version"),
             Self::Login(args) => args.layout(),
@@ -138,10 +138,10 @@ impl Commands {
     }
 
     /// Choose what `auto` means: human on a terminal and JSON otherwise, except for
-    /// `auth token` and `train`, whose stdout is plain text for another program.
+    /// `auth token` and `run`, whose stdout is plain text for another program.
     fn auto_format(&self, stdout_is_terminal: bool) -> Format {
         match self {
-            Self::Train(_)
+            Self::Run(_)
             | Self::Auth(commands::auth::AuthArgs {
                 command: commands::auth::AuthCommands::Token,
             }) => Format::Human,
@@ -329,7 +329,7 @@ fn usage_format(
 
 fn handle_command(command: Commands, context: CliContext) -> anyhow::Result<Outcome> {
     match command {
-        Commands::Train(run_args) => commands::training::handle_command(run_args, context),
+        Commands::Run(run_args) => commands::run::handle_command(run_args, context),
         Commands::Package(package_args) => commands::package::handle_command(package_args, context),
         Commands::Login(login_args) => commands::login::handle_command(login_args, context),
         Commands::Logout => commands::logout::handle_command(context),
@@ -368,7 +368,7 @@ mod tests {
 
     #[rstest]
     #[case::auth_token(&["auth", "token"])]
-    #[case::train(&["train", "--", "--epochs", "1"])]
+    #[case::run(&["run", "--", "--epochs", "1"])]
     fn given_a_command_whose_stdout_is_its_own_when_piped_then_its_output_stays_text(
         #[case] args: &[&str],
     ) {
@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn given_json_after_a_double_dash_when_arguments_do_not_parse_then_it_is_not_an_output_flag() {
-        let format = usage_format(arguments(&["train", "--", "--json"]), None, true);
+        let format = usage_format(arguments(&["run", "--", "--json"]), None, true);
 
         assert_eq!(format, Format::Human);
     }

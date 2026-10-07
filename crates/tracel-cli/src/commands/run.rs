@@ -1,27 +1,18 @@
 use anyhow::Context;
-use clap::Parser;
+use clap::Args;
 
 use crate::{context::CliContext, environment, tools::cargo, ui::Outcome};
 
-#[derive(Parser, Debug, Default)]
-pub struct TrainingArgs {
+#[derive(Args, Debug)]
+pub struct RunArgs {
     /// Arguments for the program, after --
-    #[arg(
-        value_name = "ARGS",
-        trailing_var_arg = true,
-        allow_hyphen_values = true
-    )]
-    forwarded: Vec<String>,
+    #[arg(last = true, value_name = "ARGS")]
+    pub forwarded: Vec<String>,
 }
 
-pub fn handle_command(args: TrainingArgs, context: CliContext) -> anyhow::Result<Outcome> {
-    run_cargo(&args.forwarded, context)?;
-    Ok(Outcome::streamed())
-}
-
-/// Run `cargo run` in this directory with `forwarded` after `--`. The program gets
+/// Run `cargo run` in this directory with the arguments after `--`. The program gets
 /// tracel's stdio, and its exit code is tracel's.
-fn run_cargo(forwarded: &[String], context: CliContext) -> anyhow::Result<()> {
+pub fn handle_command(args: RunArgs, context: CliContext) -> anyhow::Result<Outcome> {
     let mut cmd = cargo::command();
     cmd.arg("run");
 
@@ -31,12 +22,13 @@ fn run_cargo(forwarded: &[String], context: CliContext) -> anyhow::Result<()> {
         cmd.env("TRACEL_PROJECT", &project.name);
     }
 
-    if !forwarded.is_empty() {
+    if !args.forwarded.is_empty() {
         cmd.arg("--");
-        cmd.args(forwarded);
+        cmd.args(&args.forwarded);
     }
 
-    hand_over(cmd)
+    hand_over(cmd)?;
+    Ok(Outcome::streamed())
 }
 
 /// Replace this process with `cmd`. `cargo run` does the same with the program it
