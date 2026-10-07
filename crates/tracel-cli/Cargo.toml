@@ -34,9 +34,8 @@ toml.workspace = true
 gix.workspace = true
 cargo_metadata.workspace = true
 ignore.workspace = true
-flate2.workspace = true
-tar.workspace = true
 walkdir.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 rstest.workspace = true
