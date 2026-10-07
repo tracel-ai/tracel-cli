@@ -78,7 +78,7 @@ return:
 | `artifacts download` | `experiment`, `artifact`, `directory`, `files`, `bytes` |
 | `experiments compare` | `base`, `other`, `config` and `attributes` (each difference `path`, `base`, `other`), `metrics` (each `metric`, `group`, `base`, `other`, `delta`) |
 | `jobs cancel`, `jobs wait` | the job, as read afterwards |
-| `run --list` | `protocol`, `sdk_version`, `runner`, `jobs` (each `name`, `kind`, `description`, `input_schema`, `input_example`) |
+| `run --list` | `protocol`, `sdk_version`, `runner`, `jobs` (each `name`, `description`, `input_schema`, `input_example`) |
 | `run <job>` | `job`, `input`, `target` (`"console"` or `"offline"`), `exit_code`, `report` (null when the program wrote none) |
 | `run --remote` | `job_num` (null when the Tracel Console doesn't return it), `job_id`, `group`, `digest`, `version_id`, `command`, `uploaded` |
 | `run --remote --dry-run` | `namespace`, `project`, `group`, `mode`, `digest`, `command` |
