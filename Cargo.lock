@@ -368,6 +368,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap_complete"
+version = "4.6.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "037e2a1a92236d0aff7e845093f64661d6df4c02c9fcc61a60e9e1d736fa392f"
+dependencies = [
+ "clap",
+]
+
+[[package]]
 name = "clap_derive"
 version = "4.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3044,6 +3053,7 @@ dependencies = [
  "toml",
  "toml_edit",
  "tracel-client",
+ "tracel-job",
  "tracing",
  "url",
  "walkdir",
@@ -3066,6 +3076,17 @@ dependencies = [
  "tracing",
  "tungstenite",
  "uuid",
+]
+
+[[package]]
+name = "tracel-job"
+version = "0.10.0"
+source = "git+https://github.com/tracel-ai/tracel?rev=8f560a980168e6e1c0fa0393bc8d85deccde3d53#8f560a980168e6e1c0fa0393bc8d85deccde3d53"
+dependencies = [
+ "clap",
+ "clap_complete",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

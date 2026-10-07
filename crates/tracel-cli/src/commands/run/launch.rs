@@ -6,8 +6,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use serde::Serialize;
+use tracel_job::{RunReport, TRACEL_DESCRIBE, TRACEL_REPORT_FILE};
 
-use super::report::{ProgramExit, RunReport, read_report};
+use super::report::{ProgramExit, read_report};
 
 /// How long a program has to stop after it is asked to, before it is killed.
 const STOP_GRACE: Duration = Duration::from_secs(30);
@@ -112,8 +113,8 @@ pub fn launch(launch: Launch, mut on_event: impl FnMut(Event)) -> anyhow::Result
     command
         .arg(launch.job)
         .arg(launch.input)
-        .env_remove("TRACEL_DESCRIBE")
-        .env("TRACEL_REPORT_FILE", launch.report_path)
+        .env_remove(TRACEL_DESCRIBE)
+        .env(TRACEL_REPORT_FILE, launch.report_path)
         .envs(launch.env)
         .stdin(Stdio::null())
         .stdout(launch.stdout);

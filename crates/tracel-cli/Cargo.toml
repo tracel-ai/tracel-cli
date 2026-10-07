@@ -17,6 +17,7 @@ path = "src/bin/tracel.rs"
 
 [dependencies]
 tracel-client.workspace = true
+tracel-job.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 colored.workspace = true

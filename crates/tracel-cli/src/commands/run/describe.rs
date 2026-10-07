@@ -1,11 +1,13 @@
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use cargo_metadata::{DependencyKind, Metadata};
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde::Deserialize;
+use serde_json::json;
+use tracel_job::{DefinitionsFile, JobDefinition, PROTOCOL, TRACEL_DESCRIBE, TRACEL_REPORT_FILE};
 
 use crate::error::{CliError, ErrorKind};
 use crate::tools::cargo;
@@ -15,69 +17,45 @@ use crate::ui::Terminal;
 
 /// The crate a package depends on to register jobs.
 const SDK_CRATE: &str = "tracel";
-/// The runner protocol version this CLI reads.
-const PROTOCOL: u32 = 1;
 /// How long a program has to write its job definitions.
 const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// The hint for definitions this CLI cannot read.
+const SAME_PROTOCOL: &str = "Use a tracel CLI and a tracel crate that support the same protocol.";
 
-/// The file a program writes to the path in `TRACEL_DESCRIBE`: the jobs it can run.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Definitions {
-    pub protocol: u32,
-    pub sdk_version: String,
-    pub runner: String,
-    pub jobs: Vec<JobDefinition>,
+/// The job named `name` among `definitions`.
+pub fn find_job<'a>(
+    definitions: &'a DefinitionsFile,
+    name: &str,
+) -> Result<&'a JobDefinition, CliError> {
+    if let Some(job) = definitions.jobs.iter().find(|job| job.name == name) {
+        return Ok(job);
+    }
+    let message = if definitions.jobs.is_empty() {
+        format!("Unknown job '{name}': the program registers no jobs.")
+    } else {
+        let names: Vec<&str> = definitions
+            .jobs
+            .iter()
+            .map(|job| job.name.as_str())
+            .collect();
+        format!("Unknown job '{name}'. Valid values: {}.", names.join(", "))
+    };
+    Err(CliError::new(ErrorKind::Usage, message)
+        .with_hint("List the jobs with `tracel run --list`."))
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct JobDefinition {
-    pub name: String,
-    pub kind: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub input_schema: Option<Value>,
-    #[serde(default)]
-    pub input_example: Option<Value>,
-}
-
-impl Definitions {
-    /// Parse a definitions file of this protocol version.
-    pub fn parse(contents: &str) -> anyhow::Result<Self> {
-        #[derive(Deserialize)]
-        struct Header {
-            protocol: u32,
-        }
-        let header: Header =
-            serde_json::from_str(contents).context("The job definitions are not valid JSON")?;
-        if header.protocol != PROTOCOL {
-            return Err(CliError::new(
-                ErrorKind::Internal,
-                format!(
-                    "The program lists its jobs with runner protocol {}, but this CLI reads protocol {PROTOCOL}.",
-                    header.protocol
-                ),
-            )
-            .with_hint("Use a tracel CLI and a tracel crate that support the same protocol.")
-            .into());
-        }
-        serde_json::from_str(contents).context("The job definitions are not valid")
+/// Fails unless `protocol` is the version of the definitions files this CLI reads.
+fn check_protocol(protocol: u32) -> Result<(), CliError> {
+    if protocol == PROTOCOL {
+        return Ok(());
     }
-
-    /// The job named `name`.
-    pub fn job(&self, name: &str) -> Result<&JobDefinition, CliError> {
-        if let Some(job) = self.jobs.iter().find(|job| job.name == name) {
-            return Ok(job);
-        }
-        let message = if self.jobs.is_empty() {
-            format!("Unknown job '{name}': the program registers no jobs.")
-        } else {
-            let names: Vec<&str> = self.jobs.iter().map(|job| job.name.as_str()).collect();
-            format!("Unknown job '{name}'. Valid values: {}.", names.join(", "))
-        };
-        Err(CliError::new(ErrorKind::Usage, message)
-            .with_hint("List the jobs with `tracel run --list`."))
-    }
+    Err(CliError::new(
+        ErrorKind::Internal,
+        format!(
+            "The program lists its jobs with runner protocol {protocol}, but this CLI reads protocol {PROTOCOL}."
+        ),
+    )
+    .with_hint(SAME_PROTOCOL))
 }
 
 /// A workspace package, as job discovery sees it.
@@ -179,17 +157,17 @@ pub fn choose_binary(packages: &[PackageBinaries], bin: Option<&str>) -> Result<
 }
 
 /// The cached definitions in `contents` when they were written for the binary with `sha256`.
-pub fn cached_definitions(contents: &str, sha256: &str) -> Option<Definitions> {
+pub fn cached_definitions(contents: &str, sha256: &str) -> Option<DefinitionsFile> {
     #[derive(Deserialize)]
     struct Cache {
         sha256: String,
-        definitions: Definitions,
+        definitions: DefinitionsFile,
     }
     let cache: Cache = serde_json::from_str(contents).ok()?;
     (cache.sha256 == sha256 && cache.definitions.protocol == PROTOCOL).then_some(cache.definitions)
 }
 
-fn write_cache(path: &Path, sha256: &str, definitions: &Definitions) -> anyhow::Result<()> {
+fn write_cache(path: &Path, sha256: &str, definitions: &DefinitionsFile) -> anyhow::Result<()> {
     if let Some(directory) = path.parent() {
         std::fs::create_dir_all(directory)?;
     }
@@ -208,7 +186,7 @@ fn write_cache(path: &Path, sha256: &str, definitions: &Definitions) -> anyhow::
 pub struct Described {
     pub binary: Binary,
     pub program: PathBuf,
-    pub definitions: Definitions,
+    pub definitions: DefinitionsFile,
 }
 
 /// Build the binary whose jobs `tracel run` runs, and read its job definitions.
@@ -272,14 +250,14 @@ fn build(binary: &Binary) -> anyhow::Result<PathBuf> {
 }
 
 /// Run `program` with `TRACEL_DESCRIBE` set, and read the definitions it writes.
-fn run_describe(program: &Path, name: &str, timeout: Duration) -> anyhow::Result<Definitions> {
+fn run_describe(program: &Path, name: &str, timeout: Duration) -> anyhow::Result<DefinitionsFile> {
     let directory = tempfile::tempdir().context("Failed to create a temporary directory")?;
     let path = directory.path().join("jobs.json");
     let mut child = Command::new(program)
-        .env("TRACEL_DESCRIBE", &path)
+        .env(TRACEL_DESCRIBE, &path)
         // Describing creates no experiment, so it needs no Console settings.
         .env("TRACEL_TARGET", "offline")
-        .env_remove("TRACEL_REPORT_FILE")
+        .env_remove(TRACEL_REPORT_FILE)
         .stdin(Stdio::null())
         .stdout(Stdio::from(std::io::stderr()))
         .spawn()
@@ -319,27 +297,43 @@ fn run_describe(program: &Path, name: &str, timeout: Duration) -> anyhow::Result
         .with_hint("Its error is above.")
         .into());
     }
-    let contents = match std::fs::read_to_string(&path) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(CliError::new(
-                ErrorKind::Usage,
-                format!("`{name}` did not list its jobs."),
-            )
-            .with_hint(
-                "Register its jobs with `tracel::app::cli::Cli` from tracel 0.10 or later, or run it with `tracel run -- <args>`.",
-            )
-            .into());
+    read_definitions(&path, name)
+}
+
+/// The definitions the program `name` wrote to `path`, when they follow the protocol this CLI
+/// reads.
+fn read_definitions(path: &Path, name: &str) -> anyhow::Result<DefinitionsFile> {
+    match DefinitionsFile::read(path) {
+        Ok(definitions) => {
+            check_protocol(definitions.protocol)?;
+            Ok(definitions)
         }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Err(CliError::new(
+            ErrorKind::Usage,
+            format!("`{name}` did not list its jobs."),
+        )
+        .with_hint(
+            "Register its jobs with `tracel::app::cli::Cli` from tracel 0.10 or later, or run it with `tracel run -- <args>`.",
+        )
+        .into()),
+        // A document that is not a definitions file, or is cut short.
+        Err(error) if matches!(error.kind(), io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof) => Err(CliError::new(
+            ErrorKind::Internal,
+            format!("`{name}` listed its jobs in a form this CLI does not read: {error}"),
+        )
+        .with_hint(SAME_PROTOCOL)
+        .into()),
         Err(error) => {
-            return Err(error).with_context(|| format!("Failed to read {}", path.display()));
+            Err(error).with_context(|| format!("Failed to read {}", path.display()))
         }
-    };
-    Definitions::parse(&contents)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+    use tracel_job::JobKind;
+
     use super::*;
 
     const DEFINITIONS: &str = r#"{
@@ -380,29 +374,44 @@ mod tests {
         }
     }
 
+    fn definitions() -> DefinitionsFile {
+        serde_json::from_str(DEFINITIONS).unwrap()
+    }
+
+    /// The definitions read from a file holding `contents`, as the program `trainer` wrote it.
+    fn read(contents: &str) -> anyhow::Result<DefinitionsFile> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.json");
+        std::fs::write(&path, contents).unwrap();
+        read_definitions(&path, "trainer")
+    }
+
     #[test]
-    fn definitions_parse_and_find_jobs() {
-        let definitions = Definitions::parse(DEFINITIONS).unwrap();
+    fn definitions_are_read_and_name_their_jobs() {
+        let definitions = read(DEFINITIONS).unwrap();
+        assert_eq!(definitions, self::definitions());
         assert_eq!(definitions.sdk_version, "0.10.0");
         assert_eq!(definitions.runner, "cli");
-        let job = definitions.job("toy-training").unwrap();
-        assert_eq!(job.kind, "experiment");
+        let job = find_job(&definitions, "toy-training").unwrap();
+        assert_eq!(job.kind, JobKind::Experiment);
         assert_eq!(job.input_example, Some(json!({"epochs": 3})));
-        assert_eq!(definitions.job("wordtok").unwrap().input_schema, None);
+        assert_eq!(
+            find_job(&definitions, "wordtok").unwrap().input_schema,
+            None
+        );
 
-        let error = definitions.job("train").unwrap_err();
+        let error = find_job(&definitions, "train").unwrap_err();
         assert_eq!(error.kind, ErrorKind::Usage);
         assert_eq!(
             error.to_string(),
             "Unknown job 'train'. Valid values: toy-training, wordtok."
         );
-        let empty = Definitions {
+        let empty = DefinitionsFile {
             jobs: Vec::new(),
             ..definitions.clone()
         };
         assert!(
-            empty
-                .job("train")
+            find_job(&empty, "train")
                 .unwrap_err()
                 .to_string()
                 .contains("no jobs")
@@ -413,12 +422,30 @@ mod tests {
     }
 
     #[test]
-    fn other_protocols_are_rejected() {
-        let error = Definitions::parse(r#"{"protocol": 2, "jobs": "elsewhere"}"#).unwrap_err();
+    fn only_definitions_of_this_protocol_are_read() {
+        let other_protocol = DEFINITIONS.replace(r#""protocol": 1"#, r#""protocol": 2"#);
+        let error = read(&other_protocol).unwrap_err();
         assert_eq!(crate::error::classify(&error), ErrorKind::Internal);
-        assert!(error.to_string().contains("protocol 2"));
-        assert!(Definitions::parse("{").is_err());
-        assert!(Definitions::parse(r#"{"protocol": 1}"#).is_err());
+        assert!(error.to_string().contains("protocol 2"), "{error}");
+
+        for contents in [
+            "{",
+            r#"{"protocol": 1}"#,
+            r#"{"protocol": 2, "jobs": "elsewhere"}"#,
+        ] {
+            let error = read(contents).unwrap_err();
+            assert_eq!(crate::error::classify(&error), ErrorKind::Internal);
+            let report = crate::error::ErrorReport::new(&error);
+            assert_eq!(report.hint, Some(SAME_PROTOCOL), "{contents}");
+        }
+    }
+
+    #[test]
+    fn a_program_that_writes_no_definitions_lists_no_jobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = read_definitions(&dir.path().join("jobs.json"), "trainer").unwrap_err();
+        assert_eq!(crate::error::classify(&error), ErrorKind::Usage);
+        assert_eq!(error.to_string(), "`trainer` did not list its jobs.");
     }
 
     #[test]
@@ -491,7 +518,7 @@ mod tests {
     fn the_cache_hits_only_for_the_same_binary_and_protocol() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tracel").join("jobs.json");
-        let definitions = Definitions::parse(DEFINITIONS).unwrap();
+        let definitions = definitions();
         write_cache(&path, "abc", &definitions).unwrap();
 
         let contents = std::fs::read_to_string(&path).unwrap();

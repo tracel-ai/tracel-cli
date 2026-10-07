@@ -1,6 +1,7 @@
+use std::ffi::OsString;
 use std::io::IsTerminal;
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use tracel_client::console::Env;
 
 use crate::commands;
@@ -49,6 +50,33 @@ pub struct CliArgs {
         conflicts_with = "dev"
     )]
     pub staging: Option<u8>,
+}
+
+impl CliArgs {
+    /// Read the command line `args`, the program's name first.
+    ///
+    /// `tracel run <JOB>` also takes the job's own flags: each long flag it does not take itself
+    /// is one, kept in `RunArgs::job_flags` for the job's command line to read once the job is
+    /// described.
+    pub fn try_parse_args<I, T>(args: I) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<OsString>,
+    {
+        let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+        let mut matches =
+            commands::run::with_job_flags(Self::command(), &args).try_get_matches_from(&args)?;
+        let job_flags = matches
+            .subcommand_matches("run")
+            .map(commands::run::job_flags)
+            .unwrap_or_default();
+        let mut args = Self::from_arg_matches_mut(&mut matches)
+            .map_err(|error| error.format(&mut Self::command()))?;
+        if let Some(Commands::Run(run)) = &mut args.command {
+            run.job_flags = job_flags;
+        }
+        Ok(args)
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -106,7 +134,7 @@ impl Commands {
 }
 
 pub fn cli_main() {
-    let args = match CliArgs::try_parse() {
+    let args = match CliArgs::try_parse_args(std::env::args_os()) {
         Ok(args) => args,
         Err(error) if !error.use_stderr() => error.exit(),
         Err(error) => {
@@ -146,6 +174,20 @@ pub fn cli_main() {
             ),
         );
         fail_early(&error.into(), format.unwrap_or(auto));
+    }
+
+    // Help is text whatever the output format or TRACEL_ENV say, as clap's own help is, so it
+    // comes before the environment is resolved and ignores the format.
+    if let Some(Commands::Run(run)) = &args.command
+        && run.help
+    {
+        let (output, terminal) = ui::channels(Format::Human, args.no_input);
+        if let Err(error) = commands::run::help(run, CliArgs::command(), &terminal)
+            .and_then(|help| output.finish(help.into()))
+        {
+            fail(&error, &output, &terminal);
+        }
+        return;
     }
 
     let Some(command) = args.command else {
@@ -298,7 +340,7 @@ mod tests {
     #[test]
     fn run_forwards_only_arguments_after_double_dash() {
         let forwarded = |arguments: &[&str]| {
-            let Some(Commands::Run(run)) = CliArgs::try_parse_from(arguments).unwrap().command
+            let Some(Commands::Run(run)) = CliArgs::try_parse_args(arguments).unwrap().command
             else {
                 panic!("Expected run command");
             };
@@ -315,10 +357,10 @@ mod tests {
         );
         for arguments in [
             &["tracel", "run", "--epochs"][..],
-            &["tracel", "run", "train", "--epochs"],
+            &["tracel", "run", "train", "--epochs", "--", "10"],
             &["tracel", "run", "train", "evaluate"],
         ] {
-            let error = CliArgs::try_parse_from(arguments).unwrap_err();
+            let error = CliArgs::try_parse_args(arguments).unwrap_err();
             assert_eq!(error.exit_code(), 2);
         }
     }

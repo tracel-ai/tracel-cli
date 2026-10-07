@@ -1,7 +1,9 @@
 use std::path::Path;
 
 use serde_json::{Map, Value};
+use tracel_job::JobDefinition;
 
+use super::job_flags;
 use crate::error::{CliError, ErrorKind};
 
 /// One step of a `--set` path: an object key, or an array index written `[i]`.
@@ -194,17 +196,21 @@ pub fn read_config(path: &Path) -> Result<Value, CliError> {
     })
 }
 
-/// The input a job runs with: `start`, with each config merge-patched onto it in order, then
-/// each assignment set.
+/// The input the job `definition` runs with, each step winning over the ones before: `start`,
+/// then each config merge-patched onto it in order, then the job's flags `job_flags` set as the
+/// job's command line sets them, then each assignment set.
 pub fn resolve(
+    definition: &JobDefinition,
     start: Value,
     configs: &[Value],
+    job_flags: &[String],
     assignments: &[Assignment],
 ) -> Result<Value, CliError> {
     let mut input = start;
     for config in configs {
         merge_patch(&mut input, config);
     }
+    let mut input = job_flags::apply(definition, input, job_flags)?;
     for assignment in assignments {
         assignment.apply(&mut input)?;
     }
@@ -260,6 +266,7 @@ pub fn invalid_input(job: &str, violations: &[Violation]) -> CliError {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use tracel_job::JobKind;
 
     use super::*;
 
@@ -443,22 +450,85 @@ mod tests {
         }
     }
 
+    /// A job whose example input is `example`, with no schema.
+    fn job(example: Value) -> JobDefinition {
+        JobDefinition {
+            name: "train".to_string(),
+            kind: JobKind::Experiment,
+            description: None,
+            input_schema: None,
+            input_example: Some(example),
+        }
+    }
+
+    fn assignments(arguments: &[&str]) -> Vec<Assignment> {
+        arguments
+            .iter()
+            .map(|argument| parse_assignment(argument).unwrap())
+            .collect()
+    }
+
+    fn flags(arguments: &[&str]) -> Vec<String> {
+        arguments
+            .iter()
+            .map(|argument| argument.to_string())
+            .collect()
+    }
+
     #[test]
-    fn configs_apply_in_order_before_assignments() {
+    fn each_step_wins_over_the_ones_before() {
+        let example = json!({
+            "epochs": 10,
+            "batch_size": 8,
+            "tag": "example",
+            "optimizer": {"lr": 0.001, "decay": 0.1}
+        });
         let input = resolve(
-            json!({"epochs": 10, "optimizer": {"lr": 0.001, "decay": 0.1}}),
+            &job(example.clone()),
+            example,
             &[
-                json!({"epochs": 20, "optimizer": {"decay": null}}),
-                json!({"epochs": 30}),
+                json!({"epochs": 20, "batch_size": 16, "optimizer": {"decay": null}}),
+                json!({"epochs": 30, "tag": "config"}),
             ],
-            &[
-                parse_assignment("epochs=40").unwrap(),
-                parse_assignment("optimizer.lr=0.1").unwrap(),
-            ],
+            &flags(&["--epochs=40", "--batch-size=32", "--optimizer.lr=0.01"]),
+            &assignments(&["epochs=50", "optimizer.lr=0.1"]),
         )
         .unwrap();
-        assert_eq!(input, json!({"epochs": 40, "optimizer": {"lr": 0.1}}));
-        assert_eq!(resolve(Value::Null, &[], &[]).unwrap(), Value::Null);
+        assert_eq!(
+            input,
+            json!({"epochs": 50, "batch_size": 32, "tag": "config", "optimizer": {"lr": 0.1}})
+        );
+        assert_eq!(
+            resolve(&job(json!({})), Value::Null, &[], &[], &[]).unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn job_flags_set_what_the_same_assignments_set() {
+        let example = json!({"epochs": 10, "shuffle": false, "optimizer": {"lr": 0.001}});
+        let job = job(example.clone());
+        let with_flags = resolve(
+            &job,
+            example.clone(),
+            &[],
+            &flags(&["--epochs=5", "--optimizer.lr=0.01", "--shuffle"]),
+            &[],
+        )
+        .unwrap();
+        let with_assignments = resolve(
+            &job,
+            example,
+            &[],
+            &[],
+            &assignments(&["epochs=5", "optimizer.lr=0.01", "shuffle=true"]),
+        )
+        .unwrap();
+        assert_eq!(with_flags, with_assignments);
+        assert_eq!(
+            with_flags,
+            json!({"epochs": 5, "shuffle": true, "optimizer": {"lr": 0.01}})
+        );
     }
 
     #[test]

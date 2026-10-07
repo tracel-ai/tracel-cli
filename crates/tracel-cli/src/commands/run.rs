@@ -1,18 +1,22 @@
 mod describe;
 mod input;
+mod job_flags;
 mod launch;
 mod remote;
 mod report;
 
-use std::io;
+use std::io::{self, Write};
 use std::path::PathBuf;
 
 use anyhow::Context;
-use clap::{ArgGroup, Args};
+use clap::builder::StyledStr;
+use clap::{ArgAction, ArgGroup, Args, Command};
 use serde::Serialize;
 use serde_json::Value;
-
 use tracel_client::console::Env;
+use tracel_job::{DefinitionsFile, JobKind, RunReport};
+
+pub use job_flags::{job_flags, with_job_flags};
 
 use crate::commands::experiments::{ExperimentSelector, get_experiment, parse_experiment};
 use crate::commands::login::get_client_and_login_if_needed;
@@ -22,12 +26,12 @@ use crate::error::{CliError, ErrorKind, classify};
 use crate::helpers::{require_cargo_workspace, resolve_namespace_project};
 use crate::tools::cargo;
 use crate::tools::tracel_config::TracelProject;
-use crate::ui::{Human, Outcome, Render, Table};
+use crate::ui::{Human, Outcome, Render, Table, Terminal};
 
-use describe::{Definitions, describe};
+use describe::{describe, find_job};
 use input::Assignment;
 use launch::{Event, Launch, Target, launch, select_target};
-use report::{RunReport, ending, ending_error};
+use report::{announcement, ending, ending_error};
 
 #[derive(Args, Debug)]
 #[command(group(
@@ -40,10 +44,14 @@ use report::{RunReport, ending, ending_error};
 #[command(mut_arg("bin", |arg| arg
     .requires("selection")
     .help("Binary to run jobs from, and with --remote to upload, when there are several")))]
+#[command(disable_help_flag = true)]
 pub struct RunArgs {
-    /// Job to run, as --list names it
+    /// Job to run, as --list names it, followed by its own flags, which `tracel run <JOB> --help` lists
     #[arg(value_name = "JOB", conflicts_with = "forwarded")]
     pub job: Option<String>,
+    /// The job's own flags, as arguments of the job's command line, such as `--epochs=5`
+    #[arg(skip)]
+    pub job_flags: Vec<String>,
     /// List the jobs of the workspace binary that uses the tracel crate
     #[arg(long, conflicts_with_all = ["job", "remote", "forwarded"])]
     pub list: bool,
@@ -81,6 +89,9 @@ pub struct RunArgs {
     /// Arguments passed to the program (without a JOB)
     #[arg(last = true, value_name = "ARGS")]
     pub forwarded: Vec<String>,
+    /// Print help, with the job's own flags after a JOB
+    #[arg(short, long, action = ArgAction::SetTrue)]
+    pub help: bool,
 }
 
 pub fn handle_command(args: RunArgs, context: CliContext) -> anyhow::Result<Outcome> {
@@ -105,19 +116,23 @@ pub fn handle_command(args: RunArgs, context: CliContext) -> anyhow::Result<Outc
     }
 }
 
-fn list_jobs(args: &RunArgs, context: &CliContext) -> anyhow::Result<Definitions> {
+fn list_jobs(args: &RunArgs, context: &CliContext) -> anyhow::Result<DefinitionsFile> {
     let workspace = require_cargo_workspace()?;
     Ok(describe(context.terminal(), &workspace, args.package.bin.as_deref())?.definitions)
 }
 
-impl Render for Definitions {
+impl Render for DefinitionsFile {
     fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         Table::new(["NAME", "KIND", "DESCRIPTION"])
             .shrink("DESCRIPTION")
             .rows(self.jobs.iter().map(|job| {
+                let kind = match job.kind {
+                    JobKind::Experiment => "experiment",
+                    JobKind::Inference => "inference",
+                };
                 [
                     job.name.clone(),
-                    job.kind.clone(),
+                    kind.to_string(),
                     job.description.clone().unwrap_or_default(),
                 ]
             }))
@@ -154,7 +169,7 @@ fn run_job(job: &str, args: &RunArgs, context: &CliContext) -> anyhow::Result<Ou
 
     let workspace = require_cargo_workspace()?;
     let described = describe(terminal, &workspace, args.package.bin.as_deref())?;
-    let definition = described.definitions.job(job)?;
+    let definition = find_job(&described.definitions, job)?;
     let start = match &args.like {
         Some(experiment) => recorded_input(context, experiment)?,
         None => definition.input_example.clone().unwrap_or(Value::Null),
@@ -164,7 +179,13 @@ fn run_job(job: &str, args: &RunArgs, context: &CliContext) -> anyhow::Result<Ou
         .iter()
         .map(|path| input::read_config(path))
         .collect::<Result<Vec<_>, _>>()?;
-    let input = input::resolve(start, &configs, &args.assignments)?;
+    let input = input::resolve(
+        definition,
+        start,
+        &configs,
+        &args.job_flags,
+        &args.assignments,
+    )?;
     if let Some(schema) = &definition.input_schema {
         match input::violations(schema, &input) {
             Ok(violations) if violations.is_empty() => {}
@@ -208,7 +229,7 @@ fn run_job(job: &str, args: &RunArgs, context: &CliContext) -> anyhow::Result<Ou
         },
         |event| match event {
             Event::Report(report) => {
-                if let Some(announcement) = report.announcement() {
+                if let Some(announcement) = announcement(&report.experiment) {
                     if !announced {
                         terminal.print(&announcement);
                     }
@@ -239,6 +260,39 @@ fn run_job(job: &str, args: &RunArgs, context: &CliContext) -> anyhow::Result<Ou
         report,
     }
     .into())
+}
+
+/// The help of `tracel run`, as clap writes it.
+pub struct Help(StyledStr);
+
+impl Serialize for Help {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(&self.0)
+    }
+}
+
+impl Render for Help {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
+        if out.color() {
+            write!(out, "{}", self.0.ansi())
+        } else {
+            write!(out, "{}", self.0)
+        }
+    }
+}
+
+/// The help of `tracel run`, the subcommand of `tracel`: after a JOB, that of the job, with
+/// its own flags from its definition.
+pub fn help(args: &RunArgs, tracel: Command, terminal: &Terminal) -> anyhow::Result<Help> {
+    let tracel = match &args.job {
+        Some(job) => {
+            let workspace = require_cargo_workspace()?;
+            let described = describe(terminal, &workspace, args.package.bin.as_deref())?;
+            job_flags::job_help(tracel, find_job(&described.definitions, job)?)
+        }
+        None => tracel,
+    };
+    Ok(Help(job_flags::run_command(&tracel).render_long_help()))
 }
 
 /// The project from --project, the environment or `tracel.toml`, or `None` when none is set.
@@ -333,8 +387,8 @@ fn tracel_env_value(env: &Env) -> String {
 
 #[cfg(test)]
 mod tests {
+    use clap::CommandFactory;
     use clap::error::ErrorKind;
-    use clap::{CommandFactory, Parser};
     use serde_json::json;
 
     use super::*;
@@ -342,7 +396,7 @@ mod tests {
     use crate::commands::package::Mode;
 
     fn parse(arguments: &[&str]) -> Result<RunArgs, clap::Error> {
-        let Some(Commands::Run(args)) = CliArgs::try_parse_from(arguments)?.command else {
+        let Some(Commands::Run(args)) = CliArgs::try_parse_args(arguments)?.command else {
             panic!("Expected run command");
         };
         Ok(args)

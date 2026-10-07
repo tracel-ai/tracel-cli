@@ -109,7 +109,11 @@ program as `cargo run` does.
 ```bash
 # List the jobs of the workspace binary that uses the tracel crate
 tracel run --list
+# List the flags of a job
+tracel run mnist --help
 # Run a job with its example input, changing two values
+tracel run mnist --num-epochs 5 --optimizer.lr 0.01
+# The same, as scripts write it
 tracel run mnist --set num_epochs=5 --set optimizer.lr=0.01
 # Merge JSON files onto the input, then set a value
 tracel run mnist -c base.json -c gpu.json --set batch_size=64
@@ -148,7 +152,21 @@ definitions file; `kind` is `experiment` or `inference`, and `input_schema` and
 {"protocol":1,"sdk_version":"0.10.0","runner":"cli","jobs":[{"name":"mnist","kind":"experiment","description":"Train the MNIST classifier","input_schema":{"type":"object","properties":{"num_epochs":{"type":"integer"}}},"input_example":{"num_epochs":10,"optimizer":{"lr":0.001}}}]}
 ```
 
-`tracel run <JOB>` resolves the job's input in order:
+`tracel run <JOB>` also takes the job's own flags, the ones its binary's command
+line has: one per field of the job's input, typed by the job's input schema, or
+else by its example input. A nested field's flag joins the keys with dots and
+writes `_` as `-`, so `--optimizer.weight-decay 0.01` sets
+`optimizer.weight_decay`. A boolean flag given no value is `true`, and a field
+that is an array, a map, or `null` in the example input takes a JSON literal,
+such as `--layers '[64, 32]'`. `tracel run <JOB> --help` lists them with their
+defaults beside the flags of `tracel run`, from the cached job definitions. A
+value of the wrong type, or a flag the job does not have, fails with `USAGE`
+naming the flag. `tracel run` keeps its own flags, global ones included: a field
+whose flag has the name of one of them, such as `offline`, is set with
+`--set offline=true`.
+
+`tracel run <JOB>` resolves the job's input in order, each step winning over the
+ones before:
 
 1. It starts from the job's `input_example`, or `null` when it has none.
    `--like <NUM|latest>` starts from the config that Console experiment recorded
@@ -156,7 +174,9 @@ definitions file; `kind` is `experiment` or `inference`, and `input_schema` and
 2. Each `-c, --config <FILE>` is a JSON file merged onto the input with JSON merge
    patch (RFC 7386): objects merge, other values replace, and `null` removes a
    field.
-3. Each `--set <PATH>=<VALUE>` sets one value. `PATH` is dotted keys with `[i]`
+3. The job's flags set their fields, as the binary's command line sets them: an
+   object a flag gives merges onto the field's, and `null` is set.
+4. Each `--set <PATH>=<VALUE>` sets one value. `PATH` is dotted keys with `[i]`
    array indices, such as `optimizer.lr` or `layers[0].size`; missing objects and
    arrays are created, and the index one past the end of an array appends.
    `VALUE` is JSON, or a string when it does not parse as JSON: `--set epochs=5`
@@ -166,8 +186,8 @@ When the job has an `input_schema`, the input is validated against it; reference
 outside the schema are not fetched. An invalid input fails with `USAGE` naming
 each path and reason, such as `epochs: "x" is not of type "integer"`, and an
 unknown job fails with `USAGE` listing the job names. A `JOB` cannot be combined
-with arguments after `--`. `-c`, `--set`, `--like`, and `--offline` require a
-`JOB`, and `--bin` requires a `JOB`, `--list`, or `--remote`.
+with arguments after `--`. `-c`, `--set`, `--like`, `--offline`, and the job's
+flags require a `JOB`, and `--bin` requires a `JOB`, `--list`, or `--remote`.
 
 The job then runs as `<binary> <JOB> <input-json>`, without `cargo run`. Its
 stdout and stderr are inherited and its stdin is closed. In JSON mode, its stdout
@@ -187,8 +207,8 @@ offline. The program gets:
 | `TRACEL_REPORT_FILE` | a temporary file for the run report |
 
 The program writes the run report to `TRACEL_REPORT_FILE` when it creates the
-experiment, and again when the experiment ends. Offline, `experiment` is `null`
-and `dir` names the run directory. `status` is `running`, `completed`, `failed`,
+experiment, and again when the experiment ends. Offline, the experiment's `url`
+is `null` and `dir` names the run directory. `status` is `running`, `completed`, `failed`,
 or `cancelled`:
 
 ```json
