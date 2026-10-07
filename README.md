@@ -206,26 +206,29 @@ offline. The program gets:
 | `TRACEL_NAMESPACE`, `TRACEL_PROJECT` | the project, when one is linked |
 | `TRACEL_REPORT_FILE` | a temporary file for the run report |
 
-The program writes the run report to `TRACEL_REPORT_FILE` when it creates the
-experiment, and again when the experiment ends. Offline, the experiment's `url`
-is `null` and `dir` names the run directory. `status` is `running`, `completed`,
-or `failed`:
+The program writes the run report of every job, an inference too, to
+`TRACEL_REPORT_FILE`: when the job starts, again when it records an experiment,
+and again when it ends. `status` is how the job is going and how it ended:
+`running`, `completed`, or `failed`, with `error` saying why. `experiment` is
+`null` until the job records one, and stays `null` for a job that records none.
+Offline, the experiment's `url` is `null` and `dir` names the run directory:
 
 ```json
-{"protocol":1,"job":"mnist","experiment":{"num":42,"url":"https://console.tracel.ai/..."},"status":"completed","started_at":"2026-10-06T12:00:00Z","finished_at":"2026-10-06T12:30:00Z","error":null}
+{"protocol":1,"job":"mnist","status":"running","started_at":"2026-10-06T12:00:00Z","finished_at":null,"error":null,"experiment":null}
+{"protocol":1,"job":"mnist","status":"failed","started_at":"2026-10-06T12:00:00Z","finished_at":"2026-10-06T12:30:00Z","error":"loss is NaN","experiment":{"num":42,"url":"https://console.tracel.ai/..."}}
 ```
 
 Human output names the experiment and its URL, or the offline run directory, as
 soon as the report does. The job is stopped when `tracel` asked it to stop, as
 below, or when the program exits with code 130, as a program asked to stop does.
-A stopped job fails with `JOB_FAILED` (exit code 9) saying so, and what its
-experiment ended as when the report says, such as
-`Job 'mnist' was stopped (experiment 42 completed).` Otherwise, the command exits
-0 when the report says `completed`, and fails with `JOB_FAILED` naming the job,
-its status, and the experiment when it says `failed`. Without a final report, the
-program's exit code decides: 0 is completed, 2 fails with `USAGE` (the program
-rejected the job or its input, and printed why), and any other code, or a signal,
-is failed. JSON data is
+A stopped job fails with `JOB_FAILED` (exit code 9) saying so, and how the job
+ended when the report says, such as
+`Job 'mnist' was stopped (it completed; experiment 42).` Otherwise, the command
+exits 0 when the report says `completed`, and fails with `JOB_FAILED` naming the
+job, its status, and its experiment, if any, when it says `failed`. Without a
+final report, the program's exit code decides: 0 is completed, 2 fails with
+`USAGE` (the program rejected the job or its input, and printed why), and any
+other code, or a signal, is failed. JSON data is
 `{"job":"mnist","input":{...},"target":"console","exit_code":0,"report":{...}}`,
 with `report` `null` when the program wrote none.
 

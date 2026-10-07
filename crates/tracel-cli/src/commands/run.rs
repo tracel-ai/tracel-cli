@@ -229,7 +229,7 @@ fn run_job(job: &str, args: &RunArgs, context: &CliContext) -> anyhow::Result<Ou
         },
         |event| match event {
             Event::Report(report) => {
-                if let Some(announcement) = announcement(&report.experiment) {
+                if let Some(announcement) = report.experiment.as_ref().and_then(announcement) {
                     if !announced {
                         terminal.print(&announcement);
                     }

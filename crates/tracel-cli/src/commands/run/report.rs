@@ -30,7 +30,7 @@ fn name(experiment: &ReportedExperiment) -> Option<String> {
     }
 }
 
-/// Where `experiment` is recorded, once it is created.
+/// Where `experiment` is recorded.
 fn location(experiment: &ReportedExperiment) -> Option<String> {
     let name = name(experiment)?;
     Some(match (&experiment.dir, &experiment.url) {
@@ -39,7 +39,7 @@ fn location(experiment: &ReportedExperiment) -> Option<String> {
     })
 }
 
-/// The line announcing where `experiment` is recorded, once it is created.
+/// The line announcing where `experiment` is recorded.
 pub fn announcement(experiment: &ReportedExperiment) -> Option<String> {
     match (experiment.num, &experiment.url, &experiment.dir) {
         (_, _, Some(dir)) => Some(format!("Recording offline in {}", dir.display())),
@@ -75,23 +75,23 @@ pub enum Ending {
     Failed {
         reason: String,
     },
-    /// The program was stopped, with what its experiment ended as when the report says.
+    /// The program was stopped, with how the job ended when the report says.
     Stopped {
-        experiment: Option<ExperimentOutcome>,
+        outcome: Option<JobOutcome>,
     },
     /// The program rejected the job or its input (exit code 2).
     Rejected,
 }
 
-/// What a run's experiment ended as, by its run report.
+/// How a job ended, by its run report.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ExperimentOutcome {
+pub enum JobOutcome {
     Completed,
     Failed { reason: String },
 }
 
-impl ExperimentOutcome {
-    /// The outcome `report` gives, once the run has ended.
+impl JobOutcome {
+    /// The outcome `report` gives, once the job has ended.
     fn of(report: &RunReport) -> Option<Self> {
         match report.status {
             RunStatus::Running => None,
@@ -106,11 +106,11 @@ impl ExperimentOutcome {
     }
 }
 
-impl From<ExperimentOutcome> for Ending {
-    fn from(outcome: ExperimentOutcome) -> Self {
+impl From<JobOutcome> for Ending {
+    fn from(outcome: JobOutcome) -> Self {
         match outcome {
-            ExperimentOutcome::Completed => Self::Completed,
-            ExperimentOutcome::Failed { reason } => Self::Failed { reason },
+            JobOutcome::Completed => Self::Completed,
+            JobOutcome::Failed { reason } => Self::Failed { reason },
         }
     }
 }
@@ -119,11 +119,11 @@ impl From<ExperimentOutcome> for Ending {
 /// otherwise from the report when it has a final status, otherwise from the exit code (0
 /// completed, 2 rejected, any other failed).
 pub fn ending(report: Option<&RunReport>, exit: ProgramExit) -> Ending {
-    let experiment = report.and_then(ExperimentOutcome::of);
+    let outcome = report.and_then(JobOutcome::of);
     if exit.stopped() {
-        return Ending::Stopped { experiment };
+        return Ending::Stopped { outcome };
     }
-    if let Some(outcome) = experiment {
+    if let Some(outcome) = outcome {
         return outcome.into();
     }
     match (exit.code, exit.signal) {
@@ -142,9 +142,10 @@ pub fn ending(report: Option<&RunReport>, exit: ProgramExit) -> Ending {
 }
 
 /// The error a run that did not complete fails with: `JOB_FAILED` when the job failed or was
-/// stopped, `USAGE` when the program rejected it.
+/// stopped, naming the experiment it recorded when the report gives one, and `USAGE` when the
+/// program rejected it.
 pub fn ending_error(job: &str, ending: &Ending, report: Option<&RunReport>) -> Option<CliError> {
-    let experiment = report.map(|report| &report.experiment);
+    let experiment = report.and_then(|report| report.experiment.as_ref());
     let location = experiment
         .and_then(location)
         .map(|location| format!(" ({location})"))
@@ -163,19 +164,20 @@ pub fn ending_error(job: &str, ending: &Ending, report: Option<&RunReport>) -> O
         Ending::Failed { reason } => {
             format!("Job '{job}' ended with status failed{location}: {reason}")
         }
-        Ending::Stopped { experiment: None } => format!("Job '{job}' was stopped{location}."),
+        Ending::Stopped { outcome: None } => format!("Job '{job}' was stopped{location}."),
         Ending::Stopped {
-            experiment: Some(outcome),
+            outcome: Some(outcome),
         } => {
-            let name = experiment
+            let recorded = experiment
                 .and_then(name)
-                .unwrap_or_else(|| "its experiment".to_string());
+                .map(|name| format!("; {name}"))
+                .unwrap_or_default();
             match outcome {
-                ExperimentOutcome::Completed => {
-                    format!("Job '{job}' was stopped ({name} completed).")
+                JobOutcome::Completed => {
+                    format!("Job '{job}' was stopped (it completed{recorded}).")
                 }
-                ExperimentOutcome::Failed { reason } => {
-                    format!("Job '{job}' was stopped ({name} failed: {reason}).")
+                JobOutcome::Failed { reason } => {
+                    format!("Job '{job}' was stopped (it failed{recorded}): {reason}")
                 }
             }
         }
@@ -214,19 +216,25 @@ mod tests {
         }
     }
 
-    /// A report as the SDK writes it, for a Console experiment or an offline run.
-    fn report(status: RunStatus, console: bool) -> RunReport {
-        let experiment = if console {
-            console_experiment()
-        } else {
-            offline_run()
-        };
+    /// A report as the SDK writes it, for a job that recorded `experiment`, if any.
+    fn report(status: RunStatus, experiment: Option<ReportedExperiment>) -> RunReport {
         RunReport {
             status,
             finished_at: (status != RunStatus::Running).then(|| "2026-10-06T12:05:00Z".into()),
             error: (status == RunStatus::Failed).then(|| "loss is NaN".into()),
-            ..RunReport::new("mnist", experiment, STARTED_AT)
+            experiment,
+            ..RunReport::new("mnist", STARTED_AT)
         }
+    }
+
+    /// What a job may have recorded: a Console experiment, an offline run, or no experiment.
+    fn experiments() -> [Option<ReportedExperiment>; 3] {
+        [Some(console_experiment()), Some(offline_run()), None]
+    }
+
+    /// The reports of a job that recorded each of [`experiments`].
+    fn reports(status: RunStatus) -> [RunReport; 3] {
+        experiments().map(|experiment| report(status, experiment))
     }
 
     fn exited(code: i32) -> ProgramExit {
@@ -259,13 +267,13 @@ mod tests {
             announcement(&without_page).unwrap(),
             "Recording experiment 42"
         );
-        let not_created = ReportedExperiment {
+        let unnamed = ReportedExperiment {
             num: None,
             url: None,
             dir: None,
         };
-        assert_eq!(announcement(&not_created), None);
-        assert_eq!(location(&not_created), None);
+        assert_eq!(announcement(&unnamed), None);
+        assert_eq!(location(&unnamed), None);
     }
 
     #[test]
@@ -274,13 +282,14 @@ mod tests {
         let path = dir.path().join("report.json");
         assert_eq!(read_report(&path), Ok(None));
 
-        let running = report(RunStatus::Running, false);
-        running.write(&path).unwrap();
-        assert_eq!(read_report(&path), Ok(Some(running.clone())));
+        for running in reports(RunStatus::Running) {
+            running.write(&path).unwrap();
+            assert_eq!(read_report(&path), Ok(Some(running)));
+        }
 
         RunReport {
             protocol: 2,
-            ..running
+            ..report(RunStatus::Running, None)
         }
         .write(&path)
         .unwrap();
@@ -289,14 +298,30 @@ mod tests {
             Err("protocol 2 is not supported, expected 1".to_string())
         );
         for contents in [
-            r#"{"protocol": 1, "job": "mnist", "experiment": {}, "status": "paused", "started_at": "now"}"#,
-            r#"{"protocol": 1, "job": "mnist", "status": "running", "started_at": "now"}"#,
+            r#"{"protocol": 1, "job": "mnist", "status": "paused", "started_at": "now"}"#,
+            r#"{"protocol": 1, "job": "mnist", "status": "running"}"#,
             r#"{"protocol": 1, "job": "mnist", "status": "running"#,
             "",
         ] {
             std::fs::write(&path, contents).unwrap();
             assert!(read_report(&path).is_err(), "{contents}");
         }
+    }
+
+    #[test]
+    fn a_report_that_leaves_out_the_experiment_has_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("report.json");
+        std::fs::write(
+            &path,
+            r#"{"protocol": 1, "job": "wordtok", "status": "completed", "started_at": "now"}"#,
+        )
+        .unwrap();
+
+        let report = read_report(&path).unwrap().unwrap();
+
+        assert_eq!(report.experiment, None);
+        assert_eq!(report.status, RunStatus::Completed);
     }
 
     fn stopped(code: Option<i32>, signal: Option<i32>) -> ProgramExit {
@@ -307,8 +332,8 @@ mod tests {
         }
     }
 
-    fn failed(reason: &str) -> ExperimentOutcome {
-        ExperimentOutcome::Failed {
+    fn failed(reason: &str) -> JobOutcome {
+        JobOutcome::Failed {
             reason: reason.to_string(),
         }
     }
@@ -316,22 +341,24 @@ mod tests {
     #[test]
     fn a_final_report_status_decides_the_ending_of_a_job_not_stopped() {
         for code in [0, 1, 2, 101] {
-            assert_eq!(
-                ending(Some(&report(RunStatus::Completed, true)), exited(code)),
-                Ending::Completed
-            );
-            assert_eq!(
-                ending(Some(&report(RunStatus::Failed, true)), exited(code)),
-                Ending::Failed {
-                    reason: "loss is NaN".to_string()
-                }
-            );
+            for completed in reports(RunStatus::Completed) {
+                assert_eq!(ending(Some(&completed), exited(code)), Ending::Completed);
+            }
+            for failed in reports(RunStatus::Failed) {
+                assert_eq!(
+                    ending(Some(&failed), exited(code)),
+                    Ending::Failed {
+                        reason: "loss is NaN".to_string()
+                    }
+                );
+            }
         }
     }
 
     #[test]
     fn without_a_final_report_the_exit_code_decides() {
-        for report in [None, Some(report(RunStatus::Running, true))] {
+        let running = reports(RunStatus::Running).map(Some);
+        for report in running.iter().chain([&None]) {
             let report = report.as_ref();
             assert_eq!(ending(report, exited(0)), Ending::Completed);
             assert_eq!(ending(report, exited(2)), Ending::Rejected);
@@ -358,37 +385,40 @@ mod tests {
     }
 
     #[test]
-    fn a_job_asked_to_stop_is_stopped_with_its_experiment_outcome() {
-        let completed = report(RunStatus::Completed, true);
-        let failed_report = report(RunStatus::Failed, true);
+    fn a_job_asked_to_stop_is_stopped_with_how_it_ended() {
         for exit in [
             stopped(Some(130), None),
             stopped(Some(0), None),
             stopped(Some(1), None),
             stopped(None, Some(9)),
         ] {
-            assert_eq!(
-                ending(Some(&completed), exit),
-                Ending::Stopped {
-                    experiment: Some(ExperimentOutcome::Completed)
-                }
-            );
-            assert_eq!(
-                ending(Some(&failed_report), exit),
-                Ending::Stopped {
-                    experiment: Some(failed("loss is NaN"))
-                }
-            );
+            for completed in reports(RunStatus::Completed) {
+                assert_eq!(
+                    ending(Some(&completed), exit),
+                    Ending::Stopped {
+                        outcome: Some(JobOutcome::Completed)
+                    }
+                );
+            }
+            for failed_report in reports(RunStatus::Failed) {
+                assert_eq!(
+                    ending(Some(&failed_report), exit),
+                    Ending::Stopped {
+                        outcome: Some(failed("loss is NaN"))
+                    }
+                );
+            }
         }
     }
 
     #[test]
     fn a_job_asked_to_stop_without_a_final_report_is_stopped() {
-        for report in [None, Some(report(RunStatus::Running, true))] {
+        let running = reports(RunStatus::Running).map(Some);
+        for report in running.iter().chain([&None]) {
             for exit in [stopped(Some(130), None), stopped(None, Some(9))] {
                 assert_eq!(
                     ending(report.as_ref(), exit),
-                    Ending::Stopped { experiment: None }
+                    Ending::Stopped { outcome: None }
                 );
             }
         }
@@ -396,26 +426,23 @@ mod tests {
 
     #[test]
     fn a_program_exiting_130_unasked_is_stopped() {
-        assert_eq!(
-            ending(None, exited(130)),
-            Ending::Stopped { experiment: None }
-        );
-        assert_eq!(
-            ending(Some(&report(RunStatus::Running, false)), exited(130)),
-            Ending::Stopped { experiment: None }
-        );
-        assert_eq!(
-            ending(Some(&report(RunStatus::Completed, false)), exited(130)),
-            Ending::Stopped {
-                experiment: Some(ExperimentOutcome::Completed)
-            }
-        );
-        assert_eq!(
-            ending(Some(&report(RunStatus::Failed, false)), exited(130)),
-            Ending::Stopped {
-                experiment: Some(failed("loss is NaN"))
-            }
-        );
+        assert_eq!(ending(None, exited(130)), Ending::Stopped { outcome: None });
+        for experiment in experiments() {
+            let ended = |status| ending(Some(&report(status, experiment.clone())), exited(130));
+            assert_eq!(ended(RunStatus::Running), Ending::Stopped { outcome: None });
+            assert_eq!(
+                ended(RunStatus::Completed),
+                Ending::Stopped {
+                    outcome: Some(JobOutcome::Completed)
+                }
+            );
+            assert_eq!(
+                ended(RunStatus::Failed),
+                Ending::Stopped {
+                    outcome: Some(failed("loss is NaN"))
+                }
+            );
+        }
     }
 
     /// The error `ending` fails with, its exit code, and its hint.
@@ -429,17 +456,43 @@ mod tests {
         )
     }
 
+    /// The failure of a job that ended with `report`, and the program's `exit`.
+    fn failure_of(report: &RunReport, exit: ProgramExit) -> (String, i32, Option<String>) {
+        failure(&ending(Some(report), exit), Some(report))
+    }
+
+    fn logs_hint() -> Option<String> {
+        Some("Read its logs with `tracel experiments logs 42`.".to_string())
+    }
+
     #[test]
-    fn failures_are_job_failed_and_point_at_the_experiment() {
+    fn failures_are_job_failed_and_point_at_the_experiment_when_there_is_one() {
         assert!(ending_error("mnist", &Ending::Completed, None).is_none());
 
-        let failed = report(RunStatus::Failed, true);
+        let [console, offline, without] = reports(RunStatus::Failed);
         assert_eq!(
-            failure(&ending(Some(&failed), exited(1)), Some(&failed)),
+            failure_of(&console, exited(1)),
             (
                 "Job 'mnist' ended with status failed (experiment 42, https://console.tracel.ai/users/alice/projects/demo/experiments/42): loss is NaN".to_string(),
                 9,
-                Some("Read its logs with `tracel experiments logs 42`.".to_string())
+                logs_hint()
+            )
+        );
+        assert_eq!(
+            failure_of(&offline, exited(1)),
+            (
+                "Job 'mnist' ended with status failed (offline run runs/mnist/3): loss is NaN"
+                    .to_string(),
+                9,
+                None
+            )
+        );
+        assert_eq!(
+            failure_of(&without, exited(1)),
+            (
+                "Job 'mnist' ended with status failed: loss is NaN".to_string(),
+                9,
+                None
             )
         );
 
@@ -462,60 +515,107 @@ mod tests {
     }
 
     #[test]
-    fn a_stopped_job_is_job_failed_and_says_what_its_experiment_ended_as() {
-        let completed = report(RunStatus::Completed, true);
+    fn a_stopped_job_is_job_failed_and_says_how_it_ended() {
+        let asked = stopped(Some(130), None);
+        let [console, offline, without] = reports(RunStatus::Completed);
         assert_eq!(
-            failure(
-                &ending(Some(&completed), stopped(Some(130), None)),
-                Some(&completed)
-            ),
+            failure_of(&console, asked),
             (
-                "Job 'mnist' was stopped (experiment 42 completed).".to_string(),
+                "Job 'mnist' was stopped (it completed; experiment 42).".to_string(),
                 9,
-                Some("Read its logs with `tracel experiments logs 42`.".to_string())
+                logs_hint()
             )
         );
-
-        let failed = report(RunStatus::Failed, false);
         assert_eq!(
-            failure(
-                &ending(Some(&failed), stopped(Some(130), None)),
-                Some(&failed)
-            ),
+            failure_of(&offline, asked),
             (
-                "Job 'mnist' was stopped (offline run runs/mnist/3 failed: loss is NaN)."
-                    .to_string(),
+                "Job 'mnist' was stopped (it completed; offline run runs/mnist/3).".to_string(),
+                9,
+                None
+            )
+        );
+        assert_eq!(
+            failure_of(&without, asked),
+            (
+                "Job 'mnist' was stopped (it completed).".to_string(),
                 9,
                 None
             )
         );
 
-        let running = report(RunStatus::Running, true);
+        let [console, offline, without] = reports(RunStatus::Failed);
         assert_eq!(
-            failure(&ending(Some(&running), exited(130)), Some(&running)),
+            failure_of(&console, asked),
+            (
+                "Job 'mnist' was stopped (it failed; experiment 42): loss is NaN".to_string(),
+                9,
+                logs_hint()
+            )
+        );
+        assert_eq!(
+            failure_of(&offline, asked),
+            (
+                "Job 'mnist' was stopped (it failed; offline run runs/mnist/3): loss is NaN"
+                    .to_string(),
+                9,
+                None
+            )
+        );
+        assert_eq!(
+            failure_of(&without, asked),
+            (
+                "Job 'mnist' was stopped (it failed): loss is NaN".to_string(),
+                9,
+                None
+            )
+        );
+    }
+
+    #[test]
+    fn a_job_stopped_before_it_ended_says_where_its_experiment_is_recorded() {
+        let [console, offline, without] = reports(RunStatus::Running);
+        assert_eq!(
+            failure_of(&console, exited(130)),
             (
                 "Job 'mnist' was stopped (experiment 42, https://console.tracel.ai/users/alice/projects/demo/experiments/42).".to_string(),
                 9,
-                Some("Read its logs with `tracel experiments logs 42`.".to_string())
+                logs_hint()
             )
         );
-
+        assert_eq!(
+            failure_of(&offline, exited(130)),
+            (
+                "Job 'mnist' was stopped (offline run runs/mnist/3).".to_string(),
+                9,
+                None
+            )
+        );
+        assert_eq!(
+            failure_of(&without, exited(130)),
+            ("Job 'mnist' was stopped.".to_string(), 9, None)
+        );
         assert_eq!(
             failure(&ending(None, stopped(None, Some(9))), None),
             ("Job 'mnist' was stopped.".to_string(), 9, None)
         );
+    }
 
-        let unnamed = RunReport {
-            experiment: ReportedExperiment {
-                num: None,
-                url: None,
-                dir: None,
-            },
-            ..report(RunStatus::Completed, true)
+    #[test]
+    fn an_unnamed_experiment_is_left_out() {
+        let unnamed = ReportedExperiment {
+            num: None,
+            url: None,
+            dir: None,
         };
+        let completed = report(RunStatus::Completed, Some(unnamed));
+
         assert_eq!(
-            failure(&ending(Some(&unnamed), exited(130)), Some(&unnamed)).0,
-            "Job 'mnist' was stopped (its experiment completed)."
+            failure_of(&completed, exited(130)),
+            (
+                "Job 'mnist' was stopped (it completed).".to_string(),
+                9,
+                None
+            )
         );
     }
 }
