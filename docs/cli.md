@@ -243,7 +243,7 @@ Each file's size and SHA-256 checksum are checked before it is saved.
   credential is available, and on this machine otherwise or with `--offline`.
   The program gets `TRACEL_TARGET` (`console` or `offline`), `TRACEL_ENV`,
   `TRACEL_NAMESPACE` and `TRACEL_PROJECT`, and `TRACEL_REPORT_FILE`, where it
-  writes its run report.
+  writes how the job is going and the experiment it recorded, if any.
 - A job is stopped when `tracel` asked it to stop, or when the program exits
   with code 130. A stopped job fails with `JOB_FAILED`, as does a job whose
   report says it failed. Without a final report, exit code 0 means completed,
