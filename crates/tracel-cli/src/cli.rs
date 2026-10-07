@@ -64,7 +64,7 @@ pub enum Commands {
     Logout,
     /// Show which credential commands use, or print an access token for scripts.
     Auth(commands::auth::AuthArgs),
-    /// Browse project experiments, metrics, and logs.
+    /// Browse and compare project experiments, metrics, and logs.
     #[command(visible_alias = "exp")]
     Experiments(commands::experiments::ExperimentsArgs),
     /// Browse, follow and cancel jobs in the selected project.

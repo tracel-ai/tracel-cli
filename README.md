@@ -61,10 +61,11 @@ with a hint naming the flag to pass.
 
 Select a project with global `--project <namespace>/<name>`. It takes precedence
 over `TRACEL_NAMESPACE` and `TRACEL_PROJECT`, which each independently fall back
-to `tracel.toml` at the Cargo workspace root. `project`, `models`, `artifacts`,
-and `datasets` work from any directory with a flag or both variables; `package`
-and `run` still require a Cargo workspace. Global `-C <dir>` runs as if started in that
-directory. `init` and `unlink` operate on `tracel.toml` and ignore project overrides.
+to `tracel.toml` at the Cargo workspace root. `project`, `experiments`, `jobs`,
+`models`, `artifacts`, and `datasets` work from any directory with a flag or
+both variables; `package` and `run` still require a Cargo workspace. Global `-C
+<dir>` runs as if started in that directory. `init` and `unlink` operate on
+`tracel.toml` and ignore project overrides.
 
 ```bash
 tracel --project alice/demo project --json
@@ -382,16 +383,17 @@ Bare `project` returns `namespace`, `name`, `description`, `created_by`,
 
 ### `tracel experiments`
 
-Browse experiments in the selected project; `exp` is a visible alias. `list`
-accepts zero-based `--page`, `--limit`, and repeated `--sort` values in the server
-format: `field`, `field,asc`, or `field,desc`. `get <num|latest>` shows details and
-config. Numbers are project-scoped experiment numbers.
+Browse and compare experiments in the selected project; `exp` is a visible alias.
+`list` accepts zero-based `--page`, `--limit`, and repeated `--sort` values in the
+server format: `field`, `field,asc`, or `field,desc`. `get <num|latest>` shows
+details and config. Numbers are project-scoped experiment numbers.
 
 ```bash
 tracel --project alice/demo experiments list --sort created_at,desc --limit 10 --json
 tracel exp get latest
 tracel exp metrics 42 --metric loss --max-points 100 --downsampling 1
 tracel exp logs 42 --level info --level error --follow --json
+tracel exp compare 41 42 --metric loss --metric accuracy --json
 ```
 
 `metrics <num>` lists definitions without `--metric`; adding `--summary` returns
@@ -403,11 +405,35 @@ key`). `--after` is a log sequence cursor and cannot be combined with time range
 or offsets. `--follow` uses that cursor and polls every two seconds until the
 experiment finishes, including any remaining pages.
 
-JSON data is the server response, with `null` for an unavailable metric series
-or summary. Following logs emits NDJSON instead of a success envelope: each log
-item has `"type":"log"` added, followed by `{"type":"end","running":false}`.
-Errors still use the standard error envelope. Human output uses tables, experiment
-key/value lines, or one timestamp, level, and message line per log entry.
+`compare <BASE> <OTHER>` compares two different experiments. It lists where their
+`config` and `attributes` differ, at dotted paths with array indices such as
+`optimizer.betas[1]`. Keys that are empty or contain `.`, `[`, or `]` are written
+as `["key"]`, and an empty path stands for the whole value. Objects and arrays are
+compared member by member; any other change, including a change of type, is one
+difference. It then pairs each metric's summary values (`optimal_value` from
+`metrics --summary`) by group, for each `--metric <NAME>` or else every metric
+either experiment defines. `delta` is `other - base`. The server does not report
+whether a lower or higher value is better for a metric, so `compare` reports the
+delta without calling it better or worse.
+
+Apart from `compare`, JSON data is the server response, with `null` for an
+unavailable metric series or summary. Following logs emits NDJSON instead of a
+success envelope: each log item has `"type":"log"` added, followed by
+`{"type":"end","running":false}`. Errors still use the standard error envelope.
+Human output uses tables, experiment key/value lines, or one timestamp, level, and
+message line per log entry.
+
+`compare` data is `{"base":41,"other":42,"config":[...],"attributes":[...],"metrics":[...]}`.
+Each difference is `{"path":"optimizer.lr","base":0.01,"other":0.001}`, leaving
+out a side where the path does not exist: `{"path":"seed","base":1}` means the
+other experiment has no `seed`, while `"other":null` would be a JSON `null`. Each
+metric entry is `{"metric":"loss","group":"valid","base":0.5,"other":0.375,"delta":-0.125}`;
+`base` or `other` is `null` when that experiment has no summary for the group, and
+`delta` is then `null` too. Human output is a header line, config and attribute
+difference tables (`PATH`, `BASE`, `OTHER`, with `-` for a missing side and long
+values shortened to fit a terminal), and a metric table (`METRIC`, `GROUP`,
+`BASE`, `OTHER`, `DELTA`), or a line such as `No config differences.` for an
+empty section.
 
 ### `tracel jobs`
 
