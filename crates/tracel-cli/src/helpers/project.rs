@@ -205,6 +205,14 @@ pub fn require_cargo_workspace() -> anyhow::Result<WorkspaceInfo> {
     ProjectContext::load_workspace_info(&manifest_path).map_err(explain_project_context_error)
 }
 
+/// Require a Cargo workspace, with the project resolved like `resolve_namespace_project`.
+pub fn require_workspace_project(context: &CliContext) -> anyhow::Result<ProjectContext> {
+    Ok(ProjectContext {
+        workspace_info: require_cargo_workspace()?,
+        project: resolve_namespace_project(context)?.project,
+    })
+}
+
 /// Whether `tracel init` should go ahead. Fails outside a Rust project, and stops
 /// without error when the project is already linked and `force` is off.
 pub fn can_initialize_project(context: &CliContext, force: bool) -> anyhow::Result<bool> {

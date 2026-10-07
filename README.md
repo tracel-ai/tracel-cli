@@ -63,7 +63,7 @@ Select a project with global `--project <namespace>/<name>`. It takes precedence
 over `TRACEL_NAMESPACE` and `TRACEL_PROJECT`, which each independently fall back
 to `tracel.toml` at the Cargo workspace root. `project`, `models`, `artifacts`,
 and `datasets` work from any directory with a flag or both variables; `package`
-still requires a Cargo workspace. Global `-C <dir>` runs as if started in that
+and `run` still require a Cargo workspace. Global `-C <dir>` runs as if started in that
 directory. `init` and `unlink` operate on `tracel.toml` and ignore project overrides.
 
 ```bash
@@ -74,7 +74,7 @@ TRACEL_NAMESPACE=alice TRACEL_PROJECT=demo tracel -C ./trainer project --json
 JSON results are one line on stdout: `{"ok":true,"data":{...}}` on success, or
 `{"ok":false,"error":{"code":"NOT_FOUND","message":"...","hint":null,"exit_code":5}}`
 on failure. Diagnostics go to stderr. Help and version output retain their normal
-format, and `run` inherits the executed program's output and exit code.
+format, and a local `run` inherits the executed program's output and exit code.
 
 Human output keeps the same split: stdout carries only results, such as the
 tables and details of commands that read, while progress, prompts, warnings,
@@ -113,7 +113,45 @@ tracel run
 
 # Equivalent to `cargo run -- train mnist --epochs 100`
 tracel run -- train mnist --epochs 100
+
+# Package the workspace and run it as a job on the `gpu` compute provider group
+tracel run --remote gpu --mode source -- train mnist --epochs 100
+# Without prompts, following the job until it finishes
+tracel run --remote gpu --mode binary --yes --follow --json -- train mnist
+# Package and show the job without uploading or queuing anything
+tracel run --remote gpu --mode source --dry-run --json -- train mnist
 ```
+
+`--remote <GROUP>` runs your project as a job on a compute provider group
+instead. The workspace is packaged as with `tracel package`, with the same
+`--mode`, `--target`, `--bin`, and `--install-targets` flags and the same rules
+without prompts. The job runs the resulting code version with the arguments
+after `--`, which reach the program unchanged: the job command single-quotes
+each argument that is empty, starts with `#`, or contains a space, tab, newline,
+quote, or backslash. The packaging flags, `--yes`, `--dry-run`, and `--follow`
+require `--remote`.
+
+A job may incur costs, so after packaging, and before uploading anything, the
+command asks for confirmation naming the project, group, code version digest,
+and command. `-y, --yes` skips it. Without prompts, `--yes` is required,
+otherwise the command fails with `CONFIRMATION_REQUIRED` (exit code 7) before
+packaging. `--dry-run` packages and computes the digest without logging in,
+uploading, or queuing, and needs no `--yes`; it cannot be combined with `--yes`
+or `--follow`.
+
+JSON data contains `job_num`, `job_id`, `group`, `digest`, `version_id`,
+`command`, and `uploaded` (false when the same content was already packaged).
+Human output shows the job number with `tracel jobs logs <N> --follow` and
+`tracel jobs wait <N>`. `job_num` is null when the server does not return it;
+find the job with `tracel jobs list`. A dry run returns `namespace`, `project`,
+`group`, `mode`, `digest`, and `command`.
+
+`--follow` follows the job's logs like `tracel jobs logs <N> --follow`, then
+exits like `tracel jobs wait <N>`: 0 when the job completed, `JOB_FAILED` (exit
+code 9) when it failed or was cancelled. JSON output is NDJSON: an item with
+`"type":"queued"` and the data above, then the log and end items of
+`jobs logs --follow`. Without a job number, `--follow` fails after queuing and
+the job stays queued.
 
 ### `tracel package`
 

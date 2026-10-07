@@ -255,17 +255,17 @@ fn cancel_error(error: ClientError, project: &TracelProject, num: i32) -> anyhow
 }
 
 /// Write a job's logs from byte offset `start` until the job is completed, failed, or
-/// cancelled.
+/// cancelled, and return the job as last read.
 fn follow_logs(
     client: &Client,
     context: &CliContext,
     project: &TracelProject,
     num: i32,
     mut start: u64,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<JobResponse> {
     let output = context.output();
-    // The status is read before the logs, so logs read after a final status are complete.
-    let mut status = read_job(client, project, num)?.status;
+    // The job is read before the logs, so logs read after a final status are complete.
+    let mut job = read_job(client, project, num)?;
     let mut mid_line = false;
     loop {
         let page = client
@@ -288,19 +288,48 @@ fn follow_logs(
             // Drain a backlog right away; wait only once caught up.
             continue;
         }
-        if final_status(&status).is_some() {
+        if final_status(&job.status).is_some() {
             output.event(&LogEvent::End {
-                status: &status,
+                status: &job.status,
                 mid_line,
             })?;
             context
                 .terminal()
-                .print(&format!("Job {num} ended with status {status}."));
-            return Ok(());
+                .print(&format!("Job {num} ended with status {}.", job.status));
+            return Ok(job);
         }
         std::thread::sleep(FOLLOW_INTERVAL);
-        status = read_job(client, project, num)?.status;
+        job = read_job(client, project, num)?;
     }
+}
+
+/// Follow a job's logs from the start like `jobs logs --follow`, then fail like `jobs wait`
+/// unless the job completed.
+pub fn follow_job(
+    client: &Client,
+    context: &CliContext,
+    project: &TracelProject,
+    num: i32,
+) -> anyhow::Result<JobResponse> {
+    let job = follow_logs(client, context, project, num, 0)?;
+    if final_status(&job.status) == Some(FinalStatus::Completed) {
+        return Ok(job);
+    }
+    Err(job_failed(&job).into())
+}
+
+fn job_failed(job: &JobResponse) -> CliError {
+    let num = job.job_num;
+    let message = if job.status_message.is_empty() {
+        format!("Job {num} ended with status {}.", job.status)
+    } else {
+        format!(
+            "Job {num} ended with status {}: {}",
+            job.status, job.status_message
+        )
+    };
+    CliError::new(ErrorKind::JobFailed, message)
+        .with_hint(format!("Read the logs with `tracel jobs logs {num}`."))
 }
 
 /// Poll a job until its status is final. The spinner is left for the caller to settle
@@ -356,16 +385,7 @@ fn wait_for_job(
         return Ok(job);
     }
     spinner.error(format!("Job {num} {}.", job.status));
-    let mut message = format!("Job {num} ended with status {}.", job.status);
-    if !job.status_message.is_empty() {
-        message = format!(
-            "Job {num} ended with status {}: {}",
-            job.status, job.status_message
-        );
-    }
-    Err(CliError::new(ErrorKind::JobFailed, message)
-        .with_hint(format!("Read the logs with `tracel jobs logs {num}`."))
-        .into())
+    Err(job_failed(&job).into())
 }
 
 pub fn handle_command(args: JobsArgs, context: CliContext) -> anyhow::Result<Outcome> {

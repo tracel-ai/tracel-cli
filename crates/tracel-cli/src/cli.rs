@@ -53,7 +53,7 @@ pub struct CliArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Run your project locally via `cargo run` (forwards args after `--`).
+    /// Run your project locally via `cargo run`, or remotely with --remote (forwards args after `--`).
     Run(commands::run::RunArgs),
 
     /// Package your project for running on a remote machine.
@@ -88,10 +88,10 @@ pub enum Commands {
 impl Commands {
     /// What `auto` output means: human on a terminal and JSON otherwise, except where
     /// stdout carries plain text: the bare token for `$(tracel auth token)`, or the
-    /// output of the program `run` runs.
+    /// output of the program a local `run` runs.
     fn auto_format(&self, stdout_is_terminal: bool) -> Format {
         match self {
-            Self::Run(_)
+            Self::Run(commands::run::RunArgs { remote: None, .. })
             | Self::Auth(commands::auth::AuthArgs {
                 command: commands::auth::AuthCommands::Token,
             }) => Format::Human,
@@ -471,7 +471,11 @@ mod tests {
                 assert_eq!(command.auto_format(stdout_is_terminal), Format::Human);
             }
         }
-        for arguments in [vec!["tracel", "auth", "status"], vec!["tracel", "me"]] {
+        for arguments in [
+            vec!["tracel", "auth", "status"],
+            vec!["tracel", "me"],
+            vec!["tracel", "run", "--remote", "gpu", "--", "--epochs", "1"],
+        ] {
             let command = CliArgs::try_parse_from(arguments).unwrap().command.unwrap();
             assert_eq!(command.auto_format(true), Format::Human);
             assert_eq!(command.auto_format(false), Format::Json);

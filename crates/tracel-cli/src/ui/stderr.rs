@@ -180,8 +180,14 @@ impl Terminal {
         Ok(())
     }
 
+    /// Fails as `confirm` does when nobody can answer, so a command can stop before slow
+    /// work that comes ahead of its confirmation.
+    pub fn require_confirmation(&self, message: &str, flag: &str) -> anyhow::Result<()> {
+        self.require_answer(ErrorKind::ConfirmationRequired, message, flag, &[])
+    }
+
     pub fn confirm(&self, message: &str, flag: &str, initial: bool) -> anyhow::Result<bool> {
-        self.require_answer(ErrorKind::ConfirmationRequired, message, flag, &[])?;
+        self.require_confirmation(message, flag)?;
         cliclack::confirm(message)
             .initial_value(initial)
             .interact()
