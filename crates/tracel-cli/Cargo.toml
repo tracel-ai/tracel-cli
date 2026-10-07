@@ -17,6 +17,7 @@ path = "src/bin/tracel.rs"
 
 [dependencies]
 tracel-client.workspace = true
+tracel-job.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 colored.workspace = true
@@ -31,10 +32,14 @@ thiserror.workspace = true
 toml_edit.workspace = true
 url.workspace = true
 toml.workspace = true
-gix.workspace = true
 tracing.workspace = true
 cargo_metadata.workspace = true
 ignore.workspace = true
-flate2.workspace = true
-tar.workspace = true
 walkdir.workspace = true
+zip.workspace = true
+jsonschema.workspace = true
+tempfile.workspace = true
+ctrlc.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

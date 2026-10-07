@@ -109,10 +109,6 @@ impl ProjectContext {
         &self.project
     }
 
-    pub fn get_workspace_name(&self) -> &str {
-        &self.workspace_info.workspace_name
-    }
-
     pub fn get_workspace_root(&self) -> &Path {
         &self.workspace_info.workspace_root
     }

@@ -11,7 +11,7 @@ edition = "2024"
 version = "0.5.1"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
-rust-version = "1.87.0"
+rust-version = "1.97.0"
 authors = ["Tracel Technologies Inc."]
 repository = "https://github.com/tracel-ai/tracel-cli"
 keywords = ["tracel", "burn", "cli"]
@@ -21,7 +21,7 @@ categories = ["command-line-interface", "development-tools"]
 anyhow = "1.0.104"
 toml = "0.8.23"
 toml_edit = "0.22.27"
-clap = { version = "4.6.4", features = ["derive", "cargo"] }
+clap = { version = "4.6.4", features = ["derive", "cargo", "string"] }
 colored = "3.1.1"
 derive-new = { version = "0.7.0", default-features = false }
 tracing = "0.1.44"
@@ -35,20 +35,20 @@ cliclack = "0.3.8"
 directories = "5.0"
 url = "2.5.8"
 cargo_metadata = { version = "0.20.0", features = ["builder"] }
-flate2 = { version = "1.1.9", default-features = false, features = ["zlib"] }
-tar = { version = "0.4.46", default-features = false }
 walkdir = "2"
+zip = { version = "6.0.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 ignore = "0.4.30"
-gix = { version = "0.77.0", default-features = false, features = [
-    "dirwalk",
-    "status",
-] }
 chrono = "0.4.45"
 strum = { version = "0.27.2", features = ["derive"] }
+jsonschema = { version = "0.58.6", default-features = false }
+tempfile = "3.27.0"
+ctrlc = { version = "3.5.2", features = ["termination"] }
+libc = "0.2.189"
 
 
 ## External Crate
-tracel-client = { git = "https://github.com/tracel-ai/burn-central-client", rev = "1f0095dae2933a70f3a07eaf02138ca664d1708c" }
+tracel-client = { git = "https://github.com/tracel-ai/burn-central-client", rev = "d3edd4cb5139e7e4a9f6dd339797bf1ce8b68851" }
+tracel-job = { git = "https://github.com/tracel-ai/tracel", rev = "f13282d468da982c1d780d9a94d4af86934c7f4d" }
 
 ## Crate
 tracel-cli = { version = "0.5.0", path = "crates/tracel-cli" }

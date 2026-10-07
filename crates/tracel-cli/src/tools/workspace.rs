@@ -78,10 +78,6 @@ impl WorkspaceInfo {
         })
     }
 
-    pub fn get_ws_root(&self) -> PathBuf {
-        self.metadata.workspace_root.clone().into_std_path_buf()
-    }
-
     pub fn get_manifest_path(&self) -> PathBuf {
         self.workspace_root.join(PathBuf::from("Cargo.toml"))
     }

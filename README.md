@@ -44,7 +44,7 @@ After installation, the `tracel` command will be available in your terminal.
 ## Prerequisites
 
 1. **Tracel Account**: Create an account at [console.tracel.ai](https://console.tracel.ai/)
-2. **Rust**: Version 1.87.0 or higher
+2. **Rust**: Version 1.97.0 or higher
 3. **Tracel SDK**: Add the SDK to your Burn project
 
 ## Commands
@@ -61,10 +61,11 @@ with a hint naming the flag to pass.
 
 Select a project with global `--project <namespace>/<name>`. It takes precedence
 over `TRACEL_NAMESPACE` and `TRACEL_PROJECT`, which each independently fall back
-to `tracel.toml` at the Cargo workspace root. `project`, `models`, `artifacts`,
-and `datasets` work from any directory with a flag or both variables; `package`
-still requires a Cargo workspace. Global `-C <dir>` runs as if started in that
-directory. `init` and `unlink` operate on `tracel.toml` and ignore project overrides.
+to the `namespace` and `project` keys of `tracel.toml` at the Cargo workspace
+root. `project`, `experiments`, `jobs`, `models`, `artifacts`, and `datasets` work
+from any directory with a flag or both variables; `package` and `run` still
+require a Cargo workspace. Global `-C <dir>` runs as if started in that directory.
+`init` and `unlink` operate on `tracel.toml` and ignore project overrides.
 
 ```bash
 tracel --project alice/demo project --json
@@ -74,7 +75,8 @@ TRACEL_NAMESPACE=alice TRACEL_PROJECT=demo tracel -C ./trainer project --json
 JSON results are one line on stdout: `{"ok":true,"data":{...}}` on success, or
 `{"ok":false,"error":{"code":"NOT_FOUND","message":"...","hint":null,"exit_code":5}}`
 on failure. Diagnostics go to stderr. Help and version output retain their normal
-format, and `train` inherits the executed program's output and exit code.
+format, and `tracel run` without a job, `--list`, or `--remote` inherits the
+executed program's output and exit code.
 
 Human output keeps the same split: stdout carries only results, such as the
 tables and details of commands that read, while progress, prompts, warnings,
@@ -95,25 +97,185 @@ to fit its width; redirected output is never shortened.
 | `CONFLICT` | 6 |
 | `CONFIRMATION_REQUIRED` | 7 |
 | `LIMIT_REACHED` | 8 |
+| `JOB_FAILED` | 9 |
 | `TIMEOUT` | 10 |
 | `UNAVAILABLE` | 11 |
 
-Exit code 9 is reserved.
+### `tracel run`
 
-### `tracel train`
-
-Run your project locally. This is a thin alias for `cargo run`: every argument
-after `--` is forwarded to your binary, so `tracel train -- <args>` is equivalent
-to `cargo run -- <args>`. stdin/stdout/stderr are inherited and the binary's
-exit code is propagated.
+Run a job your program registers, locally or on a compute provider, or run your
+program as `cargo run` does.
 
 ```bash
-# Equivalent to `cargo run`
-tracel train
+# List the jobs of the workspace binary that uses the tracel crate
+tracel run --list
+# List the flags of a job
+tracel run mnist --help
+# Run a job with its example input, changing two values
+tracel run mnist --num-epochs 5 --optimizer.lr 0.01
+# The same, as scripts write it
+tracel run mnist --set num_epochs=5 --set optimizer.lr=0.01
+# Merge JSON files onto the input, then set a value
+tracel run mnist -c base.json -c gpu.json --set batch_size=64
+# Start from the input Console experiment 42 recorded
+tracel run mnist --like 42 --set num_epochs=20
+# Record the run on this machine
+tracel run mnist --offline
+# Queue the job on the `gpu` compute provider group and follow it
+tracel run mnist --set num_epochs=5 --remote gpu --mode source --yes --follow
 
+# Equivalent to `cargo run`
+tracel run
 # Equivalent to `cargo run -- train mnist --epochs 100`
-tracel train -- train mnist --epochs 100
+tracel run -- train mnist --epochs 100
 ```
+
+Jobs come from the binary of a workspace package that depends on the `tracel`
+crate (dev and build dependencies do not count). With several such binaries,
+pass `--bin <NAME>`, unless the package's `default-run` names one, as with
+`cargo run`. In a workspace without such a package, `--list` and job runs fail
+with `USAGE`; run the program with `tracel run -- <args>` instead. The binary
+must run its jobs with `tracel::app::cli::Cli` (tracel 0.10 or later).
+
+The binary is built with `cargo build`, then run with `TRACEL_DESCRIBE=<path>`,
+which makes it write its job definitions to that path and exit without running a
+job. It must do so within 10 seconds, or it is killed and the command fails with
+`TIMEOUT` (exit code 10). The definitions are cached in `target/tracel/jobs.json`
+under the SHA-256 of the binary, so the binary only describes its jobs again
+after it changes.
+
+`--list` prints a `NAME`, `DESCRIPTION` table. JSON data is the definitions
+file; `input_schema` and `input_example` are `null` when the job has none:
+
+```json
+{"protocol":1,"sdk_version":"0.10.0","runner":"cli","jobs":[{"name":"mnist","description":"Train the MNIST classifier","input_schema":{"type":"object","properties":{"num_epochs":{"type":"integer"}}},"input_example":{"num_epochs":10,"optimizer":{"lr":0.001}}}]}
+```
+
+`tracel run <JOB>` also takes the job's own flags, the ones its binary's command
+line has: one per field of the job's input, typed by the job's input schema, or
+else by its example input. A nested field's flag joins the keys with dots and
+writes `_` as `-`, so `--optimizer.weight-decay 0.01` sets
+`optimizer.weight_decay`. A boolean flag given no value is `true`, and a field
+that is an array, a map, or `null` in the example input takes a JSON literal,
+such as `--layers '[64, 32]'`. `tracel run <JOB> --help` lists them with their
+defaults beside the flags of `tracel run`, from the cached job definitions. A
+value of the wrong type, or a flag the job does not have, fails with `USAGE`
+naming the flag. `tracel run` keeps its own flags, global ones included: a field
+whose flag has the name of one of them, such as `offline`, is set with
+`--set offline=true`.
+
+`tracel run <JOB>` resolves the job's input in order, each step winning over the
+ones before:
+
+1. It starts from the job's `input_example`, or `null` when it has none.
+   `--like <NUM|latest>` starts from the config that Console experiment recorded
+   instead, which needs a linked project and a login.
+2. Each `-c, --config <FILE>` is a JSON file merged onto the input with JSON merge
+   patch (RFC 7386): objects merge, other values replace, and `null` removes a
+   field.
+3. The job's flags set their fields, as the binary's command line sets them: an
+   object a flag gives merges onto the field's, and `null` is set.
+4. Each `--set <PATH>=<VALUE>` sets one value. `PATH` is dotted keys with `[i]`
+   array indices, such as `optimizer.lr` or `layers[0].size`; missing objects and
+   arrays are created, and the index one past the end of an array appends.
+   `VALUE` is JSON, or a string when it does not parse as JSON: `--set epochs=5`
+   sets a number and `--set name=baseline` a string.
+
+When the job has an `input_schema`, the input is validated against it; references
+outside the schema are not fetched. An invalid input fails with `USAGE` naming
+each path and reason, such as `epochs: "x" is not of type "integer"`, and an
+unknown job fails with `USAGE` listing the job names. A `JOB` cannot be combined
+with arguments after `--`. `-c`, `--set`, `--like`, `--offline`, and the job's
+flags require a `JOB`, and `--bin` requires a `JOB`, `--list`, or `--remote`.
+
+The job then runs as `<binary> <JOB> <input-json>`, without `cargo run`. Its
+stdout and stderr are inherited and its stdin is closed. In JSON mode, its stdout
+goes to stderr, so stdout holds only the command's JSON.
+
+The run is recorded on the Tracel Console when a project is linked (`tracel.toml`,
+`--project`, or `TRACEL_NAMESPACE` and `TRACEL_PROJECT`) and a credential is
+available (`TRACEL_API_KEY`, or a `tracel login` that has not ended). Otherwise
+it is recorded offline, and a line on stderr says why. `--offline` always records
+offline. The program gets:
+
+| Variable | Value |
+| --- | --- |
+| `TRACEL_TARGET` | `console` or `offline` |
+| `TRACEL_ENV` | the Console environment |
+| `TRACEL_NAMESPACE`, `TRACEL_PROJECT` | the project, when one is linked |
+| `TRACEL_REPORT_FILE` | a temporary file for the run report |
+
+The program writes the run report of every job, an inference too, to
+`TRACEL_REPORT_FILE`: when the job starts, again when it records an experiment,
+and again when it ends. `status` is how the job is going and how it ended:
+`running`, `completed`, or `failed`, with `error` saying why. `experiment` is
+`null` until the job records one, and stays `null` for a job that records none.
+Offline, the experiment's `url` is `null` and `dir` names the run directory:
+
+```json
+{"protocol":1,"job":"mnist","status":"running","started_at":"2026-10-06T12:00:00Z","finished_at":null,"error":null,"experiment":null}
+{"protocol":1,"job":"mnist","status":"failed","started_at":"2026-10-06T12:00:00Z","finished_at":"2026-10-06T12:30:00Z","error":"loss is NaN","experiment":{"num":42,"url":"https://console.tracel.ai/..."}}
+```
+
+Human output names the experiment and its URL, or the offline run directory, as
+soon as the report does. The job is stopped when `tracel` asked it to stop, as
+below, or when the program exits with code 130, as a program asked to stop does.
+A stopped job fails with `JOB_FAILED` (exit code 9) saying so, and how the job
+ended when the report says, such as
+`Job 'mnist' was stopped (it completed; experiment 42).` Otherwise, the command
+exits 0 when the report says `completed`, and fails with `JOB_FAILED` naming the
+job, its status, and its experiment, if any, when it says `failed`. Without a
+final report, the program's exit code decides: 0 is completed, 2 fails with
+`USAGE` (the program rejected the job or its input, and printed why), and any
+other code, or a signal, is failed. JSON data is
+`{"job":"mnist","input":{...},"target":"console","exit_code":0,"report":{...}}`,
+with `report` `null` when the program wrote none.
+
+Ctrl-C, SIGTERM, or SIGHUP stops the job: `tracel` sends the program SIGTERM, and
+kills it when it is still running 30 seconds later. The program runs in its own
+process group, so a Ctrl-C in the terminal reaches it only as that SIGTERM. On
+Windows, the console delivers Ctrl-C to the program itself, and `tracel` kills it
+when it is still running 30 seconds later.
+
+`--remote <GROUP>` runs your project as a job on a compute provider group
+instead. The workspace is packaged as with `tracel package`, with the same
+`--mode`, `--target`, `--bin`, and `--install-targets` flags and the same rules
+without prompts. With a `JOB`, the input is resolved and validated as above, and
+the job command is `<JOB> '<input-json>'`; in binary mode the uploaded binary is
+the one that registers the job. Without a `JOB`, the job command is the
+arguments after `--`. Either way the arguments reach the program unchanged: the
+job command single-quotes each argument that is empty, starts with `#`, or
+contains a space, tab, newline, quote, or backslash. The packaging flags,
+`--yes`, `--dry-run`, and `--follow` require `--remote`, and `--offline` cannot
+be combined with it.
+
+A job may incur costs, so after packaging, and before uploading anything, the
+command asks for confirmation naming the project, group, code version digest,
+and command. `-y, --yes` skips it. Without prompts, `--yes` is required,
+otherwise the command fails with `CONFIRMATION_REQUIRED` (exit code 7) before
+packaging. `--dry-run` packages and computes the digest without logging in,
+uploading, or queuing, and needs no `--yes`; it cannot be combined with `--yes`
+or `--follow`.
+
+JSON data contains `job_num`, `job_id`, `group`, `digest`, `version_id`,
+`command`, and `uploaded` (false when the same content was already packaged).
+Human output shows the job number with `tracel jobs logs <N> --follow` and
+`tracel jobs wait <N>`. `job_num` is null when the server does not return it;
+find the job with `tracel jobs list`. A dry run returns `namespace`, `project`,
+`group`, `mode`, `digest`, and `command`.
+
+`--follow` follows the job's logs like `tracel jobs logs <N> --follow`, then
+exits like `tracel jobs wait <N>`: 0 when the job completed, `JOB_FAILED` (exit
+code 9) when it failed or was cancelled. JSON output is NDJSON: an item with
+`"type":"queued"` and the data above, then the log and end items of
+`jobs logs --follow`. Without a job number, `--follow` fails after queuing and
+the job stays queued.
+
+Without a `JOB`, `--list`, or `--remote`, `tracel run` is a thin wrapper around
+`cargo run`: arguments are forwarded to your binary only after `--`, so
+`tracel run -- <args>` is equivalent to `cargo run -- <args>`, and `tracel run`
+runs the default binary with no arguments. stdin/stdout/stderr are inherited and
+the binary's exit code is propagated.
 
 ### `tracel package`
 
@@ -122,9 +284,9 @@ Package your project for deployment on remote compute providers.
 ```bash
 tracel package
 # Source packaging without prompts
-tracel package --mode source --allow-dirty --json
+tracel package --mode source --json
 # Build selected binaries and install missing targets without prompts
-tracel package --mode binary --target x86_64-unknown-linux-gnu --bin trainer --install-targets --commit --json
+tracel package --mode binary --target x86_64-unknown-linux-gnu --bin trainer --install-targets --json
 ```
 
 This creates a deployable artifact containing your code, dependencies, and configurations.
@@ -132,11 +294,24 @@ This creates a deployable artifact containing your code, dependencies, and confi
 `--mode <binary|source>` is required without prompts. In binary mode, repeat
 `--target <triple>` to choose targets; without prompts, omitting it builds for the
 host. Use `--bin <name>` when several binaries are built. `--install-targets`
-installs missing Rust targets without asking. `--commit` commits all current
-changes before packaging; `--allow-dirty` continues with uncommitted changes.
-These two flags cannot be combined. The code version digest remains the current
-commit hash. JSON data contains `namespace`, `project`, `digest`, `version_id`,
-`mode`, `targets`, and `uploaded` (false when the commit was already packaged).
+installs missing Rust targets without asking.
+
+In source mode, the archive holds the files of the Cargo workspace, except those
+matched by `.gitignore` or `.ignore` files in the workspace or its parent
+directories, by `.git/info/exclude`, or by git's global excludes file, with or
+without a git repository. `.git` and `target` directories are always left out.
+Hidden files (names starting with `.`) are packaged inside a git repository unless
+ignored, and left out otherwise. Packaging fails with `USAGE` when no file is left.
+
+The code version digest is a SHA-256 of the workspace's source: the hex digest of
+`path:sha256` lines sorted by path, one per file a source package holds. Binary
+mode uses the same digest but uploads only the binaries, so the source stays on
+your machine. Every package of the same source, in either mode and for any
+target, belongs to one code version: Console adds the new binaries or source to
+it, replacing a binary already uploaded for the same target. Any change to the
+source gives a new code version. JSON data contains
+`namespace`, `project`, `digest`, `version_id`, `mode`, `targets`, and `uploaded`
+(false when the same content was already packaged).
 
 ### `tracel login`
 
@@ -198,17 +373,14 @@ Initialize or reinitialize a Tracel project in the current directory.
 # Interactive initialization
 tracel init
 # Initialize without prompts, accepting a project that already exists
-tracel init --owner my-namespace --name my-project --description "" --yes --allow-dirty --json
+tracel init --owner my-namespace --name my-project --description "" --yes --json
 ```
 
 `--owner <namespace>` must name your own namespace or one of your organizations.
 `--name <project>` accepts alphanumeric characters, underscores, and hyphens.
 `--description <text>` supplies the new project's description; without a terminal
 it defaults to empty. These flags replace the corresponding prompts. `--yes`
-links an existing project without asking. `--commit` commits all current changes,
-including the first commit if needed; `--allow-dirty` continues without committing
-when a commit already exists. These two flags cannot be combined. A dirty
-repository needs one of them without prompts. `--force` reinitializes an already
+links an existing project without asking. `--force` reinitializes an already
 linked project; without it, asking for a different project fails with `CONFLICT`.
 JSON data contains `namespace`, `name`, `created`, and `url`; `created` is false
 when an existing project is linked, and `url` is null when nothing changed.
@@ -343,16 +515,17 @@ Bare `project` returns `namespace`, `name`, `description`, `created_by`,
 
 ### `tracel experiments`
 
-Browse experiments in the selected project; `exp` is a visible alias. `list`
-accepts zero-based `--page`, `--limit`, and repeated `--sort` values in the server
-format: `field`, `field,asc`, or `field,desc`. `get <num|latest>` shows details and
-config. Numbers are project-scoped experiment numbers.
+Browse and compare experiments in the selected project; `exp` is a visible alias.
+`list` accepts zero-based `--page`, `--limit`, and repeated `--sort` values in the
+server format: `field`, `field,asc`, or `field,desc`. `get <num|latest>` shows
+details and config. Numbers are project-scoped experiment numbers.
 
 ```bash
 tracel --project alice/demo experiments list --sort created_at,desc --limit 10 --json
 tracel exp get latest
 tracel exp metrics 42 --metric loss --max-points 100 --downsampling 1
 tracel exp logs 42 --level info --level error --follow --json
+tracel exp compare 41 42 --metric loss --metric accuracy --json
 ```
 
 `metrics <num>` lists definitions without `--metric`; adding `--summary` returns
@@ -364,11 +537,78 @@ key`). `--after` is a log sequence cursor and cannot be combined with time range
 or offsets. `--follow` uses that cursor and polls every two seconds until the
 experiment finishes, including any remaining pages.
 
-JSON data is the server response, with `null` for an unavailable metric series
-or summary. Following logs emits NDJSON instead of a success envelope: each log
-item has `"type":"log"` added, followed by `{"type":"end","running":false}`.
-Errors still use the standard error envelope. Human output uses tables, experiment
-key/value lines, or one timestamp, level, and message line per log entry.
+`compare <BASE> <OTHER>` compares two different experiments. It lists where their
+`config` and `attributes` differ, at dotted paths with array indices such as
+`optimizer.betas[1]`. Keys that are empty or contain `.`, `[`, or `]` are written
+as `["key"]`, and an empty path stands for the whole value. Objects and arrays are
+compared member by member; any other change, including a change of type, is one
+difference. It then pairs each metric's summary values (`optimal_value` from
+`metrics --summary`) by group, for each `--metric <NAME>` or else every metric
+either experiment defines. `delta` is `other - base`. The server does not report
+whether a lower or higher value is better for a metric, so `compare` reports the
+delta without calling it better or worse.
+
+Apart from `compare`, JSON data is the server response, with `null` for an
+unavailable metric series or summary. Following logs emits NDJSON instead of a
+success envelope: each log item has `"type":"log"` added, followed by
+`{"type":"end","running":false}`. Errors still use the standard error envelope.
+Human output uses tables, experiment key/value lines, or one timestamp, level, and
+message line per log entry.
+
+`compare` data is `{"base":41,"other":42,"config":[...],"attributes":[...],"metrics":[...]}`.
+Each difference is `{"path":"optimizer.lr","base":0.01,"other":0.001}`, leaving
+out a side where the path does not exist: `{"path":"seed","base":1}` means the
+other experiment has no `seed`, while `"other":null` would be a JSON `null`. Each
+metric entry is `{"metric":"loss","group":"valid","base":0.5,"other":0.375,"delta":-0.125}`;
+`base` or `other` is `null` when that experiment has no summary for the group, and
+`delta` is then `null` too. Human output is a header line, config and attribute
+difference tables (`PATH`, `BASE`, `OTHER`, with `-` for a missing side and long
+values shortened to fit a terminal), and a metric table (`METRIC`, `GROUP`,
+`BASE`, `OTHER`, `DELTA`), or a line such as `No config differences.` for an
+empty section.
+
+### `tracel jobs`
+
+Browse, follow and cancel jobs in the selected project. Jobs are selected by
+positive project-scoped job numbers.
+
+```bash
+tracel jobs list
+tracel jobs get 12 --json
+tracel jobs logs 12 --start 204800
+tracel jobs logs 12 --follow --json
+tracel jobs cancel 12 --yes
+tracel jobs wait 12 --timeout 3600 --interval 10
+```
+
+- `list` shows number, status, command, and creation, start, and completion times,
+  newest first. On a terminal, long commands are shortened to fit.
+- `get <NUM>` shows status, status message, command, code version, compute
+  provider, cost, and times.
+- `logs <NUM>` reads one page of the job's log file, up to the server's page size.
+  `--start <BYTE>` reads from a byte offset; each page's `end` is the next
+  `start`. `--follow` reads from that offset, polls every two seconds until the
+  job is completed, failed, or cancelled, then reads the remaining logs.
+- `cancel <NUM>` cancels a new, queued, or running job and asks for confirmation
+  first; `-y, --yes` skips it. Without prompts, `--yes` is required, otherwise
+  the command fails with `CONFIRMATION_REQUIRED` (exit code 7). A running job
+  moves to `pending_cancellation` until its compute provider stops it. Cancelling
+  a job in any other status fails with `CONFLICT`.
+- `wait <NUM>` checks the job's status every `--interval <SECONDS>` (default 5)
+  until it is completed, failed, or cancelled. A completed job exits 0. A failed
+  or cancelled job fails with `JOB_FAILED` (exit code 9). `--timeout <SECONDS>`
+  stops waiting after that many seconds with `TIMEOUT` (exit code 10); there is no
+  limit by default, and the job keeps running either way.
+
+JSON data is the server response: the job list (`jobs`), a job, or a log page
+(`logs`, `start`, `end`, `total_size`, and `has_more`). `cancel` and a completed
+`wait` return the job as read afterwards. Job statuses are `new`, `queued`,
+`running`, `pending_cancellation`, `completed`, `failed`, and `cancelled`.
+Following logs emits NDJSON instead of a success envelope: each non-empty log page
+has `"type":"log"` added, followed by `{"type":"end","status":"<status>"}`.
+Errors still use the standard error envelope. Human output uses a table, job
+key/value lines, or the raw log text; a page with more logs after it ends with
+the `--start` of the next page.
 
 ## Project Structure
 

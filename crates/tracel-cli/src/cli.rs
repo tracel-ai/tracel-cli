@@ -1,6 +1,7 @@
+use std::ffi::OsString;
 use std::io::IsTerminal;
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use tracel_client::console::Env;
 
 use crate::commands;
@@ -51,10 +52,37 @@ pub struct CliArgs {
     pub staging: Option<u8>,
 }
 
+impl CliArgs {
+    /// Read the command line `args`, the program's name first.
+    ///
+    /// `tracel run <JOB>` also takes the job's own flags: each long flag it does not take itself
+    /// is one, kept in `RunArgs::job_flags` for the job's command line to read once the job is
+    /// described.
+    pub fn try_parse_args<I, T>(args: I) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<OsString>,
+    {
+        let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+        let mut matches =
+            commands::run::with_job_flags(Self::command(), &args).try_get_matches_from(&args)?;
+        let job_flags = matches
+            .subcommand_matches("run")
+            .map(commands::run::job_flags)
+            .unwrap_or_default();
+        let mut args = Self::from_arg_matches_mut(&mut matches)
+            .map_err(|error| error.format(&mut Self::command()))?;
+        if let Some(Commands::Run(run)) = &mut args.command {
+            run.job_flags = job_flags;
+        }
+        Ok(args)
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Run your project locally via `cargo run` (forwards args after `--`).
-    Train(commands::training::TrainingArgs),
+    /// Run a job of your project locally or with --remote, or the project via `cargo run` (forwards args after `--`).
+    Run(commands::run::RunArgs),
 
     /// Package your project for running on a remote machine.
     Package(commands::package::PackageArgs),
@@ -64,9 +92,11 @@ pub enum Commands {
     Logout,
     /// Show which credential commands use, or print an access token for scripts.
     Auth(commands::auth::AuthArgs),
-    /// Browse project experiments, metrics, and logs.
+    /// Browse and compare project experiments, metrics, and logs.
     #[command(visible_alias = "exp")]
     Experiments(commands::experiments::ExperimentsArgs),
+    /// Browse, follow and cancel jobs in the selected project.
+    Jobs(commands::jobs::JobsArgs),
     /// Initialize a new project or reinitialize an existing one.
     Init(commands::init::InitArgs),
     /// Unlink the Tracel Console project from this repository.
@@ -86,10 +116,15 @@ pub enum Commands {
 impl Commands {
     /// What `auto` output means: human on a terminal and JSON otherwise, except where
     /// stdout carries plain text: the bare token for `$(tracel auth token)`, or the
-    /// output of the program `train` runs.
+    /// output of the program `run` hands over to without a job, `--list` or `--remote`.
     fn auto_format(&self, stdout_is_terminal: bool) -> Format {
         match self {
-            Self::Train(_)
+            Self::Run(commands::run::RunArgs {
+                job: None,
+                list: false,
+                remote: None,
+                ..
+            })
             | Self::Auth(commands::auth::AuthArgs {
                 command: commands::auth::AuthCommands::Token,
             }) => Format::Human,
@@ -99,7 +134,7 @@ impl Commands {
 }
 
 pub fn cli_main() {
-    let args = match CliArgs::try_parse() {
+    let args = match CliArgs::try_parse_args(std::env::args_os()) {
         Ok(args) => args,
         Err(error) if !error.use_stderr() => error.exit(),
         Err(error) => {
@@ -128,17 +163,31 @@ pub fn cli_main() {
         auto,
     );
 
-    if let Some(directory) = &args.working_directory {
-        if let Err(error) = std::env::set_current_dir(directory) {
-            let error = CliError::new(
-                ErrorKind::Usage,
-                format!(
-                    "Cannot change directory to '{}': {error}",
-                    directory.display()
-                ),
-            );
-            fail_early(&error.into(), format.unwrap_or(auto));
+    if let Some(directory) = &args.working_directory
+        && let Err(error) = std::env::set_current_dir(directory)
+    {
+        let error = CliError::new(
+            ErrorKind::Usage,
+            format!(
+                "Cannot change directory to '{}': {error}",
+                directory.display()
+            ),
+        );
+        fail_early(&error.into(), format.unwrap_or(auto));
+    }
+
+    // Help is text whatever the output format or TRACEL_ENV say, as clap's own help is, so it
+    // comes before the environment is resolved and ignores the format.
+    if let Some(Commands::Run(run)) = &args.command
+        && run.help
+    {
+        let (output, terminal) = ui::channels(Format::Human, args.no_input);
+        if let Err(error) = commands::run::help(run, CliArgs::command(), &terminal)
+            .and_then(|help| output.finish(help.into()))
+        {
+            fail(&error, &output, &terminal);
         }
+        return;
     }
 
     let Some(command) = args.command else {
@@ -257,7 +306,7 @@ fn usage_format(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> Form
 
 fn handle_command(command: Commands, context: CliContext) -> anyhow::Result<Outcome> {
     match command {
-        Commands::Train(run_args) => commands::training::handle_command(run_args, context),
+        Commands::Run(run_args) => commands::run::handle_command(run_args, context),
         Commands::Package(package_args) => commands::package::handle_command(package_args, context),
         Commands::Login(login_args) => commands::login::handle_command(login_args, context),
         Commands::Logout => commands::logout::handle_command(context),
@@ -265,6 +314,7 @@ fn handle_command(command: Commands, context: CliContext) -> anyhow::Result<Outc
         Commands::Experiments(experiments_args) => {
             commands::experiments::handle_command(experiments_args, context)
         }
+        Commands::Jobs(jobs_args) => commands::jobs::handle_command(jobs_args, context),
         Commands::Init(init_args) => commands::init::handle_command(init_args, context),
         Commands::Unlink(unlink_args) => commands::unlink::handle_command(unlink_args, context),
         Commands::Me => commands::me::handle_command(context),
@@ -285,6 +335,34 @@ mod tests {
         assert!(
             CliArgs::try_parse_from(["tracel", "model", "upload", "weights", "-d", "."]).is_err()
         );
+    }
+
+    #[test]
+    fn run_forwards_only_arguments_after_double_dash() {
+        let forwarded = |arguments: &[&str]| {
+            let Some(Commands::Run(run)) = CliArgs::try_parse_args(arguments).unwrap().command
+            else {
+                panic!("Expected run command");
+            };
+            run.forwarded
+        };
+        assert!(forwarded(&["tracel", "run"]).is_empty());
+        assert_eq!(
+            forwarded(&["tracel", "run", "--", "train", "--epochs", "10"]),
+            ["train", "--epochs", "10"]
+        );
+        assert_eq!(
+            forwarded(&["tracel", "run", "--json", "--", "--json"]),
+            ["--json"]
+        );
+        for arguments in [
+            &["tracel", "run", "--epochs"][..],
+            &["tracel", "run", "train", "--epochs", "--", "10"],
+            &["tracel", "run", "train", "evaluate"],
+        ] {
+            let error = CliArgs::try_parse_args(arguments).unwrap_err();
+            assert_eq!(error.exit_code(), 2);
+        }
     }
 
     #[test]
@@ -437,14 +515,20 @@ mod tests {
     fn auto_output_is_text_where_another_program_reads_stdout() {
         for arguments in [
             vec!["tracel", "auth", "token"],
-            vec!["tracel", "train", "--", "--epochs", "1"],
+            vec!["tracel", "run", "--", "--epochs", "1"],
         ] {
             let command = CliArgs::try_parse_from(arguments).unwrap().command.unwrap();
             for stdout_is_terminal in [false, true] {
                 assert_eq!(command.auto_format(stdout_is_terminal), Format::Human);
             }
         }
-        for arguments in [vec!["tracel", "auth", "status"], vec!["tracel", "me"]] {
+        for arguments in [
+            vec!["tracel", "auth", "status"],
+            vec!["tracel", "me"],
+            vec!["tracel", "run", "--remote", "gpu", "--", "--epochs", "1"],
+            vec!["tracel", "run", "--list"],
+            vec!["tracel", "run", "train", "--set", "epochs=1"],
+        ] {
             let command = CliArgs::try_parse_from(arguments).unwrap().command.unwrap();
             assert_eq!(command.auto_format(true), Format::Human);
             assert_eq!(command.auto_format(false), Format::Json);

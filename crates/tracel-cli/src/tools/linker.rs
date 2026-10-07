@@ -88,14 +88,14 @@ pub fn linker_configured(root: &Path, triple: &str) -> bool {
     if std::env::var_os(linker_env_var(triple)).is_some() {
         return true;
     }
-    if let Some((_, content)) = read_config(root) {
-        if let Ok(doc) = content.parse::<DocumentMut>() {
-            return doc
-                .get("target")
-                .and_then(|t| t.get(triple))
-                .and_then(|t| t.get("linker"))
-                .is_some();
-        }
+    if let Some((_, content)) = read_config(root)
+        && let Ok(doc) = content.parse::<DocumentMut>()
+    {
+        return doc
+            .get("target")
+            .and_then(|t| t.get(triple))
+            .and_then(|t| t.get("linker"))
+            .is_some();
     }
     false
 }

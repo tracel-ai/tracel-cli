@@ -41,6 +41,11 @@ impl<'a> Human<'a> {
         self.style.width
     }
 
+    /// Whether the text may be colored.
+    pub fn color(&self) -> bool {
+        self.style.color
+    }
+
     fn styled(&self, text: impl Display, style: console::Style) -> String {
         style
             .apply_to(text)

@@ -1,8 +1,11 @@
+mod compare;
+
 use std::io::{self, Write};
 use std::time::Duration;
 
 use clap::{Args, Subcommand, ValueEnum};
 use serde::Serialize;
+use tracel_client::ClientError;
 use tracel_client::console::Client;
 use tracel_client::console::experiment::request::{
     ExperimentLogQueryRequest, ListExperimentsQuery, LogLevelRequest, MetadataFilterRequest,
@@ -17,7 +20,7 @@ use tracel_client::console::experiment::response::{
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
-use crate::helpers::project::resolve_namespace_project;
+use crate::helpers::{Resource, map_resource_error, resolve_namespace_project};
 use crate::tools::tracel_config::TracelProject;
 use crate::ui::{Details, Human, Outcome, Output, Render, Table, json_section};
 
@@ -37,6 +40,8 @@ pub enum ExperimentsCommands {
     Metrics(MetricsArgs),
     /// Read experiment logs, optionally following until the experiment finishes.
     Logs(LogsArgs),
+    /// Compare two experiments' config, attributes, and metric summaries.
+    Compare(CompareArgs),
 }
 
 #[derive(Args, Debug)]
@@ -58,7 +63,7 @@ pub enum ExperimentSelector {
     Latest,
 }
 
-fn parse_experiment(value: &str) -> Result<ExperimentSelector, String> {
+pub fn parse_experiment(value: &str) -> Result<ExperimentSelector, String> {
     if value == "latest" {
         return Ok(ExperimentSelector::Latest);
     }
@@ -160,6 +165,34 @@ pub struct LogsArgs {
     /// Poll every 2 seconds until finished; JSON output is NDJSON log and end events.
     #[arg(long, conflicts_with_all = ["from", "to", "offset"])]
     pub follow: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct CompareArgs {
+    /// Project-scoped number of the experiment to compare against.
+    #[arg(value_parser = clap::value_parser!(i32).range(1..))]
+    pub base: i32,
+    /// Project-scoped number of the experiment to compare.
+    #[arg(value_parser = clap::value_parser!(i32).range(1..))]
+    pub other: i32,
+    /// Compare this metric; repeat for multiple metrics (default: every metric).
+    #[arg(long = "metric", value_name = "NAME", value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    pub metrics: Vec<String>,
+}
+
+impl CompareArgs {
+    fn check(&self) -> Result<(), CliError> {
+        if self.base == self.other {
+            return Err(CliError::new(
+                ErrorKind::Usage,
+                format!(
+                    "Cannot compare experiment {} with itself; pass two different experiments.",
+                    self.base
+                ),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl LogsArgs {
@@ -322,6 +355,33 @@ impl Render for LogEvent<'_> {
     }
 }
 
+fn missing_experiment(error: ClientError, project: &TracelProject, num: i32) -> anyhow::Error {
+    map_resource_error(
+        error,
+        &project.owner,
+        &project.name,
+        Resource::Experiment(num),
+    )
+}
+
+/// The experiment `selector` names in `project`.
+pub fn get_experiment(
+    client: &Client,
+    project: &TracelProject,
+    selector: &ExperimentSelector,
+) -> anyhow::Result<ExperimentDetailsResponse> {
+    match *selector {
+        ExperimentSelector::Number(num) => client
+            .get_experiment(&project.owner, &project.name, num)
+            .map_err(|error| missing_experiment(error, project, num)),
+        ExperimentSelector::Latest => client
+            .get_project_latest_experiment(&project.owner, &project.name)?
+            .ok_or_else(|| {
+                CliError::new(ErrorKind::NotFound, "No experiments found in this project.").into()
+            }),
+    }
+}
+
 fn follow_logs(
     client: &Client,
     project: &TracelProject,
@@ -330,8 +390,9 @@ fn follow_logs(
     output: &Output,
 ) -> anyhow::Result<()> {
     loop {
-        let response =
-            client.query_experiment_logs(&project.owner, &project.name, num, request.clone())?;
+        let response = client
+            .query_experiment_logs(&project.owner, &project.name, num, request.clone())
+            .map_err(|error| missing_experiment(error, project, num))?;
         for item in &response.items {
             output.event(&LogEvent::Log(item))?;
         }
@@ -362,8 +423,11 @@ fn follow_logs(
 }
 
 pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Result<Outcome> {
-    let client = get_client_and_login_if_needed(&context)?;
+    if let ExperimentsCommands::Compare(args) = &args.command {
+        args.check()?;
+    }
     let project = resolve_namespace_project(&context)?.project;
+    let client = get_client_and_login_if_needed(&context)?;
     let (owner, name) = (&project.owner, &project.name);
     match args.command {
         ExperimentsCommands::List(args) => Ok(client
@@ -378,23 +442,20 @@ pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Res
             )?
             .into()),
         ExperimentsCommands::Get(args) => {
-            let experiment = match args.experiment {
-                ExperimentSelector::Number(num) => client.get_experiment(owner, name, num)?,
-                ExperimentSelector::Latest => client
-                    .get_project_latest_experiment(owner, name)?
-                    .ok_or_else(|| {
-                        CliError::new(ErrorKind::NotFound, "No experiments found in this project.")
-                    })?,
-            };
-            Ok(experiment.into())
+            Ok(get_experiment(&client, &project, &args.experiment)?.into())
         }
         ExperimentsCommands::Metrics(args) => {
+            let missing = |error| missing_experiment(error, &project, args.num);
             let Some(metric) = args.metric else {
-                return Ok(client.get_metric_metadata(owner, name, args.num)?.into());
+                return Ok(client
+                    .get_metric_metadata(owner, name, args.num)
+                    .map_err(missing)?
+                    .into());
             };
             if args.summary {
                 Ok(client
-                    .get_metric_summary(owner, name, args.num, MetricSummaryQuery { metric })?
+                    .get_metric_summary(owner, name, args.num, MetricSummaryQuery { metric })
+                    .map_err(missing)?
                     .into())
             } else {
                 Ok(client
@@ -407,7 +468,8 @@ pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Res
                             max_points: args.max_points,
                             downsampling_factor: args.downsampling,
                         },
-                    )?
+                    )
+                    .map_err(missing)?
                     .into())
             }
         }
@@ -420,8 +482,12 @@ pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Res
                 return Ok(Outcome::streamed());
             }
             Ok(client
-                .query_experiment_logs(owner, name, num, request)?
+                .query_experiment_logs(owner, name, num, request)
+                .map_err(|error| missing_experiment(error, &project, num))?
                 .into())
+        }
+        ExperimentsCommands::Compare(args) => {
+            Ok(compare::compare_experiments(&client, &project, args)?.into())
         }
     }
 }
@@ -494,6 +560,36 @@ mod tests {
             vec!["tracel", "exp", "metrics", "42", "--downsampling", "0"],
             vec!["tracel", "exp", "logs", "42", "--limit", "0"],
             vec!["tracel", "exp", "list", "--limit", "0"],
+        ] {
+            assert!(CliArgs::try_parse_from(arguments).is_err());
+        }
+    }
+
+    #[test]
+    fn compare_takes_two_different_experiments_and_repeated_metrics() {
+        let args = parse_command(&[
+            "tracel", "exp", "compare", "3", "5", "--metric", "loss", "--metric", "accuracy",
+        ]);
+        let ExperimentsCommands::Compare(args) = args.command else {
+            panic!("Expected compare command");
+        };
+        assert_eq!((args.base, args.other), (3, 5));
+        assert_eq!(args.metrics, ["loss", "accuracy"]);
+        assert!(args.check().is_ok());
+
+        let args = parse_command(&["tracel", "experiments", "compare", "3", "3"]);
+        let ExperimentsCommands::Compare(args) = args.command else {
+            panic!("Expected compare command");
+        };
+        assert!(args.metrics.is_empty());
+        assert_eq!(args.check().unwrap_err().kind, ErrorKind::Usage);
+
+        for arguments in [
+            vec!["tracel", "exp", "compare", "3"],
+            vec!["tracel", "exp", "compare", "0", "3"],
+            vec!["tracel", "exp", "compare", "3", "0"],
+            vec!["tracel", "exp", "compare", "3", "latest"],
+            vec!["tracel", "exp", "compare", "3", "5", "--metric", ""],
         ] {
             assert!(CliArgs::try_parse_from(arguments).is_err());
         }

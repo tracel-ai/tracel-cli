@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use crate::tools::tracel_config::TracelProject;
 use crate::ui::{Output, Terminal};
@@ -68,6 +69,18 @@ impl CliContext {
             .map(|_| TracelCredentials::app_session(app_session)))
     }
 
+    /// Whether a credential is available without logging in: `TRACEL_API_KEY`, or a login
+    /// stored for this environment's server that has not ended.
+    pub fn has_credentials(&self) -> Result<bool, ClientError> {
+        if TracelCredentials::from_env().is_ok() {
+            return Ok(true);
+        }
+        Ok(self
+            .app_session()?
+            .stored()?
+            .is_some_and(|login| !login.has_ended_at(SystemTime::now())))
+    }
+
     pub fn create_client(&self) -> Result<Client, ClientCreationError> {
         let credentials = self
             .credentials()
@@ -101,7 +114,8 @@ impl CliContext {
         self.environment.clone()
     }
 
-    /// Stdout, for commands that stream their output while they run.
+    /// Stdout, for commands that write to it while they run: streams, or a program
+    /// they run.
     pub fn output(&self) -> &Output {
         &self.output
     }

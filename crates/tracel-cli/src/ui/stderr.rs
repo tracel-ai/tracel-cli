@@ -77,16 +77,8 @@ impl Terminal {
         }
     }
 
-    pub fn step(&self, message: &str) {
-        if self.is_styled() {
-            self.draw(|| cliclack::log::step(message));
-        } else {
-            self.print(message);
-        }
-    }
-
-    /// Instructions a person must follow before the command can go on, shown in
-    /// every format.
+    /// A note a person must read whatever the format, such as instructions to follow
+    /// before the command can go on.
     pub fn instruct(&self, message: &str) {
         if self.is_human() {
             self.print(message);
@@ -180,8 +172,14 @@ impl Terminal {
         Ok(())
     }
 
+    /// Fails as `confirm` does when nobody can answer, so a command can stop before slow
+    /// work that comes ahead of its confirmation.
+    pub fn require_confirmation(&self, message: &str, flag: &str) -> anyhow::Result<()> {
+        self.require_answer(ErrorKind::ConfirmationRequired, message, flag, &[])
+    }
+
     pub fn confirm(&self, message: &str, flag: &str, initial: bool) -> anyhow::Result<bool> {
-        self.require_answer(ErrorKind::ConfirmationRequired, message, flag, &[])?;
+        self.require_confirmation(message, flag)?;
         cliclack::confirm(message)
             .initial_value(initial)
             .interact()

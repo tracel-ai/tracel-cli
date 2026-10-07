@@ -15,6 +15,7 @@ pub enum ErrorKind {
     Conflict,
     ConfirmationRequired,
     LimitReached,
+    JobFailed,
     Timeout,
     Unavailable,
 }
@@ -30,6 +31,7 @@ impl ErrorKind {
             Self::Conflict => 6,
             Self::ConfirmationRequired => 7,
             Self::LimitReached => 8,
+            Self::JobFailed => 9,
             Self::Timeout => 10,
             Self::Unavailable => 11,
         }
@@ -155,6 +157,7 @@ mod tests {
             (ErrorKind::Conflict, "CONFLICT", 6),
             (ErrorKind::ConfirmationRequired, "CONFIRMATION_REQUIRED", 7),
             (ErrorKind::LimitReached, "LIMIT_REACHED", 8),
+            (ErrorKind::JobFailed, "JOB_FAILED", 9),
             (ErrorKind::Timeout, "TIMEOUT", 10),
             (ErrorKind::Unavailable, "UNAVAILABLE", 11),
         ] {
