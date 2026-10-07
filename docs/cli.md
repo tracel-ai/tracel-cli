@@ -14,8 +14,8 @@ questions, warnings and errors. The format is the first of these that is set:
 4. `auto`: human on a terminal, and JSON when stdout goes to a file or another
    program.
 
-`auth token` and `run` are plain text under `auto` too: `auth token` prints
-the bare token, and `run` writes what the program it runs writes. Help and
+`auth token` and a local `run` are plain text under `auto` too: `auth token`
+prints the bare token, and `run` writes what the program it runs writes. Help and
 version output keep clap's own format.
 
 On a terminal, a command that reads shows its result in a frame titled with a
@@ -50,7 +50,9 @@ and the instructions a login asks you to follow.
 instead: each log entry, with `"type":"log"` added, then
 `{"type":"end","running":false}` when the experiment has finished.
 `tracel jobs logs --follow --json` does the same with each page of logs, then
-`{"type":"end","status":"<status>"}`. An error still writes the failure line.
+`{"type":"end","status":"<status>"}`, and `tracel run --remote --follow --json`
+starts with the queued job, with `"type":"queued"` added, then writes the job's
+log events. An error still writes the failure line.
 
 The data of commands that read is the Tracel Console's own response, with
 `null` for a metric series or summary that doesn't exist. The other commands
@@ -74,6 +76,8 @@ return:
 | `models alias remove` | `model`, `alias`, `removed` |
 | `artifacts download` | `experiment`, `artifact`, `directory`, `files`, `bytes` |
 | `jobs cancel`, `jobs wait` | the job, as read afterwards |
+| `run --remote` | `job_num` (null when the Tracel Console doesn't return it), `job_id`, `group`, `digest`, `version_id`, `command`, `uploaded` |
+| `run --remote --dry-run` | `namespace`, `project`, `group`, `mode`, `digest`, `command` |
 
 Times are RFC 3339 in UTC.
 
@@ -194,3 +198,19 @@ Each file's size and SHA-256 checksum are checked before it is saved.
 - `jobs wait <number>` checks the job every `--interval` seconds until it
   finishes. It fails with `JOB_FAILED` when the job fails or is cancelled, and
   with `TIMEOUT` when `--timeout` seconds pass first.
+
+## Remote runs
+
+- `run --remote <group>` packages the workspace with the flags of `package`,
+  then queues the code version as a job on the compute provider group with the
+  arguments after `--`. They reach the program unchanged: the job command
+  single-quotes each argument that is empty, starts with `#`, or contains a
+  space, tab, newline, quote or backslash.
+- A job may incur costs, so the command asks before uploading anything, and
+  `--yes` skips the question. Without a terminal it needs `--yes`, and fails
+  with `CONFIRMATION_REQUIRED` before packaging.
+- `--dry-run` packages and shows the job without logging in, uploading or
+  queuing.
+- `--follow` follows the job's logs, then exits as `jobs wait` does. Without a
+  job number from the Tracel Console, it fails after queuing, and the job stays
+  queued.

@@ -114,10 +114,14 @@ tracel project list my-org
 ### `tracel run`
 
 Run the workspace locally with `cargo run`. Arguments after `--` go to your
-program, and its output and exit code are the command's.
+program, and its output and exit code are the command's. With `--remote`, the
+workspace is packaged as `tracel package` does and runs as a job on a compute
+provider group, once you confirm, since a job may cost money.
 
 ```bash
 tracel run -- --epochs 10
+tracel run --remote gpu --mode source -- train --epochs 100
+tracel run --remote gpu --mode binary --yes --follow -- train
 ```
 
 ### `tracel package`

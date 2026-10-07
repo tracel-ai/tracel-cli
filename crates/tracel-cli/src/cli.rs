@@ -74,7 +74,7 @@ impl CliArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Run the workspace locally with `cargo run`
+    /// Run the workspace locally, or on a compute provider
     Run(commands::run::RunArgs),
     /// Upload a code version of the workspace
     Package(commands::package::PackageArgs),
@@ -109,7 +109,7 @@ impl Commands {
     /// How the command draws on a terminal.
     fn layout(&self) -> Layout {
         match self {
-            Self::Run(_) => Layout::Bare,
+            Self::Run(args) => args.layout(),
             Self::Auth(args) => args.layout(),
             Self::Package(_) => Layout::flow("Package a code version"),
             Self::Login(args) => args.layout(),
@@ -131,6 +131,7 @@ impl Commands {
             Self::Package(_)
                 | Self::Experiments(_)
                 | Self::Jobs(_)
+                | Self::Run(_)
                 | Self::Models(_)
                 | Self::Artifacts(_)
                 | Self::Datasets(_)
@@ -138,10 +139,10 @@ impl Commands {
     }
 
     /// Choose what `auto` means: human on a terminal and JSON otherwise, except for
-    /// `auth token` and `run`, whose stdout is plain text for another program.
+    /// `auth token` and a local `run`, whose stdout is plain text for another program.
     fn auto_format(&self, stdout_is_terminal: bool) -> Format {
         match self {
-            Self::Run(_)
+            Self::Run(commands::run::RunArgs { remote: None, .. })
             | Self::Auth(commands::auth::AuthArgs {
                 command: commands::auth::AuthCommands::Token,
             }) => Format::Human,

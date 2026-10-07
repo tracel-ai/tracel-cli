@@ -226,6 +226,20 @@ pub fn require_cargo_workspace() -> anyhow::Result<WorkspaceInfo> {
     ProjectContext::load_workspace_info(&manifest_path).map_err(explain_project_context_error)
 }
 
+/// Load the Cargo workspace, with the project a command works on and how it was
+/// selected.
+pub fn require_workspace_project(
+    context: &CliContext,
+) -> anyhow::Result<(ProjectContext, ProjectSource)> {
+    let workspace_info = require_cargo_workspace()?;
+    let resolved = resolve_namespace_project(context)?;
+    let project = ProjectContext {
+        workspace_info,
+        project: resolved.project,
+    };
+    Ok((project, resolved.source))
+}
+
 /// Decide whether `tracel init` links: not when the workspace is linked and `force` is
 /// off. Fails outside a workspace.
 pub fn can_initialize_project(force: bool) -> anyhow::Result<bool> {
