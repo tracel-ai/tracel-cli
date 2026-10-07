@@ -1,18 +1,16 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
 use clap::{Args, ValueEnum};
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use tracel_client::console::Client;
 use tracel_client::console::project::request::{
     PublishArtifactRequest, PublishBinaryRequest, PublishProjectVersionRequest,
     PublishSourceRequest,
 };
 
-use crate::commands::init::commit_all;
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
@@ -20,16 +18,14 @@ use crate::helpers::{
     require_cargo_workspace, resolve_namespace_project, validate_project_exists_on_server,
 };
 use crate::tools::build_driver::{self, BuildDriver};
+use crate::tools::fs::{file_sha256_and_size, manifest_digest};
 use crate::tools::packager::{PackageEvent, package_workspace};
 use crate::tools::project_context::ProjectContext;
-use crate::tools::{cargo, git, target};
+use crate::tools::{cargo, target};
 use crate::ui::{Outcome, Unanswered, short_digest};
 
 #[derive(Args, Debug)]
 pub struct PackageArgs {
-    /// Package with uncommitted changes
-    #[arg(long, action)]
-    pub allow_dirty: bool,
     /// Package a compiled binary or the source
     #[arg(long, value_enum)]
     pub mode: Option<Mode>,
@@ -42,9 +38,6 @@ pub struct PackageArgs {
     /// Install missing Rust targets without asking
     #[arg(long)]
     pub install_targets: bool,
-    /// Commit all current changes before packaging
-    #[arg(long, conflicts_with = "allow_dirty")]
-    pub commit: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize)]
@@ -54,15 +47,17 @@ pub enum Mode {
     Source,
 }
 
-/// A code version ready to upload: its publish request, each file by the key of its
-/// upload URL, and the targets it was built for.
+/// A code version ready to upload: the digest of its content, its publish request, each
+/// file by the key of its upload URL, and the targets it was built for.
 struct PreparedCodeVersion {
+    digest: String,
     request: PublishArtifactRequest,
     uploads: Vec<(String, PathBuf)>,
     targets: Vec<String>,
 }
 
-/// The code version `package` made. `uploaded` is false when it already existed.
+/// The code version `package` made. `uploaded` is false when the same content was
+/// already packaged.
 #[derive(Serialize)]
 struct Packaged {
     namespace: String,
@@ -80,12 +75,8 @@ pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<
             .with_hint(MODE_HINT)
             .into());
     }
-    if args.mode == Some(Mode::Source) && !args.targets.is_empty() {
-        return Err(CliError::new(
-            ErrorKind::Usage,
-            "--target is only valid with --mode binary.",
-        )
-        .into());
+    if let Some(mode) = args.mode {
+        check_targets_allowed(mode, &args.targets)?;
     }
     for triple in &args.targets {
         target::parse_target(triple)?;
@@ -99,46 +90,6 @@ pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<
         workspace_info,
         project: resolved.project,
     };
-
-    let has_commit = git::get_last_commit_hash().is_ok();
-    if !has_commit && !args.commit && !context.terminal().is_interactive() {
-        return Err(
-            CliError::new(ErrorKind::Usage, "The workspace has no commit yet.")
-                .with_hint("Commit your changes, or pass --commit.")
-                .into(),
-        );
-    }
-    if args.commit {
-        if !has_commit || git::is_repo_dirty()? {
-            commit_all(context.terminal())?;
-        }
-    } else if git::is_repo_dirty()? && !args.allow_dirty {
-        let dirty = "The workspace has uncommitted changes.";
-        if !context.terminal().is_interactive() {
-            return Err(CliError::new(ErrorKind::Usage, dirty)
-                .with_hint("Commit them, or pass --commit or --allow-dirty.")
-                .into());
-        }
-        context.terminal().warning(dirty);
-        if context.terminal().confirm(
-            "Commit them first?",
-            true,
-            Unanswered::new(
-                "Packaging needs a commit.",
-                "Pass --commit or --allow-dirty.",
-            ),
-        )? {
-            commit_all(context.terminal())?;
-        }
-    }
-
-    let digest = git::get_last_commit_hash().context("Can't read the current commit")?;
-    if git::is_repo_dirty()? {
-        context.terminal().warning(&format!(
-            "Uncommitted changes are not part of code version {}.",
-            short_digest(&digest)
-        ));
-    }
 
     let mode = match args.mode {
         Some(mode) => mode,
@@ -160,13 +111,7 @@ pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<
             Unanswered::new(MODE_NEEDED, MODE_HINT),
         )?,
     };
-    if mode == Mode::Source && !args.targets.is_empty() {
-        return Err(CliError::new(
-            ErrorKind::Usage,
-            "--target is only valid with --mode binary.",
-        )
-        .into());
-    }
+    check_targets_allowed(mode, &args.targets)?;
 
     let code_version = match mode {
         Mode::Source => prepare_source(&context, &project)?,
@@ -177,10 +122,19 @@ pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<
         &context,
         &client,
         &project,
-        &digest,
         mode,
         code_version,
     )?))
+}
+
+fn check_targets_allowed(mode: Mode, targets: &[String]) -> Result<(), CliError> {
+    if mode == Mode::Source && !targets.is_empty() {
+        return Err(CliError::new(
+            ErrorKind::Usage,
+            "--target is only valid with --mode binary.",
+        ));
+    }
+    Ok(())
 }
 
 fn prepare_source(
@@ -190,13 +144,14 @@ fn prepare_source(
     let spinner = context.terminal().spinner("Packaging the workspace");
     let reporter = spinner.clone();
     let result = package_workspace(
-        project.get_workspace_name(),
+        &project.workspace_info,
         Arc::new(move |event: PackageEvent| reporter.set_message(event.message)),
     )
     .context("Can't package the workspace")?;
     spinner.clear();
 
     Ok(PreparedCodeVersion {
+        digest: result.digest,
         request: PublishArtifactRequest::Source {
             source: PublishSourceRequest {
                 checksum: result.checksum,
@@ -258,7 +213,7 @@ fn prepare_binaries(
             linker,
             args.bin.as_deref(),
         )?;
-        let (checksum, size) = sha256_and_size(&path)?;
+        let (checksum, size) = file_sha256_and_size(&path)?;
         binaries.push(PublishBinaryRequest {
             os,
             architecture: arch,
@@ -268,7 +223,16 @@ fn prepare_binaries(
         uploads.push((triple.to_string(), path));
     }
 
+    // The digest covers each uploaded binary and the target it is uploaded for.
+    let digest = manifest_digest(binaries.iter().map(|binary| {
+        (
+            target::target_triple(binary.os, binary.architecture),
+            binary.checksum.as_str(),
+        )
+    }));
+
     Ok(PreparedCodeVersion {
+        digest,
         request: PublishArtifactRequest::Binaries { binaries },
         uploads,
         targets: selected
@@ -365,21 +329,15 @@ fn build_release_binary(
 const MODE_NEEDED: &str = "Packaging needs a mode.";
 const MODE_HINT: &str = "Pass --mode binary or --mode source.";
 
-fn sha256_and_size(path: &Path) -> anyhow::Result<(String, u64)> {
-    let bytes = std::fs::read(path).with_context(|| format!("Can't read '{}'", path.display()))?;
-    let checksum = format!("{:x}", Sha256::digest(&bytes));
-    Ok((checksum, bytes.len() as u64))
-}
-
 fn upload(
     context: &CliContext,
     client: &Client,
     project: &ProjectContext,
-    digest: &str,
     mode: Mode,
     prepared: PreparedCodeVersion,
 ) -> anyhow::Result<Packaged> {
     let linked = project.get_project();
+    let digest = prepared.digest.as_str();
 
     let response = client
         .publish_project_version_urls(

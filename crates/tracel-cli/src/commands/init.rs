@@ -338,7 +338,7 @@ fn ensure_git_repo_clean(
     commit: bool,
     allow_dirty: bool,
 ) -> anyhow::Result<()> {
-    let has_commit = git::get_last_commit_hash().is_ok();
+    let has_commit = git::has_commit();
     let dirty = match git::is_repo_dirty() {
         Ok(dirty) => dirty,
         Err(_) if !has_commit => true,
@@ -386,7 +386,7 @@ fn commit_required() -> CliError {
 }
 
 /// Commit everything in the working tree, making the first commit if there is none.
-pub fn commit_all(terminal: &Terminal) -> anyhow::Result<()> {
+fn commit_all(terminal: &Terminal) -> anyhow::Result<()> {
     let commit_message = "Automatic commit by Tracel Console CLI";
     let status = std::process::Command::new("git")
         .args(["add", "--all"])
@@ -400,7 +400,7 @@ pub fn commit_all(terminal: &Terminal) -> anyhow::Result<()> {
     }
     let mut command = std::process::Command::new("git");
     command.args(["commit", "-m", commit_message]);
-    if git::get_last_commit_hash().is_err() {
+    if !git::has_commit() {
         command.arg("--allow-empty");
     }
     let status = command

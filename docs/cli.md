@@ -135,7 +135,11 @@ next `--complete`; a denied or expired login has to start again.
 
 ## Packaging
 
-`tracel package` uploads a code version, which the current commit names:
+`tracel package` uploads a code version, named by a digest of what it holds:
+the SHA-256 of `name:sha256` lines sorted by name, one per packaged file. In
+source mode the names are the files' paths in the workspace, and in binary mode
+the target triples. The same content gives the same digest, and `uploaded` is
+false when it was already packaged.
 
 - `--mode binary` builds a release binary for each `--target <triple>`, the
   host when there is none and no question can be asked. `--bin <name>` picks
@@ -145,8 +149,6 @@ next `--complete`; a denied or expired login has to start again.
 - `--mode source` uploads the workspace's files, without what git ignores, to
   be built where the code runs.
 - `--install-targets` installs missing Rust targets with rustup without asking.
-- `--commit` commits all changes first, and `--allow-dirty` packages without
-  them. Uncommitted changes are never part of the code version.
 
 ## Downloads
 

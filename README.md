@@ -124,13 +124,13 @@ tracel run -- --epochs 10
 ### `tracel package`
 
 Upload a code version of the workspace, the code compute providers run: a
-compiled binary, or the source to build there. A code version is the current
-commit, so `package` offers to commit your changes first.
+compiled binary, or the source to build there. Packaging the same content again
+gives the same code version.
 
 ```bash
 tracel package
 tracel package --mode binary --target x86_64-unknown-linux-gnu --json
-tracel package --mode source --allow-dirty
+tracel package --mode source
 ```
 
 ### `tracel experiments`

@@ -47,7 +47,8 @@ pub struct FileMeta {
     pub checksum: String,
 }
 
-fn file_sha256_and_size(path: &Path) -> anyhow::Result<(String, u64)> {
+/// Hash a file with SHA-256, and measure it.
+pub fn file_sha256_and_size(path: &Path) -> anyhow::Result<(String, u64)> {
     let mut file =
         std::fs::File::open(path).with_context(|| format!("Can't open '{}'", path.display()))?;
 
@@ -83,6 +84,22 @@ pub fn build_file_specs(files: &BTreeMap<String, PathBuf>) -> anyhow::Result<Vec
     }
 
     Ok(specs)
+}
+
+/// Hash the `name:checksum` lines of `files`, sorted by name, one line per file, with
+/// SHA-256.
+pub fn manifest_digest<'a>(files: impl IntoIterator<Item = (&'a str, &'a str)>) -> String {
+    let mut lines: Vec<(&str, &str)> = files.into_iter().collect();
+    lines.sort_unstable();
+
+    let mut hasher = Sha256::new();
+    for (name, checksum) in lines {
+        hasher.update(name.as_bytes());
+        hasher.update(b":");
+        hasher.update(checksum.as_bytes());
+        hasher.update(b"\n");
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 #[cfg(test)]
