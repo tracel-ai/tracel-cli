@@ -244,9 +244,10 @@ Each file's size and SHA-256 checksum are checked before it is saved.
   The program gets `TRACEL_TARGET` (`console` or `offline`), `TRACEL_ENV`,
   `TRACEL_NAMESPACE` and `TRACEL_PROJECT`, and `TRACEL_REPORT_FILE`, where it
   writes its run report.
-- The command fails with `JOB_FAILED` when the report says the job failed or
-  was cancelled. Without a final report, exit code 0 means completed, 2 a
-  rejected input, 130 cancelled, and anything else failed.
+- A job is stopped when `tracel` asked it to stop, or when the program exits
+  with code 130. A stopped job fails with `JOB_FAILED`, as does a job whose
+  report says it failed. Without a final report, exit code 0 means completed,
+  2 a rejected input, and any other code or a signal failed.
 - Ctrl-C, SIGTERM or SIGHUP stops the job: the program gets SIGTERM, and is
   killed when it is still running 30 seconds later.
 
