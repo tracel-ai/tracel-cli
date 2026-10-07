@@ -77,14 +77,6 @@ impl Terminal {
         }
     }
 
-    pub fn step(&self, message: &str) {
-        if self.is_styled() {
-            self.draw(|| cliclack::log::step(message));
-        } else {
-            self.print(message);
-        }
-    }
-
     /// A note a person must read whatever the format, such as instructions to follow
     /// before the command can go on.
     pub fn instruct(&self, message: &str) {

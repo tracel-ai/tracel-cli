@@ -271,6 +271,13 @@ This creates a deployable artifact containing your code, dependencies, and confi
 host. Use `--bin <name>` when several binaries are built. `--install-targets`
 installs missing Rust targets without asking.
 
+In source mode, the archive holds the files of the Cargo workspace, except those
+matched by `.gitignore` or `.ignore` files in the workspace or its parent
+directories, by `.git/info/exclude`, or by git's global excludes file, with or
+without a git repository. `.git` and `target` directories are always left out.
+Hidden files (names starting with `.`) are packaged inside a git repository unless
+ignored, and left out otherwise. Packaging fails with `USAGE` when no file is left.
+
 The code version digest is a SHA-256 of the packaged content: the hex digest of
 `name:sha256` lines sorted by name, one per packaged file. In source mode the
 names are the workspace-relative paths of the archived files; in binary mode they

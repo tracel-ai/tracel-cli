@@ -1,6 +1,6 @@
 //! Workspace packaging for Tracel Console.
 //!
-//! Packages an entire workspace as a single zip archive, respecting gitignore rules,
+//! Packages an entire workspace as a single zip archive, respecting ignore files,
 //! and computes the code version digest from the packaged files.
 
 use std::{
@@ -10,12 +10,19 @@ use std::{
     sync::Arc,
 };
 
+use anyhow::Context;
 use colored::Colorize;
+use ignore::{WalkBuilder, overrides::OverrideBuilder};
 use zip::{DateTime, ZipWriter, write::SimpleFileOptions};
 
+use crate::error::{CliError, ErrorKind};
 use crate::tools::event::Reporter;
 use crate::tools::fs::{file_sha256_and_size, manifest_digest};
 use crate::tools::workspace::WorkspaceInfo;
+
+/// Paths never packaged, whatever the ignore files say: git metadata, `target` at the
+/// workspace root, and any `target` directory below it (gitignore syntax).
+const EXCLUDED: [&str; 3] = [".git", "/target", "target/"];
 
 #[derive(Debug)]
 pub struct ArchiveMetadata {
@@ -33,7 +40,7 @@ pub struct PackageEvent {
 
 type PackageEventReporter = dyn Reporter<PackageEvent>;
 
-/// Package the entire workspace as a single zip archive with gitignore applied.
+/// Package the entire workspace as a single zip archive, skipping ignored files.
 pub fn package_workspace(
     workspace: &WorkspaceInfo,
     event_reporter: Arc<PackageEventReporter>,
@@ -41,14 +48,14 @@ pub fn package_workspace(
     let workspace_root = workspace
         .workspace_root
         .canonicalize()
-        .map_err(|e| anyhow::anyhow!("Failed to canonicalize workspace root: {}", e))?;
+        .context("Failed to canonicalize workspace root")?;
 
     tracing::info!(
         "Packaging workspace at: {}",
         workspace_root.display().to_string().bold()
     );
 
-    // List all files in the workspace respecting gitignore
+    // List all files in the workspace respecting ignore files
     event_reporter.report_event(PackageEvent {
         message: "Discovering files (respecting .gitignore)".to_string(),
     });
@@ -122,64 +129,57 @@ fn source_digest(files: &BTreeMap<String, PathBuf>) -> anyhow::Result<String> {
     Ok(manifest_digest(lines))
 }
 
-/// Lists the files to package, respecting gitignore rules, as a map from their `/`-separated
-/// path relative to `workspace_root` to their full path. `workspace_root` must be canonical.
+/// Lists the files to package as a map from their `/`-separated path relative to
+/// `workspace_root` to their full path. `workspace_root` must be canonical.
+///
+/// Ignore files apply with or without a git repository: `.gitignore` and `.ignore` in the
+/// workspace and its parent directories, `.git/info/exclude`, and git's global excludes file.
+/// [`EXCLUDED`] paths are never packaged. Hidden files are packaged in a git repository unless
+/// ignored, and skipped outside one. Links to files are packaged as the files they point to;
+/// links to directories are not followed. Fails with a usage error when no file is left.
 fn list_workspace_files(workspace_root: &Path) -> anyhow::Result<BTreeMap<String, PathBuf>> {
-    let git_repo = discover_gix_repo(workspace_root)?;
+    let in_git_repository = workspace_root
+        .ancestors()
+        .any(|dir| dir.join(".git").exists());
 
-    if let Some((ref repo, _)) = git_repo {
-        tracing::info!(
-            "Git repository found at {}",
-            repo.path().display().to_string().bold()
-        );
+    let mut excluded = OverrideBuilder::new(workspace_root);
+    for glob in EXCLUDED {
+        excluded.add(&format!("!{glob}"))?;
     }
-
-    // Build gitignore matcher
-    let mut exclude_builder = ignore::gitignore::GitignoreBuilder::new(workspace_root);
-
-    // Add default excludes if not using git
-    if git_repo.is_none() {
-        exclude_builder.add_line(None, ".*")?;
-    }
-
-    // `target` at the workspace root, and any `target` directory below it.
-    exclude_builder.add_line(None, "/target")?;
-    exclude_builder.add_line(None, "target/")?;
-
-    let ignore_exclude = exclude_builder.build()?;
-
-    let filter = |path: &Path, is_dir: bool| {
-        path.strip_prefix(workspace_root)
-            .is_ok_and(|relative_path| {
-                !ignore_exclude
-                    .matched_path_or_any_parents(relative_path, is_dir)
-                    .is_ignore()
-            })
-    };
-
-    // Use git if available, otherwise walk the filesystem
-    let paths = if let Some((repo, workdir)) = git_repo {
-        list_files_gix(&workdir, &repo, &filter)?
-    } else {
-        let mut paths = Vec::new();
-        list_files_walk(workspace_root, &mut paths, &filter)?;
-        paths
-    };
+    let walk = WalkBuilder::new(workspace_root)
+        .require_git(false)
+        .hidden(!in_git_repository)
+        .overrides(excluded.build()?)
+        .build();
 
     let mut files = BTreeMap::new();
-    for path in paths {
-        if !path.is_file() {
+    for entry in walk {
+        let entry = entry.context("Failed to list the workspace files")?;
+        if let Some(error) = entry.error() {
+            tracing::warn!("{error}");
+        }
+        if !entry.path().is_file() {
             continue;
         }
-        let relative_path = path
+        let relative_path = entry
+            .path()
             .strip_prefix(workspace_root)
-            .map_err(|e| anyhow::anyhow!("Failed to strip workspace root prefix: {}", e))?;
+            .context("Failed to strip workspace root prefix")?;
         let name = relative_path
             .components()
             .map(|component| component.as_os_str().to_string_lossy())
             .collect::<Vec<_>>()
             .join("/");
-        files.insert(name, path);
+        files.insert(name, entry.into_path());
+    }
+
+    if files.is_empty() {
+        return Err(CliError::new(
+            ErrorKind::Usage,
+            format!("No files to package in {}.", workspace_root.display()),
+        )
+        .with_hint("Check the ignore files that apply to the workspace.")
+        .into());
     }
     Ok(files)
 }
@@ -224,114 +224,6 @@ fn is_executable(_metadata: &Metadata) -> bool {
     false
 }
 
-/// Discovers the git repository containing `workspace_root`, with its canonical work tree.
-fn discover_gix_repo(workspace_root: &Path) -> anyhow::Result<Option<(gix::Repository, PathBuf)>> {
-    let repo = match gix::ThreadSafeRepository::discover(workspace_root) {
-        Ok(repo) => repo.to_thread_local(),
-        Err(_) => return Ok(None),
-    };
-
-    let workdir = repo.workdir().ok_or_else(|| {
-        anyhow::format_err!(
-            "Did not expect repo at {} to be bare",
-            repo.path().display()
-        )
-    })?;
-    let workdir = workdir
-        .canonicalize()
-        .unwrap_or_else(|_| workdir.to_path_buf());
-
-    if workspace_root.starts_with(&workdir) {
-        Ok(Some((repo, workdir)))
-    } else {
-        Ok(None)
-    }
-}
-
-/// Lists the files in the work tree of `repo`, found at `workdir`, that pass `filter`.
-///
-/// Git reports paths relative to the work tree, so they are joined onto `workdir` before
-/// `filter` decides which belong to the workspace.
-fn list_files_gix(
-    workdir: &Path,
-    repo: &gix::Repository,
-    filter: &impl Fn(&Path, bool) -> bool,
-) -> anyhow::Result<Vec<PathBuf>> {
-    let options = repo
-        .dirwalk_options()?
-        .emit_untracked(gix::dir::walk::EmissionMode::Matching)
-        .emit_ignored(None)
-        .emit_tracked(true)
-        .recurse_repositories(false)
-        .symlinks_to_directories_are_ignored_like_directories(true);
-
-    let mut files = Vec::new();
-
-    for entry in repo.dirwalk_iter(
-        repo.index_or_empty()?,
-        None::<&str>,
-        Default::default(),
-        options,
-    )? {
-        let file_path = workdir.join(gix::path::from_bstr(entry?.entry.rela_path));
-        let is_dir = file_path.is_dir();
-
-        if !filter(&file_path, is_dir) {
-            continue;
-        }
-        if !is_dir {
-            files.push(file_path);
-        } else if let Ok(nested_repo) = gix::open(&file_path) {
-            files.extend(list_files_gix(&file_path, &nested_repo, filter)?);
-        } else {
-            list_files_walk(&file_path, &mut files, filter)?;
-        }
-    }
-
-    Ok(files)
-}
-
-/// Lists files by walking the filesystem (fallback when git is not available).
-fn list_files_walk(
-    path: &Path,
-    files: &mut Vec<PathBuf>,
-    filter: &impl Fn(&Path, bool) -> bool,
-) -> anyhow::Result<()> {
-    if !path.is_dir() {
-        return Ok(());
-    }
-
-    let walker = walkdir::WalkDir::new(path)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| {
-            if e.file_type().is_dir() {
-                filter(e.path(), true)
-            } else {
-                true
-            }
-        });
-
-    for entry in walker {
-        match entry {
-            Ok(entry) => {
-                let file_path = entry.path();
-
-                if file_path.is_file() && filter(file_path, false) {
-                    files.push(file_path.to_path_buf());
-                }
-            }
-            Err(err) => match err.path() {
-                Some(path) if !filter(path, path.is_dir()) => {}
-                Some(path) => files.push(path.to_path_buf()),
-                None => return Err(err.into()),
-            },
-        }
-    }
-
-    Ok(())
-}
-
 /// Formats a byte count into a human-readable string.
 fn human_readable_bytes(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
@@ -373,6 +265,12 @@ mod tests {
             let path = self.0.join(rel_path);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, contents).unwrap();
+        }
+
+        /// Makes `rel_path` the root of a git repository, as packaging detects one: a `.git`
+        /// entry, here a directory with some content.
+        fn git_init(&self, rel_path: &str) {
+            self.write(&format!("{rel_path}/.git/HEAD"), "ref: refs/heads/main\n");
         }
 
         /// The files packaged from the workspace at `rel_root`.
@@ -454,24 +352,77 @@ mod tests {
 
     #[test]
     fn digest_ignores_gitignored_files() {
-        let workspace = TempWorkspace::new("gitignored");
-        gix::init(&workspace.0).unwrap();
-        workspace.write(".gitignore", "*.log\n");
+        for in_repository in [false, true] {
+            let workspace = TempWorkspace::new("gitignored");
+            if in_repository {
+                workspace.git_init(".");
+            }
+            workspace.write(".gitignore", "*.log\n");
+            workspace.write("src/main.rs", "fn main() {}");
+            let original = workspace.digest();
+
+            workspace.write("train.log", "epoch 1");
+            workspace.write("target/debug/app", "binary");
+            assert_eq!(workspace.digest(), original);
+
+            workspace.write("src/lib.rs", "");
+            assert_ne!(workspace.digest(), original);
+        }
+    }
+
+    #[test]
+    fn ignore_files_and_git_excludes_apply() {
+        let workspace = TempWorkspace::new("ignore-files");
+        workspace.git_init(".");
+        workspace.write(".git/info/exclude", "*.bak\n");
+        workspace.write("data/.ignore", "*.csv\n!keep.csv\n");
+        workspace.write("data/train.csv", "1,2");
+        workspace.write("data/keep.csv", "3,4");
+        workspace.write("notes.bak", "draft");
         workspace.write("src/main.rs", "fn main() {}");
-        let original = workspace.digest();
 
-        workspace.write("train.log", "epoch 1");
-        workspace.write("target/debug/app", "binary");
-        assert_eq!(workspace.digest(), original);
+        assert_eq!(
+            workspace.files("").keys().collect::<Vec<_>>(),
+            ["data/.ignore", "data/keep.csv", "src/main.rs"]
+        );
+    }
 
-        workspace.write("src/lib.rs", "");
-        assert_ne!(workspace.digest(), original);
+    #[test]
+    fn hidden_files_are_packaged_only_in_a_repository() {
+        let workspace = TempWorkspace::new("hidden");
+        workspace.write(".gitignore", ".env\n");
+        workspace.write(".env", "TOKEN=1");
+        workspace.write(".cargo/config.toml", "[build]");
+        workspace.write("src/main.rs", "fn main() {}");
+        assert_eq!(
+            workspace.files("").keys().collect::<Vec<_>>(),
+            ["src/main.rs"]
+        );
+
+        workspace.git_init(".");
+        assert_eq!(
+            workspace.files("").keys().collect::<Vec<_>>(),
+            [".cargo/config.toml", ".gitignore", "src/main.rs"]
+        );
+    }
+
+    #[test]
+    fn packaging_nothing_is_a_usage_error() {
+        let workspace = TempWorkspace::new("nothing");
+        workspace.write(".ignore", "*\n");
+        workspace.write("Cargo.toml", "[package]");
+
+        let root = workspace.0.canonicalize().unwrap();
+        let error = list_workspace_files(&root).unwrap_err();
+        assert_eq!(crate::error::classify(&error), ErrorKind::Usage);
+        assert!(error.to_string().contains("No files to package"));
     }
 
     #[test]
     fn workspace_in_a_repository_subdirectory_packages_its_own_files() {
         let nested = TempWorkspace::new("subdir");
-        gix::init(&nested.0).unwrap();
+        nested.git_init(".");
+        nested.write(".git/info/exclude", "*.bak\n");
         nested.write(".gitignore", "*.tmp\n");
         nested.write("README.md", "outside the workspace");
         nested.write("ws/.gitignore", "*.log\n");
@@ -479,18 +430,19 @@ mod tests {
         nested.write("ws/src/main.rs", "fn main() {}");
         nested.write("ws/train.log", "epoch 1");
         nested.write("ws/cache.tmp", "cache");
+        nested.write("ws/notes.bak", "draft");
         nested.write("ws/target/debug/app", "binary");
-        gix::init(nested.0.join("ws/vendor/lib")).unwrap();
+        nested.git_init("ws/vendor/lib");
         nested.write("ws/vendor/lib/lib.rs", "pub fn lib() {}");
 
         let root = TempWorkspace::new("subdir-root");
-        gix::init(&root.0).unwrap();
+        root.git_init(".");
         root.write(".gitignore", "*.log\n");
         root.write("Cargo.toml", "[package]");
         root.write("src/main.rs", "fn main() {}");
         root.write("train.log", "epoch 1");
         root.write("target/debug/app", "binary");
-        gix::init(root.0.join("vendor/lib")).unwrap();
+        root.git_init("vendor/lib");
         root.write("vendor/lib/lib.rs", "pub fn lib() {}");
 
         let files = nested.files("ws");

@@ -94,7 +94,7 @@ fn build_source_package(
     )
     .map_err(|e| {
         spinner.error("Packaging failed.");
-        anyhow::anyhow!("Failed to package workspace: {e}")
+        e.context("Failed to package workspace")
     })?;
     spinner.stop("Workspace packaged.");
 

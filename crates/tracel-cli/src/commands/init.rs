@@ -1,14 +1,12 @@
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
 use crate::helpers::{can_initialize_project, require_cargo_workspace, require_linked_project};
-use crate::tools::git;
 use crate::tools::project_context::ProjectContext;
 use crate::tools::tracel_config::TracelProject;
 use crate::ui::{Outcome, Render, Terminal};
 use anyhow::Context;
 use clap::Args;
 use serde::Serialize;
-use std::path::Path;
 use tracel_client::console::Client;
 use tracel_client::console::project::request::Visibility;
 use tracel_client::console::project::response::ProjectResponse;
@@ -91,8 +89,6 @@ fn prompt_init(
     context.terminal().command_title("Project Initialization");
 
     let terminal = context.terminal();
-
-    ensure_git_repo_initialized(&workspace_info.workspace_root, terminal)?;
 
     let project_owner = prompt_owner_name(
         &user.username,
@@ -325,19 +321,6 @@ fn create_new_project(
         owner: project.namespace_name,
         name: project.project_name,
     })
-}
-
-/// Initializes a git repository at the workspace root when there is none, so that
-/// `.gitignore` rules apply when packaging.
-fn ensure_git_repo_initialized(ws_root: &Path, terminal: &Terminal) -> anyhow::Result<()> {
-    if !git::is_repo_initialized() {
-        let repo = git::init_repo(ws_root)?;
-        terminal.step(&format!(
-            "No git repository found. Initialized new git repository at: {}",
-            repo.path().display()
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
