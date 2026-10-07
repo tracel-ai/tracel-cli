@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 use tracel_client::console::Client;
 
 use crate::error::{CliError, ErrorKind};
+use crate::terminal::Terminal;
 
 pub struct DownloadFile {
     pub rel_path: String,
@@ -122,11 +123,29 @@ impl<W: Write> Write for HashingWriter<W> {
 
 pub fn download_files(
     client: &Client,
+    terminal: &Terminal,
     directory: &Path,
     files: &[DownloadFile],
     force: bool,
 ) -> anyhow::Result<Vec<DownloadResult>> {
     check_destinations(directory, files, force)?;
+    let spinner = terminal.spinner();
+    spinner.start(format!("Downloading {} file(s)...", files.len()));
+    let results = download_each(client, directory, files)
+        .inspect_err(|_| spinner.error("Download failed."))?;
+    let bytes: u64 = results.iter().map(|result| result.bytes).sum();
+    spinner.stop(format!(
+        "Downloaded {} file(s), {bytes} bytes.",
+        results.len()
+    ));
+    Ok(results)
+}
+
+fn download_each(
+    client: &Client,
+    directory: &Path,
+    files: &[DownloadFile],
+) -> anyhow::Result<Vec<DownloadResult>> {
     let mut results = Vec::with_capacity(files.len());
     for file in files {
         let path = directory.join(&file.rel_path);

@@ -1,15 +1,14 @@
 use std::io::IsTerminal;
 
 use clap::{CommandFactory, Parser, Subcommand};
-use serde_json::{Value, json};
 use tracel_client::console::Env;
 
 use crate::commands;
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind, ErrorReport};
 use crate::helpers::project::parse_project;
-use crate::output::{self, OutputMode};
-use crate::tools::terminal::Terminal;
+use crate::output::{Format, FormatArg, Outcome, Output, StdoutClosed};
+use crate::terminal::Terminal;
 use crate::tools::tracel_config::TracelProject;
 
 #[derive(Parser, Debug)]
@@ -20,7 +19,7 @@ pub struct CliArgs {
 
     /// Output format (default: auto)
     #[arg(short, long, global = true, value_enum, conflicts_with = "json")]
-    pub output: Option<OutputMode>,
+    pub output: Option<FormatArg>,
 
     /// Print machine-readable JSON
     #[arg(long, global = true, conflicts_with = "output")]
@@ -85,30 +84,53 @@ pub enum Commands {
     Datasets(commands::datasets::DatasetsArgs),
 }
 
+impl Commands {
+    /// What `auto` output means: human on a terminal and JSON otherwise, except where
+    /// stdout carries plain text: the bare token for `$(tracel auth token)`, or the
+    /// output of the program `train` runs.
+    fn auto_format(&self, stdout_is_terminal: bool) -> Format {
+        match self {
+            Self::Train(_)
+            | Self::Auth(commands::auth::AuthArgs {
+                command: commands::auth::AuthCommands::Token,
+            }) => Format::Human,
+            _ => Format::for_stdout(stdout_is_terminal),
+        }
+    }
+}
+
 pub fn cli_main() {
     let args = match CliArgs::try_parse() {
         Ok(args) => args,
         Err(error) if !error.use_stderr() => error.exit(),
         Err(error) => {
-            let mode = usage_output_mode(std::env::args_os().skip(1));
-            if mode == OutputMode::Json {
-                let message = error.to_string();
-                let message = message
-                    .trim()
-                    .strip_prefix("error: ")
-                    .unwrap_or(message.trim());
-                let error = anyhow::Error::new(CliError::new(ErrorKind::Usage, message));
-                report_error(&error, mode, &Terminal::new(mode));
-            } else {
+            let format = usage_format(std::env::args_os().skip(1));
+            if format == Format::Human {
                 error.exit();
             }
-            return;
+            let message = error.to_string();
+            let message = message
+                .trim()
+                .strip_prefix("error: ")
+                .unwrap_or(message.trim());
+            fail(&CliError::new(ErrorKind::Usage, message).into(), format);
         }
     };
 
+    let stdout_is_terminal = std::io::stdout().is_terminal();
+    let auto = match &args.command {
+        Some(command) => command.auto_format(stdout_is_terminal),
+        None => Format::for_stdout(stdout_is_terminal),
+    };
+    let format = Format::resolve(
+        args.output,
+        args.json,
+        std::env::var("TRACEL_OUTPUT").ok().as_deref(),
+        auto,
+    );
+
     if let Some(directory) = &args.working_directory {
         if let Err(error) = std::env::set_current_dir(directory) {
-            let mode = usage_output_mode(std::env::args_os().skip(1));
             let error = CliError::new(
                 ErrorKind::Usage,
                 format!(
@@ -116,8 +138,7 @@ pub fn cli_main() {
                     directory.display()
                 ),
             );
-            report_error(&error.into(), mode, &Terminal::new(mode));
-            return;
+            fail(&error.into(), format.unwrap_or(auto));
         }
     }
 
@@ -127,64 +148,23 @@ pub fn cli_main() {
         return;
     };
 
-    let mode = match OutputMode::resolve(
-        args.output,
-        args.json,
-        std::env::var("TRACEL_OUTPUT").ok().as_deref(),
-        std::io::stdout().is_terminal(),
-    ) {
-        Ok(mode) => mode,
-        Err(error) => {
-            let mode = OutputMode::resolve(None, false, None, std::io::stdout().is_terminal())
-                .expect("Auto output is valid");
-            report_error(&error.into(), mode, &Terminal::new(mode));
-            return;
-        }
-    };
-    // `auth token` prints the bare token for `$(tracel auth token)` unless JSON is asked for.
-    let json_requested = args.json
-        || args.output == Some(OutputMode::Json)
-        || std::env::var("TRACEL_OUTPUT").as_deref() == Ok("json");
-    let prints_raw_token = matches!(
-        &command,
-        Commands::Auth(commands::auth::AuthArgs {
-            command: commands::auth::AuthCommands::Token
-        })
-    ) && !json_requested;
-    let mode = if matches!(command, Commands::Train(_)) || prints_raw_token {
-        OutputMode::Human
-    } else {
-        mode
-    };
-
-    let terminal = Terminal::new(mode).with_no_input(args.no_input);
+    let format = format.unwrap_or_else(|error| fail(&error.into(), auto));
+    let terminal = Terminal::new(format).with_no_input(args.no_input);
     let environment_value =
         std::env::var_os("TRACEL_ENV").map(|value| value.to_string_lossy().into_owned());
-    let environment =
-        match resolve_environment(args.dev, args.staging, environment_value.as_deref()) {
-            Ok(environment) => environment,
-            Err(error) => {
-                report_error(&error.into(), mode, &terminal);
-                return;
-            }
-        };
+    let environment = resolve_environment(args.dev, args.staging, environment_value.as_deref())
+        .unwrap_or_else(|error| fail(&error.into(), format));
 
     if args.dev {
         terminal
             .print_warning("Running in development mode - using local server and dev credentials");
     }
 
-    let context = CliContext::new(terminal.clone(), environment, mode, args.project);
-
-    let streams_output = matches!(&command, Commands::Experiments(args) if args.streams_output());
-    let result = handle_command(command, context).and_then(|data| {
-        if mode == OutputMode::Json && !streams_output {
-            output::write_success(&data)?;
-        }
-        Ok(())
-    });
-    if let Err(error) = result {
-        report_error(&error, mode, &terminal);
+    let output = Output::new(format);
+    let context = CliContext::new(terminal, output, environment, args.project);
+    if let Err(error) = handle_command(command, context).and_then(|outcome| output.finish(outcome))
+    {
+        fail(&error, format);
     }
 }
 
@@ -217,27 +197,20 @@ fn resolve_environment(
     }
 }
 
-fn report_error(error: &anyhow::Error, mode: OutputMode, terminal: &Terminal) {
-    let report = ErrorReport::new(error);
-    if mode == OutputMode::Json {
-        let _ = output::write_failure(&report);
-        eprintln!(
-            "error: {}",
-            console::strip_ansi_codes(&report.message)
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ")
-        );
-    } else {
-        terminal.cancel_finalize(&format!("{error:#}"));
-        if let Some(hint) = report.hint {
-            terminal.print(hint);
-        }
+/// Reports a failed command on both channels and exits with its code. A reader that
+/// closed stdout got all it wanted, so that ends the command quietly.
+fn fail(error: &anyhow::Error, format: Format) -> ! {
+    if error.chain().any(|cause| cause.is::<StdoutClosed>()) {
+        std::process::exit(0);
     }
-    std::process::exit(report.exit_code);
+    let report = ErrorReport::new(error);
+    Output::new(format).error(&report);
+    Terminal::new(format).error(&report);
+    std::process::exit(report.exit_code)
 }
 
-fn usage_output_mode(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> OutputMode {
+/// The format for an error in arguments that did not parse.
+fn usage_format(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> Format {
     let mut arguments = arguments.into_iter();
     let mut flag = None;
     let mut json = false;
@@ -261,33 +234,26 @@ fn usage_output_mode(arguments: impl IntoIterator<Item = std::ffi::OsString>) ->
             };
             if let Some(value) = value {
                 flag = Some(match value.as_str() {
-                    "human" => OutputMode::Human,
-                    "json" => OutputMode::Json,
-                    _ => OutputMode::Auto,
+                    "human" => FormatArg::Human,
+                    "json" => FormatArg::Json,
+                    _ => FormatArg::Auto,
                 });
             }
         }
     }
-    OutputMode::resolve(
+    let auto = Format::for_stdout(std::io::stdout().is_terminal());
+    Format::resolve(
         flag,
         json,
         std::env::var("TRACEL_OUTPUT").ok().as_deref(),
-        std::io::stdout().is_terminal(),
+        auto,
     )
-    .unwrap_or_else(|_| {
-        if std::io::stdout().is_terminal() {
-            OutputMode::Human
-        } else {
-            OutputMode::Json
-        }
-    })
+    .unwrap_or(auto)
 }
 
-fn handle_command(command: Commands, context: CliContext) -> anyhow::Result<Value> {
+fn handle_command(command: Commands, context: CliContext) -> anyhow::Result<Outcome> {
     match command {
-        Commands::Train(run_args) => {
-            commands::training::handle_command(run_args, context).map(|()| json!({}))
-        }
+        Commands::Train(run_args) => commands::training::handle_command(run_args, context),
         Commands::Package(package_args) => commands::package::handle_command(package_args, context),
         Commands::Login(login_args) => commands::login::handle_command(login_args, context),
         Commands::Logout => commands::logout::handle_command(context),
@@ -457,10 +423,28 @@ mod tests {
             CliArgs::try_parse_from(["tracel", "auth", "status", "-o", "human"])
                 .unwrap()
                 .output,
-            Some(OutputMode::Human)
+            Some(FormatArg::Human)
         );
         let error = CliArgs::try_parse_from(["tracel", "me", "--json", "-o", "json"]).unwrap_err();
         assert_eq!(error.exit_code(), 2);
+    }
+
+    #[test]
+    fn auto_output_is_text_where_another_program_reads_stdout() {
+        for arguments in [
+            vec!["tracel", "auth", "token"],
+            vec!["tracel", "train", "--", "--epochs", "1"],
+        ] {
+            let command = CliArgs::try_parse_from(arguments).unwrap().command.unwrap();
+            for stdout_is_terminal in [false, true] {
+                assert_eq!(command.auto_format(stdout_is_terminal), Format::Human);
+            }
+        }
+        for arguments in [vec!["tracel", "auth", "status"], vec!["tracel", "me"]] {
+            let command = CliArgs::try_parse_from(arguments).unwrap().command.unwrap();
+            assert_eq!(command.auto_format(true), Format::Human);
+            assert_eq!(command.auto_format(false), Format::Json);
+        }
     }
 
     #[test]

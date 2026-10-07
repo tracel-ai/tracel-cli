@@ -1,16 +1,17 @@
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
-use serde_json::{Value, json};
-use tracel_client::console::Client;
+use serde::Serialize;
+use serde_json::Value;
 use tracel_client::console::model::request::{
     ModelFileSpecRequest, ModelVersionListState, PromoteModelVersionRequest,
     RequestModelVersionUploadRequest, SetModelAliasRequest,
 };
 use tracel_client::console::model::response::{
-    ModelAliasResponse, ModelResponse, ModelVersionResponse, ModelVersionSourceKindResponse,
+    ModelAliasListResponse, ModelAliasResponse, ModelListResponse, ModelResponse,
+    ModelVersionListResponse, ModelVersionResponse, ModelVersionSourceKindResponse,
     ModelVersionStateResponse,
 };
 
@@ -18,11 +19,11 @@ use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
 use crate::helpers::{
-    DownloadFile, Resource, build_part_tasks, download_files, ensure_model_exists,
+    DownloadFile, DownloadResult, Resource, build_part_tasks, download_files, ensure_model_exists,
     map_resource_error, parse_metadata, resolve_namespace_project, select_artifact, upload_parts,
     validate_auto_create, validate_rel_path,
 };
-use crate::output::{OutputMode, write_table};
+use crate::output::{Details, Outcome, Render, Table, json_section};
 use crate::tools::fs::{build_file_specs, collect_files};
 use crate::tools::tracel_config::TracelProject;
 
@@ -169,6 +170,161 @@ pub struct AliasRemoveArgs {
     pub alias: String,
 }
 
+/// A version made by `push` or `promote`.
+#[derive(Serialize)]
+#[serde(transparent)]
+struct NewVersion(ModelVersionResponse);
+
+impl Render for NewVersion {}
+
+#[derive(Serialize)]
+struct ModelPulled {
+    model: String,
+    version: ModelVersionResponse,
+    directory: PathBuf,
+    files: Vec<DownloadResult>,
+    bytes: u64,
+}
+
+impl Render for ModelPulled {}
+
+#[derive(Serialize)]
+#[serde(transparent)]
+struct AliasSet(ModelAliasResponse);
+
+impl Render for AliasSet {}
+
+#[derive(Serialize)]
+struct AliasRemoved {
+    model: String,
+    alias: String,
+    removed: bool,
+}
+
+impl Render for AliasRemoved {}
+
+impl Render for ModelListResponse {
+    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+        Table::new(["NAME", "VERSIONS", "LATEST", "ALIASES", "CREATED AT"])
+            .rows(self.items.iter().map(|model| {
+                [
+                    model.name.clone(),
+                    model.version_count.to_string(),
+                    latest_version(model),
+                    alias_summary(&model.aliases),
+                    model.created_at.clone(),
+                ]
+            }))
+            .total(self.total)
+            .write(out)
+    }
+}
+
+impl Render for ModelResponse {
+    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+        Details::new()
+            .field("Name", &self.name)
+            .field("ID", &self.id)
+            .field("Project ID", self.project_id)
+            .field("Display name", &self.display_name)
+            .optional("Description", self.description.as_ref())
+            .field("Versions", self.version_count)
+            .field("Latest", latest_version(self))
+            .field("Aliases", alias_summary(&self.aliases))
+            .field("Created at", &self.created_at)
+            .field("Created by", &self.created_by.username)
+            .write(out)
+    }
+}
+
+impl Render for ModelVersionResponse {
+    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+        Details::new()
+            .field("Version", format!("v{}", self.version))
+            .field("ID", &self.id)
+            .field("State", state_name(self.state))
+            .field("Source", source_name(self.source_kind))
+            .optional(
+                "Experiment",
+                self.experiment
+                    .as_ref()
+                    .map(|experiment| experiment.experiment_num),
+            )
+            .field("Size", self.size)
+            .field("Digest", &self.digest)
+            .field("Aliases", self.aliases.join(", "))
+            .field("Created at", &self.created_at)
+            .field("Created by", &self.created_by.username)
+            .optional("Failure reason", self.failure_reason.as_ref())
+            .write(out)?;
+        writeln!(out)?;
+        Table::new(["REL PATH", "SIZE", "CHECKSUM"])
+            .rows(self.manifest.files.iter().map(|file| {
+                [
+                    file.rel_path.clone(),
+                    file.size_bytes.to_string(),
+                    file.checksum.clone(),
+                ]
+            }))
+            .write(out)?;
+        writeln!(out)?;
+        json_section(out, "Metadata", &self.metadata)
+    }
+}
+
+impl Render for ModelVersionListResponse {
+    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+        Table::new([
+            "VERSION",
+            "STATE",
+            "SOURCE",
+            "SIZE",
+            "ALIASES",
+            "CREATED AT",
+        ])
+        .rows(self.items.iter().map(|version| {
+            let source = match &version.experiment {
+                Some(experiment) => format!(
+                    "{} (experiment {})",
+                    source_name(version.source_kind),
+                    experiment.experiment_num
+                ),
+                None => source_name(version.source_kind).into(),
+            };
+            [
+                format!("v{}", version.version),
+                state_name(version.state).into(),
+                source,
+                version.size.to_string(),
+                version.aliases.join(", "),
+                version.created_at.clone(),
+            ]
+        }))
+        .total(self.total)
+        .write(out)
+    }
+}
+
+impl Render for ModelAliasListResponse {
+    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+        Table::new(["ALIAS", "VERSION"])
+            .rows(
+                self.items
+                    .iter()
+                    .map(|alias| [alias.alias.clone(), format!("v{}", alias.version)]),
+            )
+            .total(self.total)
+            .write(out)
+    }
+}
+
+fn latest_version(model: &ModelResponse) -> String {
+    model
+        .latest_version
+        .map(|version| format!("v{version}"))
+        .unwrap_or_default()
+}
+
 fn alias_summary(aliases: &[ModelAliasResponse]) -> String {
     aliases
         .iter()
@@ -193,71 +349,6 @@ fn source_name(source: ModelVersionSourceKindResponse) -> &'static str {
     }
 }
 
-fn print_model(model: &ModelResponse) -> anyhow::Result<()> {
-    let mut stdout = std::io::stdout().lock();
-    writeln!(stdout, "Name: {}", model.name)?;
-    writeln!(stdout, "ID: {}", model.id)?;
-    writeln!(stdout, "Project ID: {}", model.project_id)?;
-    writeln!(stdout, "Display name: {}", model.display_name)?;
-    writeln!(
-        stdout,
-        "Description: {}",
-        model.description.as_deref().unwrap_or("")
-    )?;
-    writeln!(stdout, "Versions: {}", model.version_count)?;
-    writeln!(
-        stdout,
-        "Latest: {}",
-        model
-            .latest_version
-            .map(|version| format!("v{version}"))
-            .unwrap_or_else(|| "-".into())
-    )?;
-    writeln!(stdout, "Aliases: {}", alias_summary(&model.aliases))?;
-    writeln!(stdout, "Created at: {}", model.created_at)?;
-    writeln!(stdout, "Created by: {}", model.created_by.username)?;
-    Ok(())
-}
-
-fn print_version(version: &ModelVersionResponse) -> anyhow::Result<()> {
-    let mut stdout = std::io::stdout().lock();
-    writeln!(stdout, "Version: v{}", version.version)?;
-    writeln!(stdout, "ID: {}", version.id)?;
-    writeln!(stdout, "State: {}", state_name(version.state))?;
-    writeln!(stdout, "Source: {}", source_name(version.source_kind))?;
-    if let Some(experiment) = &version.experiment {
-        writeln!(stdout, "Experiment: {}", experiment.experiment_num)?;
-    }
-    writeln!(stdout, "Size: {}", version.size)?;
-    writeln!(stdout, "Digest: {}", version.digest)?;
-    writeln!(stdout, "Aliases: {}", version.aliases.join(", "))?;
-    writeln!(stdout, "Created at: {}", version.created_at)?;
-    writeln!(stdout, "Created by: {}", version.created_by.username)?;
-    if let Some(reason) = &version.failure_reason {
-        writeln!(stdout, "Failure reason: {reason}")?;
-    }
-    write_table(
-        &mut stdout,
-        &["REL PATH", "SIZE", "CHECKSUM"],
-        version
-            .manifest
-            .files
-            .iter()
-            .map(|file| {
-                vec![
-                    file.rel_path.clone(),
-                    file.size_bytes.to_string(),
-                    file.checksum.clone(),
-                ]
-            })
-            .collect(),
-    )?;
-    writeln!(stdout, "Metadata:")?;
-    serde_json::to_writer_pretty(&mut stdout, &version.metadata)?;
-    writeln!(stdout)?;
-    Ok(())
-}
-
 fn validate_download_directory(directory: Option<&Path>, model: &str) -> anyhow::Result<()> {
     if let Some(directory) = directory {
         if directory.as_os_str().is_empty() || (directory.exists() && !directory.is_dir()) {
@@ -278,69 +369,16 @@ fn validate_download_directory(directory: Option<&Path>, model: &str) -> anyhow:
     Ok(())
 }
 
-pub fn handle_command(args: ModelsArgs, context: CliContext) -> anyhow::Result<Value> {
-    let title = match &args.command {
-        ModelsCommands::Push(_) => "Model upload",
-        _ => "Models",
-    };
-    context.terminal().command_title(title);
+pub fn handle_command(args: ModelsArgs, context: CliContext) -> anyhow::Result<Outcome> {
     let project = resolve_namespace_project(&context)?.project;
-    let files = match &args.command {
-        ModelsCommands::Push(args) => {
-            validate_auto_create(args.auto_create, args.description.as_deref())?;
-            let spinner = context.terminal().spinner();
-            spinner.start("Collecting files...");
-            let files = collect_files(&args.directory).map_err(|error| {
-                spinner.error("Failed to collect files.");
-                CliError::new(ErrorKind::Usage, format!("{error:#}"))
-            })?;
-            spinner.stop(format!("Found {} file(s).", files.len()));
-            Some(files)
-        }
-        ModelsCommands::Promote(args) => {
-            validate_auto_create(args.auto_create, args.description.as_deref())?;
-            None
-        }
-        ModelsCommands::Pull(args) => {
-            validate_download_directory(args.directory.as_deref(), &args.model)?;
-            None
-        }
-        _ => None,
-    };
-    let client = get_client_and_login_if_needed(&context)?;
-    let human = context.output() == OutputMode::Human;
-    let namespace = &project.owner;
-    let name = &project.name;
+    let (namespace, name) = (&project.owner, &project.name);
+    let client = || get_client_and_login_if_needed(&context);
     match args.command {
-        ModelsCommands::List => {
-            let response = client.list_models(namespace, name)?;
-            if human {
-                write_table(
-                    &mut std::io::stdout().lock(),
-                    &["NAME", "VERSIONS", "LATEST", "ALIASES", "CREATED AT"],
-                    response
-                        .items
-                        .iter()
-                        .map(|model| {
-                            vec![
-                                model.name.clone(),
-                                model.version_count.to_string(),
-                                model
-                                    .latest_version
-                                    .map(|version| format!("v{version}"))
-                                    .unwrap_or_else(|| "-".into()),
-                                alias_summary(&model.aliases),
-                                model.created_at.clone(),
-                            ]
-                        })
-                        .collect(),
-                )?;
-            }
-            Ok(serde_json::to_value(response)?)
-        }
+        ModelsCommands::List => Ok(client()?.list_models(namespace, name)?.into()),
         ModelsCommands::Get(args) => {
-            if let Some(reference) = args.version {
-                let version = client
+            let client = client()?;
+            match args.version {
+                Some(reference) => Ok(client
                     .resolve_model_version_ref(namespace, name, &args.model, &reference)
                     .map_err(|error| {
                         map_resource_error(
@@ -352,25 +390,19 @@ pub fn handle_command(args: ModelsArgs, context: CliContext) -> anyhow::Result<V
                                 reference: &reference,
                             },
                         )
-                    })?;
-                if human {
-                    print_version(&version)?;
-                }
-                Ok(serde_json::to_value(version)?)
-            } else {
-                let model = client
+                    })?
+                    .into()),
+                None => Ok(client
                     .get_model(namespace, name, &args.model)
                     .map_err(|error| {
                         map_resource_error(error, namespace, name, Resource::Model(&args.model))
-                    })?;
-                if human {
-                    print_model(&model)?;
-                }
-                Ok(serde_json::to_value(model)?)
+                    })?
+                    .into()),
             }
         }
         ModelsCommands::Versions(args) => {
-            let response = if args.all {
+            let client = client()?;
+            Ok(if args.all {
                 client.list_model_versions_in_state(
                     namespace,
                     name,
@@ -382,267 +414,90 @@ pub fn handle_command(args: ModelsArgs, context: CliContext) -> anyhow::Result<V
             }
             .map_err(|error| {
                 map_resource_error(error, namespace, name, Resource::Model(&args.model))
-            })?;
-            if human {
-                write_table(
-                    &mut std::io::stdout().lock(),
-                    &[
-                        "VERSION",
-                        "STATE",
-                        "SOURCE",
-                        "SIZE",
-                        "ALIASES",
-                        "CREATED AT",
-                    ],
-                    response
-                        .items
-                        .iter()
-                        .map(|version| {
-                            let source = match &version.experiment {
-                                Some(experiment) => format!(
-                                    "{} (experiment {})",
-                                    source_name(version.source_kind),
-                                    experiment.experiment_num
-                                ),
-                                None => source_name(version.source_kind).into(),
-                            };
-                            vec![
-                                format!("v{}", version.version),
-                                state_name(version.state).into(),
-                                source,
-                                version.size.to_string(),
-                                version.aliases.join(", "),
-                                version.created_at.clone(),
-                            ]
-                        })
-                        .collect(),
-                )?;
-            }
-            Ok(serde_json::to_value(response)?)
+            })?
+            .into())
         }
-        ModelsCommands::Pull(args) => {
-            let map_error = |error| {
-                map_resource_error(
-                    error,
-                    namespace,
-                    name,
-                    Resource::ModelVersionRef {
-                        model: &args.model,
-                        reference: &args.version,
-                    },
-                )
-            };
-            let version = client
-                .resolve_model_version_ref(namespace, name, &args.model, &args.version)
-                .map_err(map_error)?;
-            let directory = args
-                .directory
-                .unwrap_or_else(|| PathBuf::from(format!("./{}-v{}", args.model, version.version)));
-            let response = client
-                .presign_model_download(namespace, name, &args.model, version.version)
-                .map_err(map_error)?;
-            let files: Vec<_> = response
-                .files
-                .into_iter()
-                .map(|file| DownloadFile {
-                    rel_path: file.rel_path,
-                    url: file.url,
-                    size_bytes: Some(file.size_bytes),
-                    checksum: Some(file.checksum),
-                })
-                .collect();
-            let files = download_files(&client, &directory, &files, args.force)?;
-            let bytes: u64 = files.iter().map(|file| file.bytes).sum();
-            if human {
-                writeln!(
-                    std::io::stdout().lock(),
-                    "Downloaded '{}' v{} to {}.",
-                    args.model,
-                    version.version,
-                    directory.display()
-                )?;
-            }
-            Ok(
-                json!({"model": args.model, "version": version, "directory": directory, "files": files, "bytes": bytes}),
-            )
-        }
-        ModelsCommands::Push(args) => push(
-            args,
-            &context,
-            &client,
-            project,
-            files.expect("Push files were collected"),
-        ),
-        ModelsCommands::Promote(args) => {
-            let artifacts = client
-                .list_artifacts(namespace, name, args.experiment)
-                .map_err(|error| {
-                    map_resource_error(
-                        error,
-                        namespace,
-                        name,
-                        Resource::Experiment(args.experiment),
-                    )
-                })?;
-            let index = select_artifact(
-                artifacts
-                    .items
-                    .iter()
-                    .map(|artifact| (artifact.id.as_str(), artifact.name.as_str())),
-                &args.artifact,
-                args.experiment,
-            )?;
-            let artifact = &artifacts.items[index];
-            ensure_model_exists(
-                &context,
-                &client,
-                namespace,
-                name,
-                &args.model,
-                args.auto_create,
-                args.description,
-            )?;
-            let map_error =
-                |error| map_resource_error(error, namespace, name, Resource::Model(&args.model));
-            let mut version = client
-                .promote_model_version(
-                    namespace,
-                    name,
-                    &args.model,
-                    PromoteModelVersionRequest {
-                        experiment_num: args.experiment,
-                        experiment_file_id: artifact.id.clone(),
-                        metadata: args.metadata,
-                    },
-                )
-                .map_err(map_error)?;
-            if let Some(alias) = args.alias {
-                client
-                    .set_model_alias(
-                        namespace,
-                        name,
-                        &args.model,
-                        &alias,
-                        SetModelAliasRequest {
-                            version: version.version,
-                            expected_current_version: None,
-                        },
-                    )
-                    .map_err(map_error)?;
-                version = client
-                    .get_model_version(namespace, name, &args.model, version.version)
-                    .map_err(map_error)?;
-            }
-            if human {
-                writeln!(
-                    std::io::stdout().lock(),
-                    "Promoted artifact '{}' to '{}' v{}.",
-                    artifact.name,
-                    args.model,
-                    version.version
-                )?;
-            }
-            Ok(serde_json::to_value(version)?)
-        }
-        ModelsCommands::Alias(args) => match args.command {
-            AliasCommands::List(args) => {
-                let response = client
-                    .list_model_aliases(namespace, name, &args.model)
-                    .map_err(|error| {
-                        map_resource_error(error, namespace, name, Resource::Model(&args.model))
-                    })?;
-                if human {
-                    write_table(
-                        &mut std::io::stdout().lock(),
-                        &["ALIAS", "VERSION"],
-                        response
-                            .items
-                            .iter()
-                            .map(|alias| vec![alias.alias.clone(), format!("v{}", alias.version)])
-                            .collect(),
-                    )?;
-                }
-                Ok(serde_json::to_value(response)?)
-            }
-            AliasCommands::Set(args) => {
-                let response = client
-                    .set_model_alias(
-                        namespace,
-                        name,
-                        &args.model,
-                        &args.alias,
-                        SetModelAliasRequest {
-                            version: args.version,
-                            expected_current_version: args.expect,
-                        },
-                    )
-                    .map_err(|error| {
-                        map_resource_error(
-                            error,
-                            namespace,
-                            name,
-                            Resource::ModelVersion {
-                                model: &args.model,
-                                version: args.version,
-                            },
-                        )
-                    })?;
-                if human {
-                    writeln!(
-                        std::io::stdout().lock(),
-                        "{}: v{}",
-                        response.alias,
-                        response.version
-                    )?;
-                }
-                Ok(serde_json::to_value(response)?)
-            }
-            AliasCommands::Remove(args) => {
-                client
-                    .remove_model_alias(namespace, name, &args.model, &args.alias)
-                    .map_err(|error| {
-                        map_resource_error(
-                            error,
-                            namespace,
-                            name,
-                            Resource::ModelAlias {
-                                model: &args.model,
-                                alias: &args.alias,
-                            },
-                        )
-                    })?;
-                if human {
-                    writeln!(
-                        std::io::stdout().lock(),
-                        "Removed alias '{}' from '{}'.",
-                        args.alias,
-                        args.model
-                    )?;
-                }
-                Ok(json!({"model": args.model, "alias": args.alias, "removed": true}))
-            }
-        },
+        ModelsCommands::Pull(args) => Ok(pull(args, &context, &project)?.into()),
+        ModelsCommands::Push(args) => Ok(push(args, &context, &project)?.into()),
+        ModelsCommands::Promote(args) => Ok(promote(args, &context, &project)?.into()),
+        ModelsCommands::Alias(args) => alias(args.command, &context, &project),
     }
+}
+
+fn pull(
+    args: PullArgs,
+    context: &CliContext,
+    project: &TracelProject,
+) -> anyhow::Result<ModelPulled> {
+    let (namespace, name) = (&project.owner, &project.name);
+    context.terminal().command_title("Model download");
+    validate_download_directory(args.directory.as_deref(), &args.model)?;
+    let client = get_client_and_login_if_needed(context)?;
+    let map_error = |error| {
+        map_resource_error(
+            error,
+            namespace,
+            name,
+            Resource::ModelVersionRef {
+                model: &args.model,
+                reference: &args.version,
+            },
+        )
+    };
+    let version = client
+        .resolve_model_version_ref(namespace, name, &args.model, &args.version)
+        .map_err(map_error)?;
+    let directory = args
+        .directory
+        .unwrap_or_else(|| PathBuf::from(format!("./{}-v{}", args.model, version.version)));
+    let response = client
+        .presign_model_download(namespace, name, &args.model, version.version)
+        .map_err(map_error)?;
+    let files: Vec<_> = response
+        .files
+        .into_iter()
+        .map(|file| DownloadFile {
+            rel_path: file.rel_path,
+            url: file.url,
+            size_bytes: Some(file.size_bytes),
+            checksum: Some(file.checksum),
+        })
+        .collect();
+    let files = download_files(&client, context.terminal(), &directory, &files, args.force)?;
+    context.terminal().finalize(&format!(
+        "Downloaded '{}' v{} to {}.",
+        args.model,
+        version.version,
+        directory.display()
+    ));
+    Ok(ModelPulled {
+        bytes: files.iter().map(|file| file.bytes).sum(),
+        model: args.model,
+        version,
+        directory,
+        files,
+    })
 }
 
 fn push(
     args: PushArgs,
     context: &CliContext,
-    client: &Client,
-    project: TracelProject,
-    files: BTreeMap<String, PathBuf>,
-) -> anyhow::Result<Value> {
-    let namespace = project.owner;
-    let project = project.name;
+    project: &TracelProject,
+) -> anyhow::Result<NewVersion> {
+    let (namespace, name) = (&project.owner, &project.name);
+    context.terminal().command_title("Model upload");
+    validate_auto_create(args.auto_create, args.description.as_deref())?;
+    let files = collect_push_files(&args.directory, context)?;
+    let client = get_client_and_login_if_needed(context)?;
     context
         .terminal()
-        .print(&format!("Uploading to {namespace}/{project}"));
+        .print(&format!("Uploading to {namespace}/{name}"));
 
     ensure_model_exists(
         context,
-        client,
-        &namespace,
-        &project,
+        &client,
+        namespace,
+        name,
         &args.model_name,
         args.auto_create,
         args.description.clone(),
@@ -655,7 +510,7 @@ fn push(
     })?;
     spinner.stop("Checksums computed.");
 
-    let file_sizes: std::collections::BTreeMap<String, u64> = file_specs
+    let file_sizes: BTreeMap<String, u64> = file_specs
         .iter()
         .map(|f| (f.rel_path.clone(), f.size_bytes))
         .collect();
@@ -674,45 +529,197 @@ fn push(
         metadata: args.metadata,
     };
     let upload = client
-        .request_model_version_upload(&namespace, &project, &args.model_name, upload_request)
+        .request_model_version_upload(namespace, name, &args.model_name, upload_request)
         .map_err(|e| {
             spinner.error("Failed to request upload URLs.");
-            map_resource_error(e, &namespace, &project, Resource::Model(&args.model_name))
+            map_resource_error(e, namespace, name, Resource::Model(&args.model_name))
         })?;
     spinner.stop(format!("Allocated model version {}.", upload.version));
 
     let tasks = build_part_tasks(&files, &file_sizes, &upload.files)?;
-    upload_parts(client, tasks, context.terminal())?;
+    upload_parts(&client, tasks, context.terminal())?;
 
-    let map_error = |error| {
-        map_resource_error(
-            error,
-            &namespace,
-            &project,
-            Resource::Model(&args.model_name),
-        )
-    };
+    let map_error =
+        |error| map_resource_error(error, namespace, name, Resource::Model(&args.model_name));
     client
-        .complete_model_version_upload(&namespace, &project, &args.model_name, upload.version)
+        .complete_model_version_upload(namespace, name, &args.model_name, upload.version)
         .map_err(map_error)?;
     let version = client
-        .get_model_version(&namespace, &project, &args.model_name, upload.version)
+        .get_model_version(namespace, name, &args.model_name, upload.version)
         .map_err(map_error)?;
 
-    context.terminal().print_success(&format!(
-        "Uploaded model '{}' version {} to {}/{}.",
-        args.model_name, upload.version, namespace, project
+    context.terminal().finalize(&format!(
+        "Uploaded model '{}' v{} to {namespace}/{name}.",
+        args.model_name, upload.version
     ));
-    context
-        .terminal()
-        .finalize("Model version uploaded successfully.");
+    Ok(NewVersion(version))
+}
 
-    Ok(serde_json::to_value(version)?)
+fn collect_push_files(
+    directory: &Path,
+    context: &CliContext,
+) -> anyhow::Result<BTreeMap<String, PathBuf>> {
+    let spinner = context.terminal().spinner();
+    spinner.start("Collecting files...");
+    let files = collect_files(directory).map_err(|error| {
+        spinner.error("Failed to collect files.");
+        CliError::new(ErrorKind::Usage, format!("{error:#}"))
+    })?;
+    spinner.stop(format!("Found {} file(s).", files.len()));
+    Ok(files)
+}
+
+fn promote(
+    args: PromoteArgs,
+    context: &CliContext,
+    project: &TracelProject,
+) -> anyhow::Result<NewVersion> {
+    let (namespace, name) = (&project.owner, &project.name);
+    context.terminal().command_title("Model promotion");
+    validate_auto_create(args.auto_create, args.description.as_deref())?;
+    let client = get_client_and_login_if_needed(context)?;
+    let artifacts = client
+        .list_artifacts(namespace, name, args.experiment)
+        .map_err(|error| {
+            map_resource_error(
+                error,
+                namespace,
+                name,
+                Resource::Experiment(args.experiment),
+            )
+        })?;
+    let index = select_artifact(
+        artifacts
+            .items
+            .iter()
+            .map(|artifact| (artifact.id.as_str(), artifact.name.as_str())),
+        &args.artifact,
+        args.experiment,
+    )?;
+    let artifact = &artifacts.items[index];
+    ensure_model_exists(
+        context,
+        &client,
+        namespace,
+        name,
+        &args.model,
+        args.auto_create,
+        args.description,
+    )?;
+    let map_error =
+        |error| map_resource_error(error, namespace, name, Resource::Model(&args.model));
+    let mut version = client
+        .promote_model_version(
+            namespace,
+            name,
+            &args.model,
+            PromoteModelVersionRequest {
+                experiment_num: args.experiment,
+                experiment_file_id: artifact.id.clone(),
+                metadata: args.metadata,
+            },
+        )
+        .map_err(map_error)?;
+    if let Some(alias) = args.alias {
+        client
+            .set_model_alias(
+                namespace,
+                name,
+                &args.model,
+                &alias,
+                SetModelAliasRequest {
+                    version: version.version,
+                    expected_current_version: None,
+                },
+            )
+            .map_err(map_error)?;
+        version = client
+            .get_model_version(namespace, name, &args.model, version.version)
+            .map_err(map_error)?;
+    }
+    context.terminal().finalize(&format!(
+        "Promoted artifact '{}' to '{}' v{}.",
+        artifact.name, args.model, version.version
+    ));
+    Ok(NewVersion(version))
+}
+
+fn alias(
+    command: AliasCommands,
+    context: &CliContext,
+    project: &TracelProject,
+) -> anyhow::Result<Outcome> {
+    let (namespace, name) = (&project.owner, &project.name);
+    match command {
+        AliasCommands::List(args) => Ok(get_client_and_login_if_needed(context)?
+            .list_model_aliases(namespace, name, &args.model)
+            .map_err(|error| {
+                map_resource_error(error, namespace, name, Resource::Model(&args.model))
+            })?
+            .into()),
+        AliasCommands::Set(args) => {
+            context.terminal().command_title("Model alias");
+            let alias = get_client_and_login_if_needed(context)?
+                .set_model_alias(
+                    namespace,
+                    name,
+                    &args.model,
+                    &args.alias,
+                    SetModelAliasRequest {
+                        version: args.version,
+                        expected_current_version: args.expect,
+                    },
+                )
+                .map_err(|error| {
+                    map_resource_error(
+                        error,
+                        namespace,
+                        name,
+                        Resource::ModelVersion {
+                            model: &args.model,
+                            version: args.version,
+                        },
+                    )
+                })?;
+            context.terminal().finalize(&format!(
+                "Alias '{}' of '{}' points to v{}.",
+                alias.alias, args.model, alias.version
+            ));
+            Ok(AliasSet(alias).into())
+        }
+        AliasCommands::Remove(args) => {
+            context.terminal().command_title("Model alias");
+            get_client_and_login_if_needed(context)?
+                .remove_model_alias(namespace, name, &args.model, &args.alias)
+                .map_err(|error| {
+                    map_resource_error(
+                        error,
+                        namespace,
+                        name,
+                        Resource::ModelAlias {
+                            model: &args.model,
+                            alias: &args.alias,
+                        },
+                    )
+                })?;
+            context.terminal().finalize(&format!(
+                "Removed alias '{}' from '{}'.",
+                args.alias, args.model
+            ));
+            Ok(AliasRemoved {
+                model: args.model,
+                alias: args.alias,
+                removed: true,
+            }
+            .into())
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser};
+    use serde_json::json;
 
     use super::*;
     use crate::cli::{CliArgs, Commands};

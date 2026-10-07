@@ -10,9 +10,9 @@ use std::process::{Command, Stdio};
 
 use tracel_client::console::project::request::{Arch, Os};
 
+use crate::terminal::Terminal;
 use crate::tools::linker;
 use crate::tools::target::target_triple;
-use crate::tools::terminal::Terminal;
 
 /// How to drive the build of a given target.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

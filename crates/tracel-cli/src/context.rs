@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use crate::output::OutputMode;
-use crate::tools::terminal::Terminal;
+use crate::output::Output;
+use crate::terminal::Terminal;
 use crate::tools::tracel_config::TracelProject;
 use tracel_client::ClientError;
 use tracel_client::console::auth::DeviceAuthClient;
@@ -24,25 +24,26 @@ pub enum ClientCreationError {
     ServerConnectionError(String),
 }
 
-/// CLI-specific context that wraps the library context with terminal functionality
+/// What a command runs with: the user's two channels, and the environment and project
+/// it targets.
 pub struct CliContext {
     terminal: Terminal,
+    output: Output,
     environment: Env,
-    output: OutputMode,
     project: Option<TracelProject>,
 }
 
 impl CliContext {
     pub fn new(
         terminal: Terminal,
+        output: Output,
         environment: Env,
-        output: OutputMode,
         project: Option<TracelProject>,
     ) -> Self {
         Self {
             terminal,
-            environment,
             output,
+            environment,
             project,
         }
     }
@@ -101,8 +102,9 @@ impl CliContext {
         self.environment.clone()
     }
 
-    pub fn output(&self) -> OutputMode {
-        self.output
+    /// Stdout, for commands that stream their output while they run.
+    pub fn output(&self) -> &Output {
+        &self.output
     }
 
     pub fn project(&self) -> Option<&TracelProject> {

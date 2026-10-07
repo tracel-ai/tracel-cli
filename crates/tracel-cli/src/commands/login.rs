@@ -3,9 +3,8 @@ mod pending;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant, SystemTime};
 
-use chrono::{DateTime, Utc};
 use clap::Args;
-use serde_json::{Value, json};
+use serde::Serialize;
 use tracel_client::console::auth::{DeviceAuthClient, DeviceFlowError, DevicePollOutcome};
 use tracel_client::console::{Client, Env, TracelCredentials};
 use url::Url;
@@ -13,7 +12,7 @@ use url::Url;
 use self::pending::{PendingLogin, PendingLoginStore};
 use crate::context::{CliContext, ClientCreationError};
 use crate::error::{CliError, ErrorKind, classify};
-use crate::output::OutputMode;
+use crate::output::{Outcome, Render, Timestamp};
 
 #[derive(Args, Debug)]
 pub struct LoginArgs {
@@ -110,11 +109,7 @@ fn log_in(context: &CliContext) -> anyhow::Result<()> {
         terminal.format_url(&Url::parse(&authorization.verification_uri_complete)?),
         console::style(&authorization.user_code).bold()
     );
-    if context.output() == OutputMode::Json {
-        eprintln!("{}", console::strip_ansi_codes(&instructions));
-    } else {
-        terminal.print(&instructions);
-    }
+    terminal.instruct(&instructions);
 
     let spinner = terminal.spinner();
     spinner.start("Waiting for approval... Press Ctrl+C to cancel.");
@@ -128,7 +123,26 @@ fn log_in(context: &CliContext) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn start_pending_login(context: &CliContext) -> anyhow::Result<Value> {
+#[derive(Serialize)]
+struct LoggedIn {
+    username: String,
+    environment: String,
+}
+
+impl Render for LoggedIn {}
+
+/// Serialized with `"status": "pending"`.
+#[derive(Serialize)]
+#[serde(tag = "status", rename = "pending")]
+struct LoginPending {
+    verification_uri_complete: String,
+    user_code: String,
+    expires_at: Timestamp,
+}
+
+impl Render for LoginPending {}
+
+fn start_pending_login(context: &CliContext) -> anyhow::Result<LoginPending> {
     let authorization = context.device_auth().start()?;
     let pending = PendingLogin::new(authorization, SystemTime::now())?;
     let store = PendingLoginStore::for_server(&context.environment().get_url())?;
@@ -144,12 +158,11 @@ fn start_pending_login(context: &CliContext) -> anyhow::Result<Value> {
     ));
     terminal.print("Then run 'tracel login --complete'.");
 
-    Ok(json!({
-        "status": "pending",
-        "verification_uri_complete": pending.authorization.verification_uri_complete,
-        "user_code": pending.authorization.user_code,
-        "expires_at": DateTime::<Utc>::from(pending.expires_at).to_rfc3339(),
-    }))
+    Ok(LoginPending {
+        verification_uri_complete: pending.authorization.verification_uri_complete,
+        user_code: pending.authorization.user_code,
+        expires_at: Timestamp(pending.expires_at),
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -288,11 +301,11 @@ fn complete_pending_login(context: &CliContext, timeout: Option<u64>) -> anyhow:
     result
 }
 
-pub fn handle_command(args: LoginArgs, context: CliContext) -> anyhow::Result<Value> {
+pub fn handle_command(args: LoginArgs, context: CliContext) -> anyhow::Result<Outcome> {
     context.terminal().command_title("Login");
 
     if args.no_wait {
-        return start_pending_login(&context);
+        return Ok(start_pending_login(&context)?.into());
     }
     if args.complete {
         complete_pending_login(&context, args.timeout)?;
@@ -314,10 +327,11 @@ pub fn handle_command(args: LoginArgs, context: CliContext) -> anyhow::Result<Va
         environment_suffix(&context.environment())
     ));
 
-    Ok(json!({
-        "username": client.user().username,
-        "environment": context.environment_name(),
-    }))
+    Ok(LoggedIn {
+        username: client.user().username.clone(),
+        environment: context.environment_name(),
+    }
+    .into())
 }
 
 #[cfg(test)]
@@ -357,6 +371,24 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_pending_login_says_so() {
+        let pending = LoginPending {
+            verification_uri_complete: "http://localhost:9001/verify?code=BCDF-GHJK".into(),
+            user_code: "BCDF-GHJK".into(),
+            expires_at: Timestamp(UNIX_EPOCH + Duration::from_secs(1_900_000_000)),
+        };
+        assert_eq!(
+            serde_json::to_value(pending).unwrap(),
+            serde_json::json!({
+                "status": "pending",
+                "verification_uri_complete": "http://localhost:9001/verify?code=BCDF-GHJK",
+                "user_code": "BCDF-GHJK",
+                "expires_at": "2030-03-17T17:46:40+00:00",
+            })
+        );
     }
 
     #[test]

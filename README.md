@@ -76,6 +76,13 @@ JSON results are one line on stdout: `{"ok":true,"data":{...}}` on success, or
 on failure. Diagnostics go to stderr. Help and version output retain their normal
 format, and `train` inherits the executed program's output and exit code.
 
+Human output keeps the same split: stdout carries only results, such as the
+tables and details of commands that read, while progress, prompts, warnings,
+and errors go to stderr. Commands that change something, such as `init`,
+`login`, `models push`, or `artifacts download`, report on stderr and print
+nothing on stdout. `auth token` prints the bare token unless JSON is requested,
+even when stdout is redirected.
+
 | Error code | Exit code |
 | --- | --- |
 | Success | 0 |

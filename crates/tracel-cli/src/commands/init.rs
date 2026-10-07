@@ -1,13 +1,14 @@
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
 use crate::helpers::{can_initialize_project, require_cargo_workspace, require_linked_project};
+use crate::output::{Outcome, Render};
+use crate::terminal::Terminal;
 use crate::tools::git;
 use crate::tools::project_context::ProjectContext;
-use crate::tools::terminal::Terminal;
 use crate::tools::tracel_config::TracelProject;
 use anyhow::Context;
 use clap::Args;
-use serde_json::{Value, json};
+use serde::Serialize;
 use tracel_client::console::Client;
 use tracel_client::console::project::request::Visibility;
 use tracel_client::console::project::response::ProjectResponse;
@@ -37,7 +38,18 @@ pub struct InitArgs {
     pub allow_dirty: bool,
 }
 
-pub fn handle_command(args: InitArgs, context: CliContext) -> anyhow::Result<Value> {
+/// The project the repository is linked to. `url` is null when it already was.
+#[derive(Serialize)]
+struct ProjectLinked {
+    namespace: String,
+    name: String,
+    created: bool,
+    url: Option<String>,
+}
+
+impl Render for ProjectLinked {}
+
+pub fn handle_command(args: InitArgs, context: CliContext) -> anyhow::Result<Outcome> {
     if let Some(name) = &args.name {
         validate_project_name(name).map_err(|message| {
             CliError::new(ErrorKind::Usage, message).with_hint("Pass --name <project>.")
@@ -59,19 +71,26 @@ pub fn handle_command(args: InitArgs, context: CliContext) -> anyhow::Result<Val
             .with_hint("Pass --force to link it to another project.")
             .into());
         }
-        return Ok(json!({
-            "namespace": linked.owner,
-            "name": linked.name,
-            "created": false,
-            "url": null,
-        }));
+        return Ok(ProjectLinked {
+            namespace: linked.owner.clone(),
+            name: linked.name.clone(),
+            created: false,
+            url: None,
+        }
+        .into());
     }
 
     let client = super::login::get_client_and_login_if_needed(&context)?;
-    prompt_init(args, &context, &client).context("Failed to initialize the project")
+    let linked =
+        prompt_init(args, &context, &client).context("Failed to initialize the project")?;
+    Ok(linked.into())
 }
 
-pub fn prompt_init(args: InitArgs, context: &CliContext, client: &Client) -> anyhow::Result<Value> {
+fn prompt_init(
+    args: InitArgs,
+    context: &CliContext,
+    client: &Client,
+) -> anyhow::Result<ProjectLinked> {
     let user = client.get_current_user()?;
     let workspace_info = require_cargo_workspace()?;
 
@@ -82,14 +101,7 @@ pub fn prompt_init(args: InitArgs, context: &CliContext, client: &Client) -> any
     ensure_git_repo_initialized(&workspace_info.get_ws_root(), terminal)?;
     ensure_git_repo_clean(terminal, args.commit, args.allow_dirty)?;
 
-    let first_commit_hash = git::get_first_commit_hash();
-    if let Err(e) = first_commit_hash {
-        terminal.cancel_finalize(
-            "No commits found in the repository. Please make an initial commit before proceeding.",
-        );
-        return Err(anyhow::anyhow!("Failed to get first commit hash: {}", e));
-    }
-    let _first_commit_hash = first_commit_hash?;
+    git::get_first_commit_hash().context("The repository needs an initial commit")?;
 
     let project_owner = prompt_owner_name(
         &user.username,
@@ -122,18 +134,11 @@ pub fn prompt_init(args: InitArgs, context: &CliContext, client: &Client) -> any
             )?,
             true,
         ),
-        Err(e) => {
-            terminal.cancel_finalize(&format!("Failed to check for existing project: {e}"));
-            return Err(anyhow::anyhow!(e));
-        }
+        Err(e) => return Err(e).context("Failed to check for an existing project"),
     };
 
-    ProjectContext::init(project_info.clone(), &workspace_info.get_manifest_path()).map_err(
-        |e| {
-            terminal.cancel_finalize(&format!("Failed to initialize project metadata: {}", e));
-            e
-        },
-    )?;
+    ProjectContext::init(project_info.clone(), &workspace_info.get_manifest_path())
+        .context("Failed to initialize project metadata")?;
     terminal.print("Created project metadata");
 
     let frontend_url = project_url(context, &user.username, &project_owner, &project_name)?;
@@ -143,12 +148,12 @@ pub fn prompt_init(args: InitArgs, context: &CliContext, client: &Client) -> any
         context.terminal().format_url(&frontend_url)
     ));
 
-    Ok(json!({
-        "namespace": project_info.owner,
-        "name": project_info.name,
-        "created": created,
-        "url": frontend_url.as_str(),
-    }))
+    Ok(ProjectLinked {
+        namespace: project_info.owner,
+        name: project_info.name,
+        created,
+        url: Some(frontend_url.to_string()),
+    })
 }
 
 fn prompt_owner_name(
@@ -270,7 +275,6 @@ fn handle_existing_project(
             name: project.project_name.clone(),
         })
     } else {
-        terminal.outro_cancel("Project initialization cancelled");
         Err(anyhow::anyhow!("Project initialization cancelled by user"))
     }
 }
@@ -325,16 +329,11 @@ fn create_new_project(
         ),
     };
 
-    match created_project_path {
-        Ok(project) => Ok(TracelProject {
-            owner: project.namespace_name,
-            name: project.project_name,
-        }),
-        Err(e) => {
-            terminal.outro_cancel(&format!("Failed to create project: {e}"));
-            Err(e).context("Failed to create project")
-        }
-    }
+    let project = created_project_path.context("Failed to create project")?;
+    Ok(TracelProject {
+        owner: project.namespace_name,
+        name: project.project_name,
+    })
 }
 
 pub fn ensure_git_repo_initialized(

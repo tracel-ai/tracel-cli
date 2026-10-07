@@ -1,7 +1,17 @@
+use serde::Serialize;
+
 use crate::commands::login::environment_suffix;
 use crate::context::CliContext;
+use crate::output::{Outcome, Render};
 
-pub fn handle_command(context: CliContext) -> anyhow::Result<Value> {
+#[derive(Serialize)]
+struct LoggedOut {
+    logged_out: bool,
+}
+
+impl Render for LoggedOut {}
+
+pub fn handle_command(context: CliContext) -> anyhow::Result<Outcome> {
     context.terminal().command_title("Logout");
 
     let app_session = context.app_session()?;
@@ -19,6 +29,8 @@ pub fn handle_command(context: CliContext) -> anyhow::Result<Value> {
             .finalize(&format!("Nobody was logged in{}.", env_msg));
     }
 
-    Ok(json!({"logged_out": was_logged_in}))
+    Ok(LoggedOut {
+        logged_out: was_logged_in,
+    }
+    .into())
 }
-use serde_json::{Value, json};

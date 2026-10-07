@@ -3,7 +3,7 @@ use clap::Parser;
 
 use tracel_client::console::Env;
 
-use crate::{context::CliContext, tools::cargo};
+use crate::{context::CliContext, output::Outcome, tools::cargo};
 
 #[derive(Parser, Debug, Default)]
 pub struct TrainingArgs {
@@ -12,8 +12,9 @@ pub struct TrainingArgs {
     forwarded: Vec<String>,
 }
 
-pub fn handle_command(args: TrainingArgs, context: CliContext) -> anyhow::Result<()> {
-    run_cargo(&args.forwarded, context)
+pub fn handle_command(args: TrainingArgs, context: CliContext) -> anyhow::Result<Outcome> {
+    run_cargo(&args.forwarded, context)?;
+    Ok(Outcome::streamed())
 }
 
 /// Run `cargo run` in the current directory, forwarding `forwarded` after `--`.

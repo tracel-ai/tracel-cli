@@ -13,8 +13,8 @@ use std::process::{Command, Stdio};
 use toml_edit::DocumentMut;
 use tracel_client::console::project::request::{Arch, Os};
 
+use crate::terminal::Terminal;
 use crate::tools::target::target_triple;
-use crate::tools::terminal::Terminal;
 
 /// What (if anything) is needed to link `target` while running on `host`.
 pub enum LinkerNeed {

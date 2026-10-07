@@ -1,17 +1,19 @@
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
-use serde_json::{Value, json};
+use serde::Serialize;
+use serde_json::Value;
+use tracel_client::console::artifact::response::{ArtifactListResponse, ArtifactResponse};
 
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
 use crate::helpers::{
-    DownloadFile, Resource, download_files, map_resource_error, resolve_namespace_project,
-    select_artifact, validate_rel_path,
+    DownloadFile, DownloadResult, Resource, download_files, map_resource_error,
+    resolve_namespace_project, select_artifact, validate_rel_path,
 };
-use crate::output::{OutputMode, write_table};
+use crate::output::{Outcome, Render, Table};
 
 #[derive(Args, Debug)]
 pub struct ArtifactsArgs {
@@ -85,8 +87,37 @@ fn file_integrity(manifest: &Value, rel_path: &str) -> (Option<u64>, Option<Stri
     }
 }
 
-pub fn handle_command(args: ArtifactsArgs, context: CliContext) -> anyhow::Result<Value> {
-    context.terminal().command_title("Artifacts");
+#[derive(Serialize)]
+struct ArtifactDownloaded {
+    experiment: i32,
+    artifact: ArtifactResponse,
+    directory: PathBuf,
+    files: Vec<DownloadResult>,
+    bytes: u64,
+}
+
+impl Render for ArtifactDownloaded {}
+
+impl Render for ArtifactListResponse {
+    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+        Table::new(["NAME", "KIND", "ID", "FILES", "CREATED AT"])
+            .rows(self.items.iter().map(|artifact| {
+                [
+                    artifact.name.clone(),
+                    artifact.kind.clone(),
+                    artifact.id.clone(),
+                    manifest_files(&artifact.manifest)
+                        .map(|files| files.len().to_string())
+                        .unwrap_or_default(),
+                    artifact.created_at.clone(),
+                ]
+            }))
+            .total(self.total)
+            .write(out)
+    }
+}
+
+pub fn handle_command(args: ArtifactsArgs, context: CliContext) -> anyhow::Result<Outcome> {
     let project = resolve_namespace_project(&context)?.project;
     if let ArtifactsCommands::Download(args) = &args.command {
         if let Some(directory) = &args.directory {
@@ -100,49 +131,26 @@ pub fn handle_command(args: ArtifactsArgs, context: CliContext) -> anyhow::Resul
         }
     }
     let client = get_client_and_login_if_needed(&context)?;
-    let human = context.output() == OutputMode::Human;
     let namespace = &project.owner;
     let name = &project.name;
     match args.command {
-        ArtifactsCommands::List(args) => {
-            let response = match args.name {
-                Some(filter) => {
-                    client.list_artifacts_by_name(namespace, name, args.experiment, &filter)
-                }
-                None => client.list_artifacts(namespace, name, args.experiment),
+        ArtifactsCommands::List(args) => Ok(match args.name {
+            Some(filter) => {
+                client.list_artifacts_by_name(namespace, name, args.experiment, &filter)
             }
-            .map_err(|error| {
-                map_resource_error(
-                    error,
-                    namespace,
-                    name,
-                    Resource::Experiment(args.experiment),
-                )
-            })?;
-            if human {
-                write_table(
-                    &mut std::io::stdout().lock(),
-                    &["NAME", "KIND", "ID", "FILES", "CREATED AT"],
-                    response
-                        .items
-                        .iter()
-                        .map(|artifact| {
-                            vec![
-                                artifact.name.clone(),
-                                artifact.kind.clone(),
-                                artifact.id.clone(),
-                                manifest_files(&artifact.manifest)
-                                    .map(|files| files.len().to_string())
-                                    .unwrap_or_else(|| "-".into()),
-                                artifact.created_at.clone(),
-                            ]
-                        })
-                        .collect(),
-                )?;
-            }
-            Ok(serde_json::to_value(response)?)
+            None => client.list_artifacts(namespace, name, args.experiment),
         }
+        .map_err(|error| {
+            map_resource_error(
+                error,
+                namespace,
+                name,
+                Resource::Experiment(args.experiment),
+            )
+        })?
+        .into()),
         ArtifactsCommands::Download(args) => {
+            context.terminal().command_title("Artifact download");
             let map_error = |error| {
                 map_resource_error(
                     error,
@@ -151,7 +159,7 @@ pub fn handle_command(args: ArtifactsArgs, context: CliContext) -> anyhow::Resul
                     Resource::Experiment(args.experiment),
                 )
             };
-            let artifacts = client
+            let mut artifacts = client
                 .list_artifacts(namespace, name, args.experiment)
                 .map_err(map_error)?;
             let index = select_artifact(
@@ -162,7 +170,7 @@ pub fn handle_command(args: ArtifactsArgs, context: CliContext) -> anyhow::Resul
                 &args.artifact,
                 args.experiment,
             )?;
-            let artifact = &artifacts.items[index];
+            let artifact = artifacts.items.swap_remove(index);
             let directory = match args.directory {
                 Some(directory) => directory,
                 None => default_directory(&artifact.name)?,
@@ -183,19 +191,21 @@ pub fn handle_command(args: ArtifactsArgs, context: CliContext) -> anyhow::Resul
                     }
                 })
                 .collect();
-            let files = download_files(&client, &directory, &files, args.force)?;
-            let bytes: u64 = files.iter().map(|file| file.bytes).sum();
-            if human {
-                writeln!(
-                    std::io::stdout().lock(),
-                    "Downloaded artifact '{}' to {}.",
-                    artifact.name,
-                    directory.display()
-                )?;
+            let files =
+                download_files(&client, context.terminal(), &directory, &files, args.force)?;
+            context.terminal().finalize(&format!(
+                "Downloaded artifact '{}' to {}.",
+                artifact.name,
+                directory.display()
+            ));
+            Ok(ArtifactDownloaded {
+                experiment: args.experiment,
+                bytes: files.iter().map(|file| file.bytes).sum(),
+                artifact,
+                directory,
+                files,
             }
-            Ok(
-                json!({"experiment": args.experiment, "artifact": artifact, "directory": directory, "files": files, "bytes": bytes}),
-            )
+            .into())
         }
     }
 }
@@ -203,6 +213,7 @@ pub fn handle_command(args: ArtifactsArgs, context: CliContext) -> anyhow::Resul
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser};
+    use serde_json::json;
 
     use super::*;
     use crate::cli::{CliArgs, Commands};
