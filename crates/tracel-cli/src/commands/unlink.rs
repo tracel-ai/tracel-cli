@@ -1,30 +1,62 @@
+use anyhow::Context;
+use clap::Args;
+use serde::Serialize;
+
 use crate::{
-    context::CliContext, helpers::require_linked_project, tools::project_context::ProjectContext,
+    context::CliContext,
+    helpers::require_linked_project,
+    tools::project_context::ProjectContext,
+    ui::{Outcome, Render},
 };
 
-pub fn handle_command(context: CliContext) -> anyhow::Result<()> {
-    let project = require_linked_project(&context)?;
+#[derive(Args, Debug)]
+pub struct UnlinkArgs {
+    /// Unlink without asking for confirmation
+    #[arg(long, short = 'y')]
+    pub yes: bool,
+}
 
+/// `namespace` and `name` are the project that was unlinked, absent when cancelled.
+#[derive(Serialize)]
+struct Unlinked {
+    unlinked: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    namespace: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+}
+
+impl Render for Unlinked {}
+
+pub fn handle_command(args: UnlinkArgs, context: CliContext) -> anyhow::Result<Outcome> {
+    let project = require_linked_project()?;
     context.terminal().command_title("Unlink");
 
-    let confirm_value = context
-        .terminal()
-        .confirm("Are you sure you want to unlink the Tracel Console project from this repository?")
-        .unwrap();
-
-    if confirm_value {
-        match ProjectContext::unlink(&project.get_manifest_path()) {
-            Ok(_) => context.terminal().finalize("Project unlinked successfully"),
-            Err(e) => {
-                context
-                    .terminal()
-                    .cancel_finalize(&format!("Failed to unlink project: {}", e));
-                anyhow::bail!(e);
+    if !args.yes {
+        let confirmed = context.terminal().confirm(
+            "Are you sure you want to unlink the Tracel Console project from this repository?",
+            "yes",
+            false,
+        )?;
+        if !confirmed {
+            context.terminal().cancel_finalize("Cancelled");
+            return Ok(Unlinked {
+                unlinked: false,
+                namespace: None,
+                name: None,
             }
+            .into());
         }
-    } else {
-        context.terminal().cancel_finalize("Cancelled");
     }
 
-    Ok(())
+    ProjectContext::unlink(&project.get_manifest_path()).context("Failed to unlink project")?;
+    context.terminal().finalize("Project unlinked successfully");
+
+    let linked = project.get_project();
+    Ok(Unlinked {
+        unlinked: true,
+        namespace: Some(linked.owner.clone()),
+        name: Some(linked.name.clone()),
+    }
+    .into())
 }

@@ -295,8 +295,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link",
 ]
 
@@ -3617,6 +3619,7 @@ version = "0.5.1"
 dependencies = [
  "anyhow",
  "cargo_metadata",
+ "chrono",
  "clap",
  "cliclack",
  "colored",
@@ -3640,9 +3643,8 @@ dependencies = [
 
 [[package]]
 name = "tracel-client"
-version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16ab04b5ffd6422e4923e2e11c8fa157a1550dd25e03a768f84ed5d21b809ba5"
+version = "0.21.0"
+source = "git+https://github.com/tracel-ai/burn-central-client?rev=1f0095dae2933a70f3a07eaf02138ca664d1708c#1f0095dae2933a70f3a07eaf02138ca664d1708c"
 dependencies = [
  "directories 6.0.0",
  "reqwest",

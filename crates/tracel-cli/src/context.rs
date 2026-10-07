@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use crate::tools::terminal::Terminal;
+use crate::tools::tracel_config::TracelProject;
+use crate::ui::{Output, Terminal};
 use tracel_client::ClientError;
 use tracel_client::console::auth::DeviceAuthClient;
 use tracel_client::console::{AppSession, Client, Env, FileSessionStore, TracelCredentials};
@@ -22,17 +23,27 @@ pub enum ClientCreationError {
     ServerConnectionError(String),
 }
 
-/// CLI-specific context that wraps the library context with terminal functionality
+/// What a command runs with: the user's two channels, and the environment and project
+/// it targets.
 pub struct CliContext {
     terminal: Terminal,
+    output: Output,
     environment: Env,
+    project: Option<TracelProject>,
 }
 
 impl CliContext {
-    pub fn new(terminal: Terminal, environment: Env) -> Self {
+    pub fn new(
+        terminal: Terminal,
+        output: Output,
+        environment: Env,
+        project: Option<TracelProject>,
+    ) -> Self {
         Self {
             terminal,
+            output,
             environment,
+            project,
         }
     }
 
@@ -88,6 +99,23 @@ impl CliContext {
 
     pub fn environment(&self) -> Env {
         self.environment.clone()
+    }
+
+    /// Stdout, for commands that stream their output while they run.
+    pub fn output(&self) -> &Output {
+        &self.output
+    }
+
+    pub fn project(&self) -> Option<&TracelProject> {
+        self.project.as_ref()
+    }
+
+    pub fn environment_name(&self) -> String {
+        match self.environment {
+            Env::Production => "production".to_string(),
+            Env::Development => "development".to_string(),
+            Env::Staging(version) => format!("staging-{version}"),
+        }
     }
 
     pub fn get_api_endpoint(&self) -> String {

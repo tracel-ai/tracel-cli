@@ -14,7 +14,7 @@ use toml_edit::DocumentMut;
 use tracel_client::console::project::request::{Arch, Os};
 
 use crate::tools::target::target_triple;
-use crate::tools::terminal::Terminal;
+use crate::ui::Terminal;
 
 /// What (if anything) is needed to link `target` while running on `host`.
 pub enum LinkerNeed {

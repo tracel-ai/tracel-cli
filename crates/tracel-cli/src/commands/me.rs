@@ -1,44 +1,45 @@
+use std::io;
+
+use anyhow::Context;
+use serde::Serialize;
+
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
-use tracel_client::console::Env;
+use crate::ui::{Details, Human, Outcome, Render};
 
-pub fn handle_command(context: CliContext) -> anyhow::Result<()> {
-    context.terminal().command_title("User Information");
+#[derive(Serialize)]
+struct CurrentUser {
+    username: String,
+    email: Option<String>,
+    namespace: String,
+    environment: String,
+    api_url: String,
+}
 
-    let client = get_client_and_login_if_needed(&context)?;
-
-    let user = match client.get_current_user() {
-        Ok(user) => user,
-        Err(e) => {
-            context
-                .terminal()
-                .cancel_finalize(&format!("Failed to retrieve user information: {}", e));
-            anyhow::bail!(e);
-        }
-    };
-
-    context
-        .terminal()
-        .print(&format!("Username: {}", user.username));
-    if let Some(email) = &user.email {
-        context.terminal().print(&format!("Email: {}", email));
+impl Render for CurrentUser {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
+        Details::new()
+            .field("Username", &self.username)
+            .optional("Email", self.email.as_ref())
+            .field("Namespace", &self.namespace)
+            .field("Environment", &self.environment)
+            .field("API URL", &self.api_url)
+            .write(out)
     }
-    context
-        .terminal()
-        .print(&format!("Namespace: {}", user.namespace));
+}
 
-    let env_name = match context.environment() {
-        Env::Development => &format!("Development ({})", context.get_api_endpoint()),
-        Env::Staging(_) => &format!("Staging ({})", context.get_api_endpoint()),
-        Env::Production => &format!("Production ({})", context.get_api_endpoint()),
-    };
+pub fn handle_command(context: CliContext) -> anyhow::Result<Outcome> {
+    let client = get_client_and_login_if_needed(&context)?;
+    let user = client
+        .get_current_user()
+        .context("Failed to retrieve user information")?;
 
-    context
-        .terminal()
-        .print(&format!("Environment: {}", env_name));
-    context
-        .terminal()
-        .finalize("User information retrieved successfully.");
-
-    Ok(())
+    Ok(CurrentUser {
+        username: user.username,
+        email: user.email,
+        namespace: user.namespace,
+        environment: context.environment_name(),
+        api_url: context.get_api_endpoint(),
+    }
+    .into())
 }

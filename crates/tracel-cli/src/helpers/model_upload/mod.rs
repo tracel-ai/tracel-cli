@@ -1,4 +1,4 @@
-//! Helpers for `tracel model upload`: model existence check, and
+//! Helpers for `tracel models push`: model existence check, and
 //! multi-threaded fail-fast multipart part upload.
 
 mod existence;

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 pub fn collect_files(directory: &Path) -> anyhow::Result<BTreeMap<String, PathBuf>> {
     let base_dir = std::fs::canonicalize(directory)
-        .with_context(|| format!("Failed to resolve directory '{}'.", directory.display()))?;
+        .with_context(|| format!("Failed to resolve directory '{}'", directory.display()))?;
 
     if !base_dir.is_dir() {
         anyhow::bail!("'{}' is not a directory.", base_dir.display());
@@ -16,7 +16,7 @@ pub fn collect_files(directory: &Path) -> anyhow::Result<BTreeMap<String, PathBu
 
     for entry in walkdir::WalkDir::new(&base_dir).follow_links(false) {
         let entry =
-            entry.with_context(|| format!("Failed to walk directory '{}'.", base_dir.display()))?;
+            entry.with_context(|| format!("Failed to walk directory '{}'", base_dir.display()))?;
 
         if !entry.file_type().is_file() {
             continue;
@@ -47,7 +47,7 @@ pub struct FileMeta {
 
 fn file_sha256_and_size(path: &Path) -> anyhow::Result<(String, u64)> {
     let mut file = std::fs::File::open(path)
-        .with_context(|| format!("Failed to open file '{}'.", path.display()))?;
+        .with_context(|| format!("Failed to open file '{}'", path.display()))?;
 
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 1024 * 1024];
@@ -56,7 +56,7 @@ fn file_sha256_and_size(path: &Path) -> anyhow::Result<(String, u64)> {
     loop {
         let read = file
             .read(&mut buffer)
-            .with_context(|| format!("Failed reading file '{}'.", path.display()))?;
+            .with_context(|| format!("Failed reading file '{}'", path.display()))?;
         if read == 0 {
             break;
         }

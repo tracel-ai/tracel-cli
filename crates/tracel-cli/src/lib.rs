@@ -1,7 +1,9 @@
-pub mod cli;
-pub mod tools;
-
+mod cli;
 mod commands;
 mod context;
+mod error;
 mod helpers;
-mod logging;
+mod tools;
+mod ui;
+
+pub use cli::cli_main;

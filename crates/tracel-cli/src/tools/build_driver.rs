@@ -12,7 +12,7 @@ use tracel_client::console::project::request::{Arch, Os};
 
 use crate::tools::linker;
 use crate::tools::target::target_triple;
-use crate::tools::terminal::Terminal;
+use crate::ui::Terminal;
 
 /// How to drive the build of a given target.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
