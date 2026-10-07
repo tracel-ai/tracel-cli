@@ -1,16 +1,17 @@
 //! Workspace packaging for Tracel Console.
 //!
-//! Packages an entire workspace as a single compressed archive, respecting gitignore rules,
+//! Packages an entire workspace as a single zip archive, respecting gitignore rules,
 //! and computes the code version digest from the packaged files.
 
 use std::{
     collections::BTreeMap,
-    fs::File,
+    fs::{File, Metadata},
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use colored::Colorize;
+use zip::{DateTime, ZipWriter, write::SimpleFileOptions};
 
 use crate::tools::event::Reporter;
 use crate::tools::fs::{file_sha256_and_size, manifest_digest};
@@ -32,7 +33,7 @@ pub struct PackageEvent {
 
 type PackageEventReporter = dyn Reporter<PackageEvent>;
 
-/// Package the entire workspace as a single compressed archive with gitignore applied.
+/// Package the entire workspace as a single zip archive with gitignore applied.
 pub fn package_workspace(
     workspace: &WorkspaceInfo,
     event_reporter: Arc<PackageEventReporter>,
@@ -79,16 +80,11 @@ pub fn package_workspace(
         .as_std_path()
         .join("tracel")
         .join("package");
-    let archive_path = output_dir.join(&workspace.workspace_name);
+    let archive_path = output_dir.join(format!("{}.zip", workspace.workspace_name));
 
     std::fs::create_dir_all(&output_dir)?;
 
-    let archive_file = File::create(&archive_path)?;
-
-    // Inside the archive, files live under a `{workspace_name}/` directory to match the standard
-    // cargo crate format.
-    let uncompressed_size =
-        create_workspace_archive(&files, &archive_file, &workspace.workspace_name)?;
+    let uncompressed_size = write_zip_archive(&files, File::create(&archive_path)?)?;
 
     event_reporter.report_event(PackageEvent {
         message: format!(
@@ -113,29 +109,25 @@ pub fn package_workspace(
 }
 
 /// The code version digest of a source package: SHA-256 over the sorted `path:sha256` lines
-/// of the packaged files, with `/`-separated relative paths (see [`manifest_digest`]).
-fn source_digest(files: &BTreeMap<PathBuf, PathBuf>) -> anyhow::Result<String> {
+/// of the packaged files (see [`manifest_digest`]).
+fn source_digest(files: &BTreeMap<String, PathBuf>) -> anyhow::Result<String> {
     let mut lines = Vec::with_capacity(files.len());
-    for (relative_path, file_path) in files {
-        let name = relative_path
-            .components()
-            .map(|component| component.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/");
+    for (name, file_path) in files {
         let (checksum, _) = file_sha256_and_size(file_path)?;
-        lines.push((name, checksum));
+        lines.push((name.as_str(), checksum));
     }
-    Ok(manifest_digest(lines.iter().map(|(name, checksum)| {
-        (name.as_str(), checksum.as_str())
-    })))
+    let lines = lines
+        .iter()
+        .map(|(name, checksum)| (*name, checksum.as_str()));
+    Ok(manifest_digest(lines))
 }
 
-/// Lists the files to package, respecting gitignore rules, as a map from their path relative
-/// to `workspace_root` to their full path.
-fn list_workspace_files(workspace_root: &Path) -> anyhow::Result<BTreeMap<PathBuf, PathBuf>> {
+/// Lists the files to package, respecting gitignore rules, as a map from their `/`-separated
+/// path relative to `workspace_root` to their full path. `workspace_root` must be canonical.
+fn list_workspace_files(workspace_root: &Path) -> anyhow::Result<BTreeMap<String, PathBuf>> {
     let git_repo = discover_gix_repo(workspace_root)?;
 
-    if let Some(ref repo) = git_repo {
+    if let Some((ref repo, _)) = git_repo {
         tracing::info!(
             "Git repository found at {}",
             repo.path().display().to_string().bold()
@@ -150,31 +142,24 @@ fn list_workspace_files(workspace_root: &Path) -> anyhow::Result<BTreeMap<PathBu
         exclude_builder.add_line(None, ".*")?;
     }
 
+    // `target` at the workspace root, and any `target` directory below it.
+    exclude_builder.add_line(None, "/target")?;
     exclude_builder.add_line(None, "target/")?;
 
     let ignore_exclude = exclude_builder.build()?;
 
     let filter = |path: &Path, is_dir: bool| {
-        let Ok(relative_path) = path.strip_prefix(workspace_root) else {
-            return false;
-        };
-
-        if let Some(first_component) = relative_path.components().next() {
-            let component_str = first_component.as_os_str().to_string_lossy();
-            if component_str == "target" {
-                return false;
-            }
-        }
-
-        // Check gitignore rules
-        !ignore_exclude
-            .matched_path_or_any_parents(relative_path, is_dir)
-            .is_ignore()
+        path.strip_prefix(workspace_root)
+            .is_ok_and(|relative_path| {
+                !ignore_exclude
+                    .matched_path_or_any_parents(relative_path, is_dir)
+                    .is_ignore()
+            })
     };
 
     // Use git if available, otherwise walk the filesystem
-    let paths = if let Some(repo) = git_repo {
-        list_files_gix(workspace_root, &repo, &filter)?
+    let paths = if let Some((repo, workdir)) = git_repo {
+        list_files_gix(&workdir, &repo, &filter)?
     } else {
         let mut paths = Vec::new();
         list_files_walk(workspace_root, &mut paths, &filter)?;
@@ -189,72 +174,86 @@ fn list_workspace_files(workspace_root: &Path) -> anyhow::Result<BTreeMap<PathBu
         let relative_path = path
             .strip_prefix(workspace_root)
             .map_err(|e| anyhow::anyhow!("Failed to strip workspace root prefix: {}", e))?;
-        files.insert(relative_path.to_path_buf(), path);
+        let name = relative_path
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        files.insert(name, path);
     }
     Ok(files)
 }
 
-/// Creates a compressed tar.gz archive of `files`, in path order.
-///
-/// All files are prefixed with `{package_prefix}/` to match the standard cargo crate format.
-fn create_workspace_archive(
-    files: &BTreeMap<PathBuf, PathBuf>,
-    dst: &File,
-    package_prefix: &str,
-) -> anyhow::Result<u64> {
-    let encoder = flate2::GzBuilder::new().write(dst, flate2::Compression::best());
+/// Writes `files` to a zip archive in path order, under their workspace-relative names so the
+/// workspace root is the archive root, and returns their total size. Entries have a fixed
+/// timestamp and keep only the executable bit of their permissions, so the same files always
+/// produce the same archive.
+fn write_zip_archive(files: &BTreeMap<String, PathBuf>, dst: File) -> anyhow::Result<u64> {
+    let mut zip = ZipWriter::new(dst);
+    let mut uncompressed_size = 0;
 
-    let mut ar = tar::Builder::new(encoder);
-    let mut uncompressed_size: u64 = 0;
-
-    for (relative_path, file_path) in files {
+    for (name, file_path) in files {
         let mut file = File::open(file_path)?;
         let metadata = file.metadata()?;
+        let mode = if is_executable(&metadata) {
+            0o755
+        } else {
+            0o644
+        };
+        let options = SimpleFileOptions::default()
+            .last_modified_time(DateTime::default())
+            .unix_permissions(mode)
+            .large_file(metadata.len() > u64::from(u32::MAX));
 
-        let mut header = tar::Header::new_gnu();
-        header.set_metadata_in_mode(&metadata, tar::HeaderMode::Deterministic);
-
-        let prefixed_path = Path::new(package_prefix).join(relative_path);
-        ar.append_data(&mut header, &prefixed_path, &mut file)?;
-        uncompressed_size += metadata.len();
+        zip.start_file(name.as_str(), options)?;
+        uncompressed_size += std::io::copy(&mut file, &mut zip)?;
     }
 
-    let encoder = ar.into_inner()?;
-    encoder.finish()?;
-
+    zip.finish()?;
     Ok(uncompressed_size)
 }
 
-/// Discovers a git repository starting from the given path.
-fn discover_gix_repo(root: &Path) -> anyhow::Result<Option<gix::Repository>> {
-    let repo = match gix::ThreadSafeRepository::discover(root) {
+#[cfg(unix)]
+fn is_executable(metadata: &Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    metadata.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn is_executable(_metadata: &Metadata) -> bool {
+    false
+}
+
+/// Discovers the git repository containing `workspace_root`, with its canonical work tree.
+fn discover_gix_repo(workspace_root: &Path) -> anyhow::Result<Option<(gix::Repository, PathBuf)>> {
+    let repo = match gix::ThreadSafeRepository::discover(workspace_root) {
         Ok(repo) => repo.to_thread_local(),
         Err(_) => return Ok(None),
     };
 
-    let repo_root = repo.workdir().ok_or_else(|| {
+    let workdir = repo.workdir().ok_or_else(|| {
         anyhow::format_err!(
             "Did not expect repo at {} to be bare",
             repo.path().display()
         )
     })?;
-
-    // Verify the repository contains the workspace root
-    let canon_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let canon_repo_root = repo_root
+    let workdir = workdir
         .canonicalize()
-        .unwrap_or_else(|_| repo_root.to_path_buf());
+        .unwrap_or_else(|_| workdir.to_path_buf());
 
-    if canon_root.starts_with(&canon_repo_root) {
-        Ok(Some(repo))
+    if workspace_root.starts_with(&workdir) {
+        Ok(Some((repo, workdir)))
     } else {
         Ok(None)
     }
 }
 
-/// Lists files using git to respect .gitignore rules.
+/// Lists the files in the work tree of `repo`, found at `workdir`, that pass `filter`.
+///
+/// Git reports paths relative to the work tree, so they are joined onto `workdir` before
+/// `filter` decides which belong to the workspace.
 fn list_files_gix(
-    workspace_root: &Path,
+    workdir: &Path,
     repo: &gix::Repository,
     filter: &impl Fn(&Path, bool) -> bool,
 ) -> anyhow::Result<Vec<PathBuf>> {
@@ -266,29 +265,26 @@ fn list_files_gix(
         .recurse_repositories(false)
         .symlinks_to_directories_are_ignored_like_directories(true);
 
-    let index = repo.index_or_empty()?;
     let mut files = Vec::new();
 
-    for entry in repo.dirwalk_iter(index.clone(), None::<&str>, Default::default(), options)? {
-        let entry = entry?;
-
-        let file_path = workspace_root.join(gix::path::from_bstr(entry.entry.rela_path));
+    for entry in repo.dirwalk_iter(
+        repo.index_or_empty()?,
+        None::<&str>,
+        Default::default(),
+        options,
+    )? {
+        let file_path = workdir.join(gix::path::from_bstr(entry?.entry.rela_path));
         let is_dir = file_path.is_dir();
 
-        if filter(&file_path, is_dir) {
-            if !is_dir {
-                files.push(file_path);
-            } else {
-                // Recursively walk directories
-                match gix::open(&file_path) {
-                    Ok(sub_repo) => {
-                        files.extend(list_files_gix(workspace_root, &sub_repo, filter)?);
-                    }
-                    Err(_) => {
-                        list_files_walk(&file_path, &mut files, filter)?;
-                    }
-                }
-            }
+        if !filter(&file_path, is_dir) {
+            continue;
+        }
+        if !is_dir {
+            files.push(file_path);
+        } else if let Ok(nested_repo) = gix::open(&file_path) {
+            files.extend(list_files_gix(&file_path, &nested_repo, filter)?);
+        } else {
+            list_files_walk(&file_path, &mut files, filter)?;
         }
     }
 
@@ -353,6 +349,7 @@ fn human_readable_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     /// A uniquely named directory under the system temp directory, removed on drop.
@@ -378,9 +375,13 @@ mod tests {
             std::fs::write(path, contents).unwrap();
         }
 
+        /// The files packaged from the workspace at `rel_root`.
+        fn files(&self, rel_root: &str) -> BTreeMap<String, PathBuf> {
+            list_workspace_files(&self.0.join(rel_root).canonicalize().unwrap()).unwrap()
+        }
+
         fn digest(&self) -> String {
-            let root = self.0.canonicalize().unwrap();
-            source_digest(&list_workspace_files(&root).unwrap()).unwrap()
+            source_digest(&self.files("")).unwrap()
         }
     }
 
@@ -388,6 +389,23 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    fn sha256(contents: &str) -> String {
+        format!("{:x}", Sha256::digest(contents))
+    }
+
+    #[test]
+    fn digest_hashes_workspace_relative_paths_and_contents() {
+        let workspace = TempWorkspace::new("format");
+        workspace.write("Cargo.toml", "[package]");
+        workspace.write("src/main.rs", "fn main() {}");
+
+        let expected = manifest_digest([
+            ("Cargo.toml", sha256("[package]").as_str()),
+            ("src/main.rs", sha256("fn main() {}").as_str()),
+        ]);
+        assert_eq!(workspace.digest(), expected);
     }
 
     #[test]
@@ -448,5 +466,114 @@ mod tests {
 
         workspace.write("src/lib.rs", "");
         assert_ne!(workspace.digest(), original);
+    }
+
+    #[test]
+    fn workspace_in_a_repository_subdirectory_packages_its_own_files() {
+        let nested = TempWorkspace::new("subdir");
+        gix::init(&nested.0).unwrap();
+        nested.write(".gitignore", "*.tmp\n");
+        nested.write("README.md", "outside the workspace");
+        nested.write("ws/.gitignore", "*.log\n");
+        nested.write("ws/Cargo.toml", "[package]");
+        nested.write("ws/src/main.rs", "fn main() {}");
+        nested.write("ws/train.log", "epoch 1");
+        nested.write("ws/cache.tmp", "cache");
+        nested.write("ws/target/debug/app", "binary");
+        gix::init(nested.0.join("ws/vendor/lib")).unwrap();
+        nested.write("ws/vendor/lib/lib.rs", "pub fn lib() {}");
+
+        let root = TempWorkspace::new("subdir-root");
+        gix::init(&root.0).unwrap();
+        root.write(".gitignore", "*.log\n");
+        root.write("Cargo.toml", "[package]");
+        root.write("src/main.rs", "fn main() {}");
+        root.write("train.log", "epoch 1");
+        root.write("target/debug/app", "binary");
+        gix::init(root.0.join("vendor/lib")).unwrap();
+        root.write("vendor/lib/lib.rs", "pub fn lib() {}");
+
+        let files = nested.files("ws");
+        assert_eq!(
+            files.keys().collect::<Vec<_>>(),
+            [
+                ".gitignore",
+                "Cargo.toml",
+                "src/main.rs",
+                "vendor/lib/lib.rs"
+            ]
+        );
+        assert_eq!(
+            source_digest(&files).unwrap(),
+            source_digest(&root.files("")).unwrap()
+        );
+    }
+
+    #[test]
+    fn archive_holds_the_workspace_at_its_root() {
+        let contents = [
+            ("Cargo.toml", "[package]"),
+            ("scripts/build.sh", "#!/bin/sh\n"),
+            ("src/main.rs", "fn main() {}"),
+        ];
+        let output = TempWorkspace::new("archive-output");
+        let write_archive = |name: &str, reversed: bool| {
+            let workspace = TempWorkspace::new(name);
+            let mut contents = contents.to_vec();
+            if reversed {
+                contents.reverse();
+            }
+            for (rel_path, text) in contents {
+                workspace.write(rel_path, text);
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let script = workspace.0.join("scripts/build.sh");
+                std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
+            let path = output.0.join(format!("{name}.zip"));
+            write_zip_archive(&workspace.files(""), File::create(&path).unwrap()).unwrap();
+            path
+        };
+        let first = write_archive("archive-first", false);
+        let second = write_archive("archive-second", true);
+        assert_eq!(
+            std::fs::read(&first).unwrap(),
+            std::fs::read(&second).unwrap()
+        );
+
+        let mut archive = zip::ZipArchive::new(File::open(&first).unwrap()).unwrap();
+        let entries: Vec<(String, Option<u32>)> = (0..archive.len())
+            .map(|index| {
+                let entry = archive.by_index(index).unwrap();
+                assert_eq!(entry.last_modified(), Some(DateTime::default()));
+                (entry.name().to_string(), entry.unix_mode())
+            })
+            .collect();
+        let script_mode = if cfg!(unix) { 0o100755 } else { 0o100644 };
+        assert_eq!(
+            entries,
+            [
+                ("Cargo.toml".to_string(), Some(0o100644)),
+                ("scripts/build.sh".to_string(), Some(script_mode)),
+                ("src/main.rs".to_string(), Some(0o100644)),
+            ]
+        );
+
+        let extracted = output.0.join("extracted");
+        archive.extract(&extracted).unwrap();
+        for (rel_path, text) in contents {
+            assert_eq!(
+                std::fs::read_to_string(extracted.join(rel_path)).unwrap(),
+                text
+            );
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let script = std::fs::metadata(extracted.join("scripts/build.sh")).unwrap();
+            assert_eq!(script.permissions().mode() & 0o777, 0o755);
+        }
     }
 }

@@ -35,9 +35,8 @@ cliclack = "0.3.8"
 directories = "5.0"
 url = "2.5.8"
 cargo_metadata = { version = "0.20.0", features = ["builder"] }
-flate2 = { version = "1.1.9", default-features = false, features = ["zlib"] }
-tar = { version = "0.4.46", default-features = false }
 walkdir = "2"
+zip = { version = "6.0.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 ignore = "0.4.30"
 gix = { version = "0.77.0", default-features = false, features = ["dirwalk"] }
 chrono = "0.4.45"
