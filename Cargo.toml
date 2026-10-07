@@ -41,6 +41,10 @@ ignore = "0.4.30"
 gix = { version = "0.77.0", default-features = false, features = ["dirwalk"] }
 chrono = "0.4.45"
 strum = { version = "0.27.2", features = ["derive"] }
+jsonschema = { version = "0.58.6", default-features = false }
+tempfile = "3.27.0"
+ctrlc = { version = "3.5.2", features = ["termination"] }
+libc = "0.2.189"
 
 
 ## External Crate

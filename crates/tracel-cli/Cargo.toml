@@ -37,3 +37,9 @@ cargo_metadata.workspace = true
 ignore.workspace = true
 walkdir.workspace = true
 zip.workspace = true
+jsonschema.workspace = true
+tempfile.workspace = true
+ctrlc.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

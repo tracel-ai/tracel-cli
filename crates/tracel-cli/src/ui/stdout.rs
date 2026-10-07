@@ -1,11 +1,12 @@
 use std::io::{self, Write};
+use std::process::Stdio;
 use std::sync::Arc;
 
 use serde::Serialize;
 
 use super::Format;
 use super::human::{Human, Style};
-use super::screen::Screen;
+use super::screen::{Ending, Screen};
 use crate::error::ErrorReport;
 
 /// A command result: serialized for JSON output, written as text for people.
@@ -98,6 +99,19 @@ impl Output {
             write_event(format, style, event, out)?;
             out.flush()
         })
+    }
+
+    /// Where a program the command runs writes its stdout: here with text output, or to
+    /// stderr with JSON output, which keeps stdout for the envelope. The program writes
+    /// to the screen on its own, so the live widget is settled first, and it must not
+    /// run inside a frame.
+    pub fn child_stdout(&self) -> Stdio {
+        debug_assert!(!self.screen.frame_open(), "a program runs inside a frame");
+        self.screen.settle(Ending::Done);
+        match self.screen.format() {
+            Format::Human => Stdio::inherit(),
+            Format::Json => Stdio::from(io::stderr()),
+        }
     }
 
     /// Writes the error envelope of a failed command; text errors go to stderr.

@@ -12,7 +12,7 @@ use crate::helpers::{require_workspace_project, validate_project_exists_on_serve
 use crate::tools::target;
 use crate::ui::{Outcome, Terminal};
 
-#[derive(Args, Debug)]
+#[derive(Args, Clone, Debug)]
 pub struct PackageArgs {
     /// Package a compiled binary or source (required without prompts)
     #[arg(long, value_enum)]

@@ -63,7 +63,7 @@ pub enum ExperimentSelector {
     Latest,
 }
 
-fn parse_experiment(value: &str) -> Result<ExperimentSelector, String> {
+pub fn parse_experiment(value: &str) -> Result<ExperimentSelector, String> {
     if value == "latest" {
         return Ok(ExperimentSelector::Latest);
     }
@@ -364,6 +364,24 @@ fn missing_experiment(error: ClientError, project: &TracelProject, num: i32) -> 
     )
 }
 
+/// The experiment `selector` names in `project`.
+pub fn get_experiment(
+    client: &Client,
+    project: &TracelProject,
+    selector: &ExperimentSelector,
+) -> anyhow::Result<ExperimentDetailsResponse> {
+    match *selector {
+        ExperimentSelector::Number(num) => client
+            .get_experiment(&project.owner, &project.name, num)
+            .map_err(|error| missing_experiment(error, project, num)),
+        ExperimentSelector::Latest => client
+            .get_project_latest_experiment(&project.owner, &project.name)?
+            .ok_or_else(|| {
+                CliError::new(ErrorKind::NotFound, "No experiments found in this project.").into()
+            }),
+    }
+}
+
 fn follow_logs(
     client: &Client,
     project: &TracelProject,
@@ -424,17 +442,7 @@ pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Res
             )?
             .into()),
         ExperimentsCommands::Get(args) => {
-            let experiment = match args.experiment {
-                ExperimentSelector::Number(num) => client
-                    .get_experiment(owner, name, num)
-                    .map_err(|error| missing_experiment(error, &project, num))?,
-                ExperimentSelector::Latest => client
-                    .get_project_latest_experiment(owner, name)?
-                    .ok_or_else(|| {
-                        CliError::new(ErrorKind::NotFound, "No experiments found in this project.")
-                    })?,
-            };
-            Ok(experiment.into())
+            Ok(get_experiment(&client, &project, &args.experiment)?.into())
         }
         ExperimentsCommands::Metrics(args) => {
             let missing = |error| missing_experiment(error, &project, args.num);

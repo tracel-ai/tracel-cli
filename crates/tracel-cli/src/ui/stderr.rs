@@ -85,8 +85,8 @@ impl Terminal {
         }
     }
 
-    /// Instructions a person must follow before the command can go on, shown in
-    /// every format.
+    /// A note a person must read whatever the format, such as instructions to follow
+    /// before the command can go on.
     pub fn instruct(&self, message: &str) {
         if self.is_human() {
             self.print(message);

@@ -75,7 +75,8 @@ TRACEL_NAMESPACE=alice TRACEL_PROJECT=demo tracel -C ./trainer project --json
 JSON results are one line on stdout: `{"ok":true,"data":{...}}` on success, or
 `{"ok":false,"error":{"code":"NOT_FOUND","message":"...","hint":null,"exit_code":5}}`
 on failure. Diagnostics go to stderr. Help and version output retain their normal
-format, and a local `run` inherits the executed program's output and exit code.
+format, and `tracel run` without a job, `--list`, or `--remote` inherits the
+executed program's output and exit code.
 
 Human output keeps the same split: stdout carries only results, such as the
 tables and details of commands that read, while progress, prompts, warnings,
@@ -102,35 +103,126 @@ to fit its width; redirected output is never shortened.
 
 ### `tracel run`
 
-Run your project locally. This is a thin wrapper around `cargo run`: arguments
-are forwarded to your binary only after `--`, so `tracel run -- <args>` is
-equivalent to `cargo run -- <args>`, and `tracel run` runs the default binary
-with no arguments. stdin/stdout/stderr are inherited and the binary's exit code
-is propagated.
+Run a job your program registers, locally or on a compute provider, or run your
+program as `cargo run` does.
 
 ```bash
+# List the jobs of the workspace binary that uses the tracel crate
+tracel run --list
+# Run a job with its example input, changing two values
+tracel run mnist --set num_epochs=5 --set optimizer.lr=0.01
+# Merge JSON files onto the input, then set a value
+tracel run mnist -c base.json -c gpu.json --set batch_size=64
+# Start from the input Console experiment 42 recorded
+tracel run mnist --like 42 --set num_epochs=20
+# Record the run on this machine
+tracel run mnist --offline
+# Queue the job on the `gpu` compute provider group and follow it
+tracel run mnist --set num_epochs=5 --remote gpu --mode source --yes --follow
+
 # Equivalent to `cargo run`
 tracel run
-
 # Equivalent to `cargo run -- train mnist --epochs 100`
 tracel run -- train mnist --epochs 100
-
-# Package the workspace and run it as a job on the `gpu` compute provider group
-tracel run --remote gpu --mode source -- train mnist --epochs 100
-# Without prompts, following the job until it finishes
-tracel run --remote gpu --mode binary --yes --follow --json -- train mnist
-# Package and show the job without uploading or queuing anything
-tracel run --remote gpu --mode source --dry-run --json -- train mnist
 ```
+
+Jobs come from the binary of a workspace package that depends on the `tracel`
+crate (dev and build dependencies do not count). With several such binaries,
+pass `--bin <NAME>`, unless the package's `default-run` names one, as with
+`cargo run`. In a workspace without such a package, `--list` and job runs fail
+with `USAGE`; run the program with `tracel run -- <args>` instead. The binary
+must run its jobs with `tracel::app::cli::Cli` (tracel 0.10 or later).
+
+The binary is built with `cargo build`, then run with `TRACEL_DESCRIBE=<path>`,
+which makes it write its job definitions to that path and exit without running a
+job. It must do so within 10 seconds, or it is killed and the command fails with
+`TIMEOUT` (exit code 10). The definitions are cached in `target/tracel/jobs.json`
+under the SHA-256 of the binary, so the binary only describes its jobs again
+after it changes.
+
+`--list` prints a `NAME`, `KIND`, `DESCRIPTION` table. JSON data is the
+definitions file; `kind` is `experiment` or `inference`, and `input_schema` and
+`input_example` are `null` when the job has none:
+
+```json
+{"protocol":1,"sdk_version":"0.10.0","runner":"cli","jobs":[{"name":"mnist","kind":"experiment","description":"Train the MNIST classifier","input_schema":{"type":"object","properties":{"num_epochs":{"type":"integer"}}},"input_example":{"num_epochs":10,"optimizer":{"lr":0.001}}}]}
+```
+
+`tracel run <JOB>` resolves the job's input in order:
+
+1. It starts from the job's `input_example`, or `null` when it has none.
+   `--like <NUM|latest>` starts from the config that Console experiment recorded
+   instead, which needs a linked project and a login.
+2. Each `-c, --config <FILE>` is a JSON file merged onto the input with JSON merge
+   patch (RFC 7386): objects merge, other values replace, and `null` removes a
+   field.
+3. Each `--set <PATH>=<VALUE>` sets one value. `PATH` is dotted keys with `[i]`
+   array indices, such as `optimizer.lr` or `layers[0].size`; missing objects and
+   arrays are created, and the index one past the end of an array appends.
+   `VALUE` is JSON, or a string when it does not parse as JSON: `--set epochs=5`
+   sets a number and `--set name=baseline` a string.
+
+When the job has an `input_schema`, the input is validated against it; references
+outside the schema are not fetched. An invalid input fails with `USAGE` naming
+each path and reason, such as `epochs: "x" is not of type "integer"`, and an
+unknown job fails with `USAGE` listing the job names. A `JOB` cannot be combined
+with arguments after `--`. `-c`, `--set`, `--like`, and `--offline` require a
+`JOB`, and `--bin` requires a `JOB`, `--list`, or `--remote`.
+
+The job then runs as `<binary> <JOB> <input-json>`, without `cargo run`. Its
+stdout and stderr are inherited and its stdin is closed. In JSON mode, its stdout
+goes to stderr, so stdout holds only the command's JSON.
+
+The run is recorded on the Tracel Console when a project is linked (`tracel.toml`,
+`--project`, or `TRACEL_NAMESPACE` and `TRACEL_PROJECT`) and a credential is
+available (`TRACEL_API_KEY`, or a `tracel login` that has not ended). Otherwise
+it is recorded offline, and a line on stderr says why. `--offline` always records
+offline. The program gets:
+
+| Variable | Value |
+| --- | --- |
+| `TRACEL_TARGET` | `console` or `offline` |
+| `TRACEL_ENV` | the Console environment |
+| `TRACEL_NAMESPACE`, `TRACEL_PROJECT` | the project, when one is linked |
+| `TRACEL_REPORT_FILE` | a temporary file for the run report |
+
+The program writes the run report to `TRACEL_REPORT_FILE` when it creates the
+experiment, and again when the experiment ends. Offline, `experiment` is `null`
+and `dir` names the run directory. `status` is `running`, `completed`, `failed`,
+or `cancelled`:
+
+```json
+{"protocol":1,"job":"mnist","experiment":{"num":42,"url":"https://console.tracel.ai/..."},"status":"completed","started_at":"2026-10-06T12:00:00Z","finished_at":"2026-10-06T12:30:00Z","error":null}
+```
+
+Human output names the experiment and its URL, or the offline run directory, as
+soon as the report does. The command exits 0 when the report says `completed`,
+and fails with `JOB_FAILED` (exit code 9) naming the job, its status, and the
+experiment when it says `failed` or `cancelled`. Without a final report, the
+program's exit code decides: 0 is completed, 2 fails with `USAGE` (the program
+rejected the job or its input, and printed why), 130 is cancelled, and any other
+code is failed; a program ended by a signal is cancelled when `tracel` stopped it,
+and failed otherwise. JSON data is
+`{"job":"mnist","input":{...},"target":"console","exit_code":0,"report":{...}}`,
+with `report` `null` when the program wrote none.
+
+Ctrl-C, SIGTERM, or SIGHUP stops the job: `tracel` sends the program SIGTERM, and
+kills it when it is still running 30 seconds later. The program runs in its own
+process group, so a Ctrl-C in the terminal reaches it only as that SIGTERM. On
+Windows, the console delivers Ctrl-C to the program itself, and `tracel` kills it
+when it is still running 30 seconds later.
 
 `--remote <GROUP>` runs your project as a job on a compute provider group
 instead. The workspace is packaged as with `tracel package`, with the same
 `--mode`, `--target`, `--bin`, and `--install-targets` flags and the same rules
-without prompts. The job runs the resulting code version with the arguments
-after `--`, which reach the program unchanged: the job command single-quotes
-each argument that is empty, starts with `#`, or contains a space, tab, newline,
-quote, or backslash. The packaging flags, `--yes`, `--dry-run`, and `--follow`
-require `--remote`.
+without prompts. With a `JOB`, the input is resolved and validated as above, and
+the job command is `<JOB> '<input-json>'`; in binary mode the uploaded binary is
+the one that registers the job. Without a `JOB`, the job command is the
+arguments after `--`. Either way the arguments reach the program unchanged: the
+job command single-quotes each argument that is empty, starts with `#`, or
+contains a space, tab, newline, quote, or backslash. The packaging flags,
+`--yes`, `--dry-run`, and `--follow` require `--remote`, and `--offline` cannot
+be combined with it.
 
 A job may incur costs, so after packaging, and before uploading anything, the
 command asks for confirmation naming the project, group, code version digest,
@@ -153,6 +245,12 @@ code 9) when it failed or was cancelled. JSON output is NDJSON: an item with
 `"type":"queued"` and the data above, then the log and end items of
 `jobs logs --follow`. Without a job number, `--follow` fails after queuing and
 the job stays queued.
+
+Without a `JOB`, `--list`, or `--remote`, `tracel run` is a thin wrapper around
+`cargo run`: arguments are forwarded to your binary only after `--`, so
+`tracel run -- <args>` is equivalent to `cargo run -- <args>`, and `tracel run`
+runs the default binary with no arguments. stdin/stdout/stderr are inherited and
+the binary's exit code is propagated.
 
 ### `tracel package`
 

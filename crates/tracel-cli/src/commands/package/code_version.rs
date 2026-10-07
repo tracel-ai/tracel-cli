@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -12,7 +11,6 @@ use tracel_client::console::project::request::{
 
 use super::{Mode, PackageArgs, check_targets_allowed};
 use crate::context::CliContext;
-use crate::error::{CliError, ErrorKind};
 use crate::tools::build_driver::{self, BuildDriver};
 use crate::tools::fs::{file_sha256_and_size, manifest_digest};
 use crate::tools::packager::{self, PackageEvent};
@@ -217,7 +215,7 @@ fn build_release_binary(
     for arg in driver.subcommand_args() {
         command.arg(arg);
     }
-    command.arg("--release").arg("--message-format=json");
+    command.arg("--release");
     if let Some(triple) = target {
         command.arg("--target").arg(triple);
         if let Some(linker) = linker {
@@ -226,32 +224,7 @@ fn build_release_binary(
                 .arg(format!("target.{triple}.linker=\"{linker}\""));
         }
     }
-    let output = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .output()
-        .with_context(|| format!("Failed to run `{cmd_label}`"))?;
-
-    if !output.status.success() {
-        anyhow::bail!("`{cmd_label}` failed");
-    }
-
-    let mut executables: Vec<(String, PathBuf)> = Vec::new();
-    for line in output.stdout.split(|&b| b == b'\n') {
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(msg) = serde_json::from_slice::<serde_json::Value>(line) {
-            if msg.get("reason").and_then(|r| r.as_str()) == Some("compiler-artifact") {
-                if let Some(exe) = msg.get("executable").and_then(|e| e.as_str()) {
-                    let name = msg["target"]["name"].as_str().ok_or_else(|| {
-                        anyhow::anyhow!("Cargo did not return a name for binary {exe}")
-                    })?;
-                    executables.push((name.to_string(), PathBuf::from(exe)));
-                }
-            }
-        }
-    }
+    let executables = cargo::build_executables(command, &cmd_label)?;
 
     let names: Vec<&str> = executables.iter().map(|(name, _)| name.as_str()).collect();
     if let Some(bin) = bin {
@@ -259,14 +232,7 @@ fn build_release_binary(
             .iter()
             .find(|(name, _)| name == bin)
             .map(|(_, path)| path.clone())
-            .ok_or_else(|| {
-                CliError::new(
-                    ErrorKind::Usage,
-                    format!("Invalid --bin '{bin}'. Valid values: {}.", names.join(", ")),
-                )
-                .with_hint("Pass --bin <name> using one of the valid values.")
-                .into()
-            });
+            .ok_or_else(|| cargo::invalid_bin(bin, &names).into());
     }
     match executables.len() {
         0 => anyhow::bail!("The build did not produce any binary target."),

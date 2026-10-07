@@ -53,7 +53,7 @@ pub struct CliArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Run your project locally via `cargo run`, or remotely with --remote (forwards args after `--`).
+    /// Run a job of your project locally or with --remote, or the project via `cargo run` (forwards args after `--`).
     Run(commands::run::RunArgs),
 
     /// Package your project for running on a remote machine.
@@ -88,10 +88,15 @@ pub enum Commands {
 impl Commands {
     /// What `auto` output means: human on a terminal and JSON otherwise, except where
     /// stdout carries plain text: the bare token for `$(tracel auth token)`, or the
-    /// output of the program a local `run` runs.
+    /// output of the program `run` hands over to without a job, `--list` or `--remote`.
     fn auto_format(&self, stdout_is_terminal: bool) -> Format {
         match self {
-            Self::Run(commands::run::RunArgs { remote: None, .. })
+            Self::Run(commands::run::RunArgs {
+                job: None,
+                list: false,
+                remote: None,
+                ..
+            })
             | Self::Auth(commands::auth::AuthArgs {
                 command: commands::auth::AuthCommands::Token,
             }) => Format::Human,
@@ -308,7 +313,11 @@ mod tests {
             forwarded(&["tracel", "run", "--json", "--", "--json"]),
             ["--json"]
         );
-        for arguments in [["tracel", "run", "train"], ["tracel", "run", "--epochs"]] {
+        for arguments in [
+            &["tracel", "run", "--epochs"][..],
+            &["tracel", "run", "train", "--epochs"],
+            &["tracel", "run", "train", "evaluate"],
+        ] {
             let error = CliArgs::try_parse_from(arguments).unwrap_err();
             assert_eq!(error.exit_code(), 2);
         }
@@ -475,6 +484,8 @@ mod tests {
             vec!["tracel", "auth", "status"],
             vec!["tracel", "me"],
             vec!["tracel", "run", "--remote", "gpu", "--", "--epochs", "1"],
+            vec!["tracel", "run", "--list"],
+            vec!["tracel", "run", "train", "--set", "epochs=1"],
         ] {
             let command = CliArgs::try_parse_from(arguments).unwrap().command.unwrap();
             assert_eq!(command.auto_format(true), Format::Human);
