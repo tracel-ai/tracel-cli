@@ -44,7 +44,7 @@ After installation, the `tracel` command will be available in your terminal.
 ## Prerequisites
 
 1. **Tracel Account**: Create an account at [console.tracel.ai](https://console.tracel.ai/)
-2. **Rust**: Version 1.87.0 or higher
+2. **Rust**: Version 1.97.0 or higher
 3. **Tracel SDK**: Add the SDK to your Burn project
 
 ## Commands

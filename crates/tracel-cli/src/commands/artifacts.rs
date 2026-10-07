@@ -119,16 +119,15 @@ impl Render for ArtifactListResponse {
 
 pub fn handle_command(args: ArtifactsArgs, context: CliContext) -> anyhow::Result<Outcome> {
     let project = resolve_namespace_project(&context)?.project;
-    if let ArtifactsCommands::Download(args) = &args.command {
-        if let Some(directory) = &args.directory {
-            if directory.as_os_str().is_empty() || (directory.exists() && !directory.is_dir()) {
-                return Err(CliError::new(
-                    ErrorKind::Usage,
-                    format!("Invalid destination directory '{}'.", directory.display()),
-                )
-                .into());
-            }
-        }
+    if let ArtifactsCommands::Download(args) = &args.command
+        && let Some(directory) = &args.directory
+        && (directory.as_os_str().is_empty() || (directory.exists() && !directory.is_dir()))
+    {
+        return Err(CliError::new(
+            ErrorKind::Usage,
+            format!("Invalid destination directory '{}'.", directory.display()),
+        )
+        .into());
     }
     let client = get_client_and_login_if_needed(&context)?;
     let namespace = &project.owner;

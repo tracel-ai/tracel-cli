@@ -75,13 +75,15 @@ pub fn require_linked_project() -> anyhow::Result<ProjectContext> {
 }
 
 pub fn parse_project(value: &str) -> Result<TracelProject, CliError> {
-    if let Some((namespace, project)) = value.split_once('/') {
-        if !namespace.is_empty() && !project.is_empty() && !project.contains('/') {
-            return Ok(TracelProject {
-                owner: namespace.to_owned(),
-                name: project.to_owned(),
-            });
-        }
+    if let Some((namespace, project)) = value.split_once('/')
+        && !namespace.is_empty()
+        && !project.is_empty()
+        && !project.contains('/')
+    {
+        return Ok(TracelProject {
+            owner: namespace.to_owned(),
+            name: project.to_owned(),
+        });
     }
 
     Err(CliError::new(
