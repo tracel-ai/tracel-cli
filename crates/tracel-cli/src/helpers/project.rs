@@ -1,7 +1,9 @@
 //! Project helpers for CLI operations
 
+use std::path::Path;
+
 use anyhow::Context;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::{
     context::CliContext,
@@ -9,7 +11,7 @@ use crate::{
     tools::{
         cargo::try_locate_manifest,
         project_context::{ErrorKind, ProjectContext, ProjectContextError},
-        tracel_config::TracelProject,
+        tracel_config::{TracelProject, TracelToml},
         workspace::WorkspaceInfo,
     },
 };
@@ -114,14 +116,6 @@ pub struct ResolvedProject {
     pub source: ProjectSource,
 }
 
-#[derive(Deserialize, Default)]
-struct TracelTomlConfig {
-    #[serde(alias = "owner")]
-    namespace: Option<String>,
-    #[serde(alias = "name")]
-    project: Option<String>,
-}
-
 fn project_not_found() -> CliError {
     CliError::new(
         CliErrorKind::NotFound,
@@ -139,36 +133,31 @@ pub fn resolve_namespace_project(context: &CliContext) -> anyhow::Result<Resolve
         || {
             let manifest_path = try_locate_manifest().ok_or_else(project_not_found)?;
             let workspace_root = manifest_path.parent().ok_or_else(project_not_found)?;
-            let path = TracelProject::path(workspace_root);
-            let contents = match std::fs::read_to_string(&path) {
-                Ok(contents) => contents,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    return Ok(TracelTomlConfig::default());
-                }
-                Err(error) => {
-                    return Err(CliError::new(
-                        CliErrorKind::Usage,
-                        format!("Failed to read '{}': {error}", path.display()),
-                    )
-                    .into());
-                }
-            };
-            toml::from_str(&contents).map_err(|error| {
-                CliError::new(
-                    CliErrorKind::Usage,
-                    format!("Failed to parse '{}': {error}", path.display()),
-                )
-                .into()
-            })
+            Ok(read_tracel_toml(workspace_root)?)
         },
     )
+}
+
+/// The `tracel.toml` of `workspace_root`, empty when there is none.
+fn read_tracel_toml(workspace_root: &Path) -> Result<TracelToml, CliError> {
+    TracelToml::load(workspace_root)
+        .map(Option::unwrap_or_default)
+        .map_err(|error| {
+            CliError::new(
+                CliErrorKind::Usage,
+                format!(
+                    "Failed to read '{}': {error}",
+                    TracelProject::path(workspace_root).display()
+                ),
+            )
+        })
 }
 
 fn resolve_project(
     flag: Option<&TracelProject>,
     namespace: Option<String>,
     project: Option<String>,
-    load_config: impl FnOnce() -> anyhow::Result<TracelTomlConfig>,
+    load_config: impl FnOnce() -> anyhow::Result<TracelToml>,
 ) -> anyhow::Result<ResolvedProject> {
     if let Some(project) = flag {
         return Ok(ResolvedProject {
@@ -183,7 +172,7 @@ fn resolve_project(
         ProjectSource::TracelToml
     };
     let config = if namespace.is_some() && project.is_some() {
-        TracelTomlConfig::default()
+        TracelToml::default()
     } else {
         load_config()?
     };
@@ -324,7 +313,7 @@ mod tests {
                 namespace.map(str::to_owned),
                 project.map(str::to_owned),
                 || {
-                    Ok(TracelTomlConfig {
+                    Ok(TracelToml {
                         namespace: Some("file-owner".into()),
                         project: Some("file-project".into()),
                     })
@@ -338,22 +327,40 @@ mod tests {
     }
 
     #[test]
-    fn partial_config_and_legacy_keys_match_sdk() {
+    fn partial_config_completes_the_environment() {
         for (contents, namespace, project) in [
             ("project = 'demo'", Some("alice"), None),
             ("namespace = 'alice'", None, Some("demo")),
-            ("owner = 'alice'\nname = 'demo'", None, None),
         ] {
             let resolved = resolve_project(
                 None,
                 namespace.map(str::to_owned),
                 project.map(str::to_owned),
-                || Ok(toml::from_str(contents).unwrap()),
+                || Ok(TracelToml::parse(contents).unwrap()),
             )
             .unwrap();
             assert_eq!(resolved.project.owner, "alice");
             assert_eq!(resolved.project.name, "demo");
         }
+    }
+
+    #[test]
+    fn unknown_tracel_toml_keys_are_usage_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_tracel_toml(dir.path()).unwrap(), TracelToml::default());
+
+        std::fs::write(
+            TracelProject::path(dir.path()),
+            "owner = 'alice'\nname = 'demo'",
+        )
+        .unwrap();
+        let error = read_tracel_toml(dir.path()).unwrap_err();
+        assert_eq!(error.kind, CliErrorKind::Usage);
+        assert!(
+            error
+                .to_string()
+                .ends_with("expected keys are `namespace` and `project`")
+        );
     }
 
     #[test]
@@ -363,7 +370,7 @@ mod tests {
                 None,
                 namespace.map(str::to_owned),
                 project.map(str::to_owned),
-                || Ok(TracelTomlConfig::default()),
+                || Ok(TracelToml::default()),
             )
             .unwrap_err();
             let report = crate::error::ErrorReport::new(&error);

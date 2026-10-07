@@ -61,11 +61,11 @@ with a hint naming the flag to pass.
 
 Select a project with global `--project <namespace>/<name>`. It takes precedence
 over `TRACEL_NAMESPACE` and `TRACEL_PROJECT`, which each independently fall back
-to `tracel.toml` at the Cargo workspace root. `project`, `experiments`, `jobs`,
-`models`, `artifacts`, and `datasets` work from any directory with a flag or
-both variables; `package` and `run` still require a Cargo workspace. Global `-C
-<dir>` runs as if started in that directory. `init` and `unlink` operate on
-`tracel.toml` and ignore project overrides.
+to the `namespace` and `project` keys of `tracel.toml` at the Cargo workspace
+root. `project`, `experiments`, `jobs`, `models`, `artifacts`, and `datasets` work
+from any directory with a flag or both variables; `package` and `run` still
+require a Cargo workspace. Global `-C <dir>` runs as if started in that directory.
+`init` and `unlink` operate on `tracel.toml` and ignore project overrides.
 
 ```bash
 tracel --project alice/demo project --json
