@@ -186,17 +186,17 @@ pub fn cli_main() {
         auto,
     );
 
-    if let Some(directory) = &args.working_directory {
-        if let Err(error) = std::env::set_current_dir(directory) {
-            let error = CliError::new(
-                ErrorKind::Usage,
-                format!(
-                    "Can't change to directory '{}': {error}",
-                    directory.display()
-                ),
-            );
-            fail_early(&error.into(), format.unwrap_or(auto));
-        }
+    if let Some(directory) = &args.working_directory
+        && let Err(error) = std::env::set_current_dir(directory)
+    {
+        let error = CliError::new(
+            ErrorKind::Usage,
+            format!(
+                "Can't change to directory '{}': {error}",
+                directory.display()
+            ),
+        );
+        fail_early(&error.into(), format.unwrap_or(auto));
     }
 
     let Some(command) = args.command else {

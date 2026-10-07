@@ -222,10 +222,10 @@ impl Screen {
     /// End live widget `id` without leaving a line, unless it has ended.
     pub fn clear(&self, id: u64) {
         let mut live = self.lock();
-        if live.as_ref().is_some_and(|live| live.id == id) {
-            if let Some(widget) = live.take() {
-                widget.bar.clear();
-            }
+        if live.as_ref().is_some_and(|live| live.id == id)
+            && let Some(widget) = live.take()
+        {
+            widget.bar.clear();
         }
     }
 

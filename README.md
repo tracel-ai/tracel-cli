@@ -35,7 +35,7 @@ cd tracel-cli
 cargo install --path crates/tracel-cli
 ```
 
-You need Rust 1.87 or later, an account on the
+You need Rust 1.97 or later, an account on the
 [Tracel Console](https://console.tracel.ai/), and the Tracel SDK in your Burn
 project.
 

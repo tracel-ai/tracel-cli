@@ -144,12 +144,13 @@ pub fn launch(launch: Launch, mut on_event: impl FnMut(Event)) -> anyhow::Result
                 on_event(Event::Stopping);
             }
         }
-        if let Some(requested_at) = stop_requested_at {
-            if !killed && requested_at.elapsed() >= STOP_GRACE {
-                let _ = child.kill();
-                killed = true;
-                on_event(Event::Killed);
-            }
+        if let Some(requested_at) = stop_requested_at
+            && !killed
+            && requested_at.elapsed() >= STOP_GRACE
+        {
+            let _ = child.kill();
+            killed = true;
+            on_event(Event::Killed);
         }
         if report_read_at.elapsed() >= REPORT_INTERVAL {
             report_read_at = Instant::now();
