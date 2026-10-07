@@ -23,9 +23,9 @@ use crate::helpers::{
     map_resource_error, parse_metadata, resolve_namespace_project, select_artifact, upload_parts,
     validate_auto_create, validate_rel_path,
 };
-use crate::output::{Details, Outcome, Render, Table, json_section};
 use crate::tools::fs::{build_file_specs, collect_files};
 use crate::tools::tracel_config::TracelProject;
+use crate::ui::{Details, Human, Outcome, Render, Table, json_section};
 
 #[derive(Args, Debug)]
 pub struct ModelsArgs {
@@ -204,8 +204,9 @@ struct AliasRemoved {
 impl Render for AliasRemoved {}
 
 impl Render for ModelListResponse {
-    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         Table::new(["NAME", "VERSIONS", "LATEST", "ALIASES", "CREATED AT"])
+            .shrink("ALIASES")
             .rows(self.items.iter().map(|model| {
                 [
                     model.name.clone(),
@@ -221,7 +222,7 @@ impl Render for ModelListResponse {
 }
 
 impl Render for ModelResponse {
-    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         Details::new()
             .field("Name", &self.name)
             .field("ID", &self.id)
@@ -238,7 +239,7 @@ impl Render for ModelResponse {
 }
 
 impl Render for ModelVersionResponse {
-    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         Details::new()
             .field("Version", format!("v{}", self.version))
             .field("ID", &self.id)
@@ -273,7 +274,7 @@ impl Render for ModelVersionResponse {
 }
 
 impl Render for ModelVersionListResponse {
-    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         Table::new([
             "VERSION",
             "STATE",
@@ -282,6 +283,7 @@ impl Render for ModelVersionListResponse {
             "ALIASES",
             "CREATED AT",
         ])
+        .shrink("ALIASES")
         .rows(self.items.iter().map(|version| {
             let source = match &version.experiment {
                 Some(experiment) => format!(
@@ -306,7 +308,7 @@ impl Render for ModelVersionListResponse {
 }
 
 impl Render for ModelAliasListResponse {
-    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         Table::new(["ALIAS", "VERSION"])
             .rows(
                 self.items

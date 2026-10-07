@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tracel_client::ClientError;
 
-use crate::terminal::Terminal;
+use crate::ui::Terminal;
 
 use super::parts::PartUploadTask;
 
@@ -107,7 +107,7 @@ pub fn upload_parts(
         &format!("Uploading {total_parts} part(s) with {worker_count} worker(s)"),
         total_parts as u64,
     );
-    progress.start(format!("Uploading (0/{total_parts})"));
+    progress.set(0, format!("Uploading (0/{total_parts})"));
 
     let failure = std::thread::scope(|scope| {
         let handles: Vec<_> = chunks
@@ -157,7 +157,7 @@ pub fn upload_parts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::output::Format;
+    use crate::ui::{Format, channels};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::Mutex as StdMutex;
@@ -222,7 +222,7 @@ mod tests {
         ];
         let uploader = FakeUploader::new(None);
 
-        let result = upload_parts(&uploader, tasks, &Terminal::new(Format::Json));
+        let result = upload_parts(&uploader, tasks, &channels(Format::Json, true).1);
 
         assert!(result.is_ok());
         assert_eq!(uploader.calls.lock().unwrap().len(), 2);
@@ -239,7 +239,7 @@ mod tests {
         ];
         let uploader = FakeUploader::new(Some("https://example.com/b"));
 
-        let result = upload_parts(&uploader, tasks, &Terminal::new(Format::Json));
+        let result = upload_parts(&uploader, tasks, &channels(Format::Json, true).1);
 
         assert!(result.is_err());
 

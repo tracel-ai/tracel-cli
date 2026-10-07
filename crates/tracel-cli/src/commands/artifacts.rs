@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
@@ -13,7 +13,7 @@ use crate::helpers::{
     DownloadFile, DownloadResult, Resource, download_files, map_resource_error,
     resolve_namespace_project, select_artifact, validate_rel_path,
 };
-use crate::output::{Outcome, Render, Table};
+use crate::ui::{Human, Outcome, Render, Table};
 
 #[derive(Args, Debug)]
 pub struct ArtifactsArgs {
@@ -99,7 +99,7 @@ struct ArtifactDownloaded {
 impl Render for ArtifactDownloaded {}
 
 impl Render for ArtifactListResponse {
-    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         Table::new(["NAME", "KIND", "ID", "FILES", "CREATED AT"])
             .rows(self.items.iter().map(|artifact| {
                 [

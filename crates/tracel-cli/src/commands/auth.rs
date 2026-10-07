@@ -9,7 +9,7 @@ use tracel_client::console::TracelCredentials;
 use crate::commands::login::environment_suffix;
 use crate::context::{CliContext, ClientCreationError};
 use crate::error::{CliError, ErrorKind};
-use crate::output::{Details, Outcome, Render, Timestamp};
+use crate::ui::{Details, Human, Outcome, Render, Timestamp};
 
 #[derive(Args, Debug)]
 pub struct AuthArgs {
@@ -40,7 +40,7 @@ struct AccessToken {
 }
 
 impl Render for AccessToken {
-    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         writeln!(out, "{}", self.access_token)
     }
 }
@@ -68,7 +68,7 @@ struct User {
 }
 
 impl Render for AuthStatus {
-    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         let credential = match self.credential {
             Credential::ApiKey => "TRACEL_API_KEY",
             Credential::Login => "login",

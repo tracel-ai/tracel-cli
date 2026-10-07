@@ -19,11 +19,11 @@ use crate::error::{CliError, ErrorKind};
 use crate::helpers::{
     require_cargo_workspace, resolve_namespace_project, validate_project_exists_on_server,
 };
-use crate::output::{Outcome, Render};
 use crate::tools::build_driver::{self, BuildDriver};
 use crate::tools::packager::{PackageEvent, package_workspace};
 use crate::tools::project_context::ProjectContext;
 use crate::tools::{cargo, git, target};
+use crate::ui::{Outcome, Render};
 
 #[derive(Args, Debug)]
 pub struct PackageArgs {

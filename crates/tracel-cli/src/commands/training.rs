@@ -3,7 +3,7 @@ use clap::Parser;
 
 use tracel_client::console::Env;
 
-use crate::{context::CliContext, output::Outcome, tools::cargo};
+use crate::{context::CliContext, tools::cargo, ui::Outcome};
 
 #[derive(Parser, Debug, Default)]
 pub struct TrainingArgs {

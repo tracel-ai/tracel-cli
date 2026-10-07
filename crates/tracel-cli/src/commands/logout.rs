@@ -2,7 +2,7 @@ use serde::Serialize;
 
 use crate::commands::login::environment_suffix;
 use crate::context::CliContext;
-use crate::output::{Outcome, Render};
+use crate::ui::{Outcome, Render};
 
 #[derive(Serialize)]
 struct LoggedOut {

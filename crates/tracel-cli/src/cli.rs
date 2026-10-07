@@ -7,9 +7,8 @@ use crate::commands;
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind, ErrorReport};
 use crate::helpers::project::parse_project;
-use crate::output::{Format, FormatArg, Outcome, Output, StdoutClosed};
-use crate::terminal::Terminal;
 use crate::tools::tracel_config::TracelProject;
+use crate::ui::{self, Format, FormatArg, Outcome, Output, StdoutClosed, Terminal};
 
 #[derive(Parser, Debug)]
 #[clap(name = "tracel", author, version, about, long_about = None)]
@@ -113,7 +112,7 @@ pub fn cli_main() {
                 .trim()
                 .strip_prefix("error: ")
                 .unwrap_or(message.trim());
-            fail(&CliError::new(ErrorKind::Usage, message).into(), format);
+            fail_early(&CliError::new(ErrorKind::Usage, message).into(), format);
         }
     };
 
@@ -138,7 +137,7 @@ pub fn cli_main() {
                     directory.display()
                 ),
             );
-            fail(&error.into(), format.unwrap_or(auto));
+            fail_early(&error.into(), format.unwrap_or(auto));
         }
     }
 
@@ -148,23 +147,22 @@ pub fn cli_main() {
         return;
     };
 
-    let format = format.unwrap_or_else(|error| fail(&error.into(), auto));
-    let terminal = Terminal::new(format).with_no_input(args.no_input);
+    let format = format.unwrap_or_else(|error| fail_early(&error.into(), auto));
+    let (output, terminal) = ui::channels(format, args.no_input);
     let environment_value =
         std::env::var_os("TRACEL_ENV").map(|value| value.to_string_lossy().into_owned());
     let environment = resolve_environment(args.dev, args.staging, environment_value.as_deref())
-        .unwrap_or_else(|error| fail(&error.into(), format));
+        .unwrap_or_else(|error| fail(&error.into(), &output, &terminal));
 
     if args.dev {
         terminal
             .print_warning("Running in development mode - using local server and dev credentials");
     }
 
-    let output = Output::new(format);
-    let context = CliContext::new(terminal, output, environment, args.project);
+    let context = CliContext::new(terminal.clone(), output.clone(), environment, args.project);
     if let Err(error) = handle_command(command, context).and_then(|outcome| output.finish(outcome))
     {
-        fail(&error, format);
+        fail(&error, &output, &terminal);
     }
 }
 
@@ -199,14 +197,20 @@ fn resolve_environment(
 
 /// Reports a failed command on both channels and exits with its code. A reader that
 /// closed stdout got all it wanted, so that ends the command quietly.
-fn fail(error: &anyhow::Error, format: Format) -> ! {
+fn fail(error: &anyhow::Error, output: &Output, terminal: &Terminal) -> ! {
     if error.chain().any(|cause| cause.is::<StdoutClosed>()) {
         std::process::exit(0);
     }
     let report = ErrorReport::new(error);
-    Output::new(format).error(&report);
-    Terminal::new(format).error(&report);
+    output.error(&report);
+    terminal.error(&report);
     std::process::exit(report.exit_code)
+}
+
+/// Fails before the command's channels exist.
+fn fail_early(error: &anyhow::Error, format: Format) -> ! {
+    let (output, terminal) = ui::channels(format, true);
+    fail(error, &output, &terminal)
 }
 
 /// The format for an error in arguments that did not parse.

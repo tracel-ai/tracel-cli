@@ -1,11 +1,11 @@
-use std::io::{self, Write};
+use std::io;
 
 use anyhow::Context;
 use serde::Serialize;
 
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
-use crate::output::{Details, Outcome, Render};
+use crate::ui::{Details, Human, Outcome, Render};
 
 #[derive(Serialize)]
 struct CurrentUser {
@@ -17,7 +17,7 @@ struct CurrentUser {
 }
 
 impl Render for CurrentUser {
-    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         Details::new()
             .field("Username", &self.username)
             .optional("Email", self.email.as_ref())

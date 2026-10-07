@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io;
 
 use clap::{Args, Subcommand};
 use tracel_client::console::dataset::request::{QueryDatasetVersionsRequest, QueryDatasetsRequest};
@@ -9,7 +9,7 @@ use tracel_client::console::dataset::response::{
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::helpers::{Resource, map_resource_error, resolve_namespace_project};
-use crate::output::{Details, Outcome, Render, Table, json_section};
+use crate::ui::{Details, Human, Outcome, Render, Table, json_section};
 
 #[derive(Args, Debug)]
 pub struct DatasetsArgs {
@@ -103,8 +103,9 @@ pub fn handle_command(args: DatasetsArgs, context: CliContext) -> anyhow::Result
 }
 
 impl Render for DatasetListResponse {
-    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         Table::new(["NAME", "DESCRIPTION", "ID"])
+            .shrink("DESCRIPTION")
             .rows(self.items.iter().map(|dataset| {
                 [
                     dataset.name.clone(),
@@ -118,7 +119,7 @@ impl Render for DatasetListResponse {
 }
 
 impl Render for DatasetResponse {
-    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         Details::new()
             .field("Name", &self.name)
             .field("ID", &self.id)
@@ -129,7 +130,7 @@ impl Render for DatasetResponse {
 }
 
 impl Render for DatasetVersionListResponse {
-    fn render(&self, out: &mut dyn Write) -> io::Result<()> {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         Table::new(["VERSION", "ITEMS", "SOURCE", "CREATED AT"])
             .rows(self.items.iter().map(|version| {
                 let source = match version.source_kind {

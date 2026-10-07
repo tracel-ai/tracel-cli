@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
-use crate::output::Output;
-use crate::terminal::Terminal;
 use crate::tools::tracel_config::TracelProject;
+use crate::ui::{Output, Terminal};
 use tracel_client::ClientError;
 use tracel_client::console::auth::DeviceAuthClient;
 use tracel_client::console::{AppSession, Client, Env, FileSessionStore, TracelCredentials};
