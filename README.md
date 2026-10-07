@@ -113,15 +113,21 @@ tracel project list my-org
 
 ### `tracel run`
 
-Run the workspace locally with `cargo run`. Arguments after `--` go to your
-program, and its output and exit code are the command's. With `--remote`, the
-workspace is packaged as `tracel package` does and runs as a job on a compute
-provider group, once you confirm, since a job may cost money.
+Run a job your program defines, on this machine or on a compute provider. A
+job's input starts from its example, or from the input an experiment recorded
+with `--like`; `-c` merges JSON files onto it and `--set` changes one value. The
+run is recorded on the Tracel Console when the workspace is linked, and on this
+machine otherwise. With `--remote`, the workspace is packaged as `tracel
+package` does and the job is queued on a compute provider group, once you
+confirm, since a job may cost money. Without a job, `tracel run` is `cargo run`.
 
 ```bash
+tracel run --list
+tracel run train --set epochs=5 --set optimizer.lr=0.01
+tracel run train -c base.json --like 42
+tracel run train --offline
+tracel run train --remote gpu --mode source --yes --follow
 tracel run -- --epochs 10
-tracel run --remote gpu --mode source -- train --epochs 100
-tracel run --remote gpu --mode binary --yes --follow -- train
 ```
 
 ### `tracel package`

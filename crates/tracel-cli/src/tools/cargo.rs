@@ -6,6 +6,8 @@ use std::process::Stdio;
 use anyhow::Context;
 use cargo_metadata::Message;
 
+use crate::error::{CliError, ErrorKind};
+
 /// Find the manifest of the Cargo workspace around the current directory.
 pub fn try_locate_manifest() -> Option<PathBuf> {
     let output = command()
@@ -113,6 +115,32 @@ fn status_line(line: &str) -> Option<String> {
         None => line,
     };
     Some(line.to_string())
+}
+
+/// Run `command`, a cargo build named `label` in errors, and list the executables it
+/// built as `(target name, path)` pairs. Compiler diagnostics show on stderr.
+pub fn build_executables(
+    mut command: std::process::Command,
+    label: &str,
+) -> anyhow::Result<Vec<(String, PathBuf)>> {
+    let output = command
+        .arg("--message-format=json-render-diagnostics")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .output()
+        .with_context(|| format!("Can't run `{label}`"))?;
+    if !output.status.success() {
+        anyhow::bail!("`{label}` failed.");
+    }
+    Ok(executables(output.stdout.as_slice())?)
+}
+
+/// The error for a `--bin` that names none of the `valid` binaries.
+pub fn invalid_bin(bin: &str, valid: &[&str]) -> CliError {
+    CliError::new(
+        ErrorKind::Usage,
+        format!("No binary '{bin}'. Binaries: {}.", valid.join(", ")),
+    )
 }
 
 /// List the executables in cargo's JSON build messages as `(target name, path)` pairs.

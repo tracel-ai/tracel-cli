@@ -1,4 +1,5 @@
 use std::io::{self, Write};
+use std::process::Stdio;
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -136,6 +137,21 @@ impl Output {
             write_event(format, width, event, out)?;
             out.flush()
         })
+    }
+
+    /// Choose where a program the command runs writes its stdout: here with text output,
+    /// or stderr with JSON output, which keeps stdout for the envelope. The program
+    /// draws on its own, so the live widget is settled first, outside any session.
+    pub fn child_stdout(&self) -> Stdio {
+        debug_assert!(
+            !self.screen.session_open(),
+            "a program runs inside a session"
+        );
+        self.screen.settle();
+        match self.screen.format() {
+            Format::Human => Stdio::inherit(),
+            Format::Json => Stdio::from(io::stderr()),
+        }
     }
 
     /// Write the error envelope of a failed command with JSON output. Text errors go

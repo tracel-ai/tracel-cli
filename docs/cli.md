@@ -14,8 +14,9 @@ questions, warnings and errors. The format is the first of these that is set:
 4. `auto`: human on a terminal, and JSON when stdout goes to a file or another
    program.
 
-`auth token` and a local `run` are plain text under `auto` too: `auth token`
-prints the bare token, and `run` writes what the program it runs writes. Help and
+`auth token` and `run -- <args>` are plain text under `auto` too: `auth token`
+prints the bare token, and `run -- <args>` writes what the program it runs
+writes. Help and
 version output keep clap's own format.
 
 On a terminal, a command that reads shows its result in a frame titled with a
@@ -77,6 +78,8 @@ return:
 | `artifacts download` | `experiment`, `artifact`, `directory`, `files`, `bytes` |
 | `experiments compare` | `base`, `other`, `config` and `attributes` (each difference `path`, `base`, `other`), `metrics` (each `metric`, `group`, `base`, `other`, `delta`) |
 | `jobs cancel`, `jobs wait` | the job, as read afterwards |
+| `run --list` | `protocol`, `sdk_version`, `runner`, `jobs` (each `name`, `kind`, `description`, `input_schema`, `input_example`) |
+| `run <job>` | `job`, `input`, `target` (`"console"` or `"offline"`), `exit_code`, `report` (null when the program wrote none) |
 | `run --remote` | `job_num` (null when the Tracel Console doesn't return it), `job_id`, `group`, `digest`, `version_id`, `command`, `uploaded` |
 | `run --remote --dry-run` | `namespace`, `project`, `group`, `mode`, `digest`, `command` |
 
@@ -99,7 +102,7 @@ Times are RFC 3339 in UTC.
 | `TIMEOUT` | 10 |
 | `UNAVAILABLE` | 11 |
 
-`run` exits with the code of the program it runs.
+`run -- <args>` exits with the code of the program it runs.
 
 ## Questions
 
@@ -208,10 +211,39 @@ Each file's size and SHA-256 checksum are checked before it is saved.
   finishes. It fails with `JOB_FAILED` when the job fails or is cancelled, and
   with `TIMEOUT` when `--timeout` seconds pass first.
 
+## Running jobs
+
+- Jobs come from the binary of a workspace package that depends on the
+  `tracel` crate. `--bin <name>` picks one when there are several, unless the
+  package's `default-run` names it. The binary has to run its jobs with
+  `tracel::app::cli::Cli`.
+- To list its jobs, the binary is built and run with `TRACEL_DESCRIBE=<path>`,
+  and has 10 seconds to write their definitions there. They're cached in
+  `target/tracel/jobs.json` until the binary changes.
+- `run <job>` starts from the job's example input, or from the input of the
+  experiment `--like <number|latest>` names. Each `-c <file>` is merged onto it
+  as a JSON merge patch (RFC 7386), then each `--set <path>=<value>` sets one
+  value at a dotted path with array indices, such as `layers[0].size`. A value
+  that isn't JSON is a string. An input that doesn't match the job's schema
+  fails with `USAGE`.
+- The job runs as `<binary> <job> <input>`, with stdin closed. With JSON
+  output, its stdout goes to stderr.
+- The run is recorded on the Tracel Console when a project is linked and a
+  credential is available, and on this machine otherwise or with `--offline`.
+  The program gets `TRACEL_TARGET` (`console` or `offline`), `TRACEL_ENV`,
+  `TRACEL_NAMESPACE` and `TRACEL_PROJECT`, and `TRACEL_REPORT_FILE`, where it
+  writes its run report.
+- The command fails with `JOB_FAILED` when the report says the job failed or
+  was cancelled. Without a final report, exit code 0 means completed, 2 a
+  rejected input, 130 cancelled, and anything else failed.
+- Ctrl-C, SIGTERM or SIGHUP stops the job: the program gets SIGTERM, and is
+  killed when it is still running 30 seconds later.
+
 ## Remote runs
 
-- `run --remote <group>` packages the workspace with the flags of `package`,
-  then queues the code version as a job on the compute provider group with the
+- `run <job> --remote <group>` packages the workspace with the flags of
+  `package`, then queues the code version as a job on the compute provider
+  group, with the resolved input. Without a job, the job command is the
   arguments after `--`. They reach the program unchanged: the job command
   single-quotes each argument that is empty, starts with `#`, or contains a
   space, tab, newline, quote or backslash.

@@ -78,7 +78,7 @@ pub enum ExperimentSelector {
     Latest,
 }
 
-fn parse_experiment(value: &str) -> Result<ExperimentSelector, String> {
+pub fn parse_experiment(value: &str) -> Result<ExperimentSelector, String> {
     if value == "latest" {
         return Ok(ExperimentSelector::Latest);
     }
@@ -377,6 +377,24 @@ impl Render for ExperimentLogQueryResponse {
     }
 }
 
+/// Find the experiment `selector` names in `project`.
+pub fn get_experiment(
+    client: &Client,
+    project: &TracelProject,
+    selector: &ExperimentSelector,
+) -> anyhow::Result<ExperimentDetailsResponse> {
+    match *selector {
+        ExperimentSelector::Number(num) => client
+            .get_experiment(&project.namespace, &project.name, num)
+            .map_err(|error| missing_experiment(error, project, num)),
+        ExperimentSelector::Latest => client
+            .get_project_latest_experiment(&project.namespace, &project.name)?
+            .ok_or_else(|| {
+                CliError::new(ErrorKind::NotFound, "No experiments in this project yet.").into()
+            }),
+    }
+}
+
 fn missing_experiment(error: ClientError, project: &TracelProject, num: i32) -> anyhow::Error {
     map_resource_error(
         error,
@@ -488,17 +506,7 @@ pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Res
             )?
             .into()),
         ExperimentsCommands::Get(args) => {
-            let experiment = match args.experiment {
-                ExperimentSelector::Number(num) => client
-                    .get_experiment(namespace, name, num)
-                    .map_err(missing(num))?,
-                ExperimentSelector::Latest => client
-                    .get_project_latest_experiment(namespace, name)?
-                    .ok_or_else(|| {
-                        CliError::new(ErrorKind::NotFound, "No experiments in this project yet.")
-                    })?,
-            };
-            Ok(experiment.into())
+            Ok(get_experiment(&client, &project, &args.experiment)?.into())
         }
         ExperimentsCommands::Metrics(args) => {
             let Some(metric) = args.metric else {

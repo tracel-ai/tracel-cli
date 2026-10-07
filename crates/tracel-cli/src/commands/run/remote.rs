@@ -6,7 +6,7 @@ use serde::Serialize;
 use super::RunArgs;
 use crate::commands::jobs::follow_job;
 use crate::commands::login::get_client_and_login_if_needed;
-use crate::commands::package::{Mode, build_package};
+use crate::commands::package::{Mode, PackageArgs, build_package};
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
 use crate::helpers::{require_workspace_project, validate_project_exists_on_server};
@@ -49,15 +49,16 @@ struct DryRun {
     command: String,
 }
 
-/// Package the workspace like `tracel package`, then queue it as a job on `group` with the
-/// forwarded arguments.
+/// Package the workspace like `tracel package` with `packaging`, then queue it as a job on
+/// `group` that runs the program with `command`.
 pub fn handle_command(
     group: &str,
+    command: String,
+    packaging: &PackageArgs,
     args: &RunArgs,
     context: &CliContext,
 ) -> anyhow::Result<Outcome> {
-    args.package.check(context.terminal())?;
-    let command = job_command(&args.forwarded);
+    packaging.check(context.terminal())?;
     let terminal = context.terminal();
 
     let (project, source) = require_workspace_project(context)?;
@@ -76,7 +77,7 @@ pub fn handle_command(
     }
 
     if args.dry_run {
-        let package = build_package(context, &project, &args.package)?;
+        let package = build_package(context, &project, packaging)?;
         terminal.info(&format!(
             "Would queue {description}, running code version {}.",
             package.digest
@@ -94,7 +95,7 @@ pub fn handle_command(
 
     let client = get_client_and_login_if_needed(context)?;
     validate_project_exists_on_server(tracel_project, &source, &client)?;
-    let package = build_package(context, &project, &args.package)?;
+    let package = build_package(context, &project, packaging)?;
     if !args.yes {
         let confirmed = terminal.confirm(
             &format!(
@@ -179,7 +180,7 @@ fn queueing(group: &str) -> Unanswered {
 /// The compute provider splits the command into words with shell quoting rules (quotes,
 /// backslashes, and `#` comments, without expansions), so every argument the split would
 /// change is single-quoted.
-fn job_command(arguments: &[String]) -> String {
+pub fn job_command(arguments: &[String]) -> String {
     arguments
         .iter()
         .map(|argument| quote(argument))

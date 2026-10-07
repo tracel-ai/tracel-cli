@@ -139,10 +139,16 @@ impl Commands {
     }
 
     /// Choose what `auto` means: human on a terminal and JSON otherwise, except for
-    /// `auth token` and a local `run`, whose stdout is plain text for another program.
+    /// `auth token` and a `run` that hands over to `cargo run`, whose stdout is plain
+    /// text for another program.
     fn auto_format(&self, stdout_is_terminal: bool) -> Format {
         match self {
-            Self::Run(commands::run::RunArgs { remote: None, .. })
+            Self::Run(commands::run::RunArgs {
+                job: None,
+                list: false,
+                remote: None,
+                ..
+            })
             | Self::Auth(commands::auth::AuthArgs {
                 command: commands::auth::AuthCommands::Token,
             }) => Format::Human,

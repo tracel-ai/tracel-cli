@@ -12,7 +12,6 @@ use tracel_client::console::project::request::{
 
 use super::{MODE_HINT, MODE_NEEDED, Mode, PackageArgs, check_targets_allowed};
 use crate::context::CliContext;
-use crate::error::{CliError, ErrorKind};
 use crate::tools::build_driver::{self, BuildDriver};
 use crate::tools::fs::{file_sha256_and_size, manifest_digest};
 use crate::tools::packager::{self, PackageEvent};
@@ -231,13 +230,7 @@ fn build_release_binary(
             .iter()
             .find(|(name, _)| name == bin)
             .map(|(_, path)| path.clone())
-            .ok_or_else(|| {
-                CliError::new(
-                    ErrorKind::Usage,
-                    format!("No binary '{bin}'. Binaries: {}.", names.join(", ")),
-                )
-                .into()
-            });
+            .ok_or_else(|| cargo::invalid_bin(bin, &names).into());
     }
     match executables.len() {
         0 => anyhow::bail!("The build made no binary."),
