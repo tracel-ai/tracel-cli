@@ -9,11 +9,9 @@ pub fn is_repo_dirty() -> anyhow::Result<bool> {
     Ok(repo.is_dirty()?)
 }
 
-/// The hash of the current HEAD commit. Used as the code-version digest.
-pub fn get_last_commit_hash() -> anyhow::Result<String> {
-    let repo = gix::discover(".")?;
-    let last_commit = repo.head()?.peel_to_commit()?.id();
-    Ok(last_commit.to_string())
+/// Whether the repository has at least one commit.
+pub fn has_commit() -> bool {
+    gix::discover(".").is_ok_and(|repo| repo.head_commit().is_ok())
 }
 
 pub fn get_first_commit_hash() -> anyhow::Result<String> {

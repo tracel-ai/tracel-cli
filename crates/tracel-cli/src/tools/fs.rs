@@ -45,7 +45,7 @@ pub struct FileMeta {
     pub checksum: String,
 }
 
-fn file_sha256_and_size(path: &Path) -> anyhow::Result<(String, u64)> {
+pub fn file_sha256_and_size(path: &Path) -> anyhow::Result<(String, u64)> {
     let mut file = std::fs::File::open(path)
         .with_context(|| format!("Failed to open file '{}'", path.display()))?;
 
@@ -80,6 +80,21 @@ pub fn build_file_specs(files: &BTreeMap<String, PathBuf>) -> anyhow::Result<Vec
     }
 
     Ok(specs)
+}
+
+/// SHA-256 over `name:checksum` lines sorted by name, one line per file.
+pub fn manifest_digest<'a>(files: impl IntoIterator<Item = (&'a str, &'a str)>) -> String {
+    let mut lines: Vec<(&str, &str)> = files.into_iter().collect();
+    lines.sort_unstable();
+
+    let mut hasher = Sha256::new();
+    for (name, checksum) in lines {
+        hasher.update(name.as_bytes());
+        hasher.update(b":");
+        hasher.update(checksum.as_bytes());
+        hasher.update(b"\n");
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 #[cfg(test)]
@@ -118,6 +133,14 @@ mod tests {
 
         assert!(result.is_err());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn manifest_digest_hashes_sorted_name_checksum_lines() {
+        let expected = format!("{:x}", Sha256::digest(b"a.txt:1\nb.txt:2\n"));
+
+        assert_eq!(manifest_digest([("b.txt", "2"), ("a.txt", "1")]), expected);
+        assert_eq!(manifest_digest([("a.txt", "1"), ("b.txt", "2")]), expected);
     }
 
     #[test]

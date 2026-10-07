@@ -122,9 +122,9 @@ Package your project for deployment on remote compute providers.
 ```bash
 tracel package
 # Source packaging without prompts
-tracel package --mode source --allow-dirty --json
+tracel package --mode source --json
 # Build selected binaries and install missing targets without prompts
-tracel package --mode binary --target x86_64-unknown-linux-gnu --bin trainer --install-targets --commit --json
+tracel package --mode binary --target x86_64-unknown-linux-gnu --bin trainer --install-targets --json
 ```
 
 This creates a deployable artifact containing your code, dependencies, and configurations.
@@ -132,11 +132,15 @@ This creates a deployable artifact containing your code, dependencies, and confi
 `--mode <binary|source>` is required without prompts. In binary mode, repeat
 `--target <triple>` to choose targets; without prompts, omitting it builds for the
 host. Use `--bin <name>` when several binaries are built. `--install-targets`
-installs missing Rust targets without asking. `--commit` commits all current
-changes before packaging; `--allow-dirty` continues with uncommitted changes.
-These two flags cannot be combined. The code version digest remains the current
-commit hash. JSON data contains `namespace`, `project`, `digest`, `version_id`,
-`mode`, `targets`, and `uploaded` (false when the commit was already packaged).
+installs missing Rust targets without asking.
+
+The code version digest is a SHA-256 of the packaged content: the hex digest of
+`name:sha256` lines sorted by name, one per packaged file. In source mode the
+names are the workspace-relative paths of the archived files; in binary mode they
+are the target triples of the uploaded binaries. Packaging the same content again
+gives the same digest, and any change gives a new one. JSON data contains
+`namespace`, `project`, `digest`, `version_id`, `mode`, `targets`, and `uploaded`
+(false when the same content was already packaged).
 
 ### `tracel login`
 

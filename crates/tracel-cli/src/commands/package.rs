@@ -1,18 +1,16 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 
 use anyhow::Context;
 use clap::{Args, ValueEnum};
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use tracel_client::console::Client;
 use tracel_client::console::project::request::{
     PublishArtifactRequest, PublishBinaryRequest, PublishProjectVersionRequest,
     PublishSourceRequest,
 };
 
-use crate::commands::init::commit_sequence;
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
@@ -20,16 +18,14 @@ use crate::helpers::{
     require_cargo_workspace, resolve_namespace_project, validate_project_exists_on_server,
 };
 use crate::tools::build_driver::{self, BuildDriver};
+use crate::tools::fs::{file_sha256_and_size, manifest_digest};
 use crate::tools::packager::{PackageEvent, package_workspace};
 use crate::tools::project_context::ProjectContext;
-use crate::tools::{cargo, git, target};
+use crate::tools::{cargo, target};
 use crate::ui::{Outcome, Render};
 
 #[derive(Args, Debug)]
 pub struct PackageArgs {
-    /// Package even if the git repository has uncommitted changes (skips the commit prompt).
-    #[arg(long, action)]
-    pub allow_dirty: bool,
     /// Package a compiled binary or source (required without prompts)
     #[arg(long, value_enum)]
     pub mode: Option<Mode>,
@@ -42,9 +38,6 @@ pub struct PackageArgs {
     /// Install missing Rust targets without asking
     #[arg(long)]
     pub install_targets: bool,
-    /// Commit all current changes before packaging
-    #[arg(long, conflicts_with = "allow_dirty")]
-    pub commit: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize)]
@@ -54,16 +47,18 @@ pub enum Mode {
     Source,
 }
 
-/// An artifact prepared for upload: the publish request describing it, plus the
-/// `(upload-url key, file path)` pairs whose bytes must be PUT to the presigned
-/// URLs the server returns.
+/// An artifact prepared for upload: the code version digest of its content, the publish
+/// request describing it, plus the `(upload-url key, file path)` pairs whose bytes must be
+/// PUT to the presigned URLs the server returns.
 struct PreparedArtifact {
+    digest: String,
     request: PublishArtifactRequest,
     uploads: Vec<(String, PathBuf)>,
     targets: Vec<String>,
 }
 
-/// A code version of the project. `uploaded` is false when it was already packaged.
+/// A code version of the project. `uploaded` is false when the same content was already
+/// packaged.
 #[derive(Serialize)]
 struct Packaged {
     namespace: String,
@@ -86,19 +81,15 @@ pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<
         .with_hint("Pass --mode binary or --mode source.")
         .into());
     }
-    if args.mode == Some(Mode::Source) && !args.targets.is_empty() {
-        return Err(CliError::new(
-            ErrorKind::Usage,
-            "--target is only valid with --mode binary.",
-        )
-        .into());
+    if let Some(mode) = args.mode {
+        check_targets_allowed(mode, &args.targets)?;
     }
     for triple in &args.targets {
         target::parse_target(triple)?;
     }
     context.terminal().command_title("Package project");
 
-    // 0. Require a workspace and a project that exists on the server.
+    // 1. Require a workspace and a project that exists on the server.
     let workspace_info = require_cargo_workspace()?;
     let resolved = resolve_namespace_project(&context)?;
     let project = ProjectContext {
@@ -108,50 +99,7 @@ pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<
     let client = get_client_and_login_if_needed(&context)?;
     validate_project_exists_on_server(&project, &client)?;
 
-    // 1. Dirty check — warn and offer to commit, but allow proceeding.
-    let has_commit = git::get_last_commit_hash().is_ok();
-    if !has_commit && !args.commit && !context.terminal().is_interactive() {
-        return Err(CliError::new(
-            ErrorKind::Usage,
-            "The repository needs at least one commit to package.",
-        )
-        .with_hint("Commit your changes, or pass --commit to create the first commit.")
-        .into());
-    }
-    if args.commit {
-        if !has_commit || git::is_repo_dirty()? {
-            commit_sequence(context.terminal(), true)?;
-        }
-    } else if git::is_repo_dirty()? && !args.allow_dirty {
-        context
-            .terminal()
-            .print_warning("Your repository has uncommitted changes.");
-        if !context.terminal().is_interactive() {
-            return Err(
-                CliError::new(ErrorKind::Usage, "The repository has uncommitted changes.")
-                    .with_hint("Commit your changes, or pass --commit or --allow-dirty")
-                    .into(),
-            );
-        }
-        if context
-            .terminal()
-            .confirm("Commit changes before packaging?", "commit", true)?
-        {
-            commit_sequence(context.terminal(), false)?;
-        }
-    }
-
-    // 2. The code version is identified by the current commit hash.
-    let digest = git::get_last_commit_hash().context(
-        "Failed to read the current git commit. The repository needs at least one commit to package.",
-    )?;
-    if git::is_repo_dirty()? {
-        context.terminal().print_warning(&format!(
-            "Proceeding with uncommitted changes — they will not be part of code version {digest}."
-        ));
-    }
-
-    // 3. Choose how to package.
+    // 2. Choose how to package.
     let mode = match args.mode {
         Some(mode) => mode,
         None => context.terminal().select(
@@ -173,21 +121,25 @@ pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<
             &["binary", "source"],
         )?,
     };
-    if mode == Mode::Source && !args.targets.is_empty() {
-        return Err(CliError::new(
-            ErrorKind::Usage,
-            "--target is only valid with --mode binary.",
-        )
-        .into());
-    }
+    check_targets_allowed(mode, &args.targets)?;
 
     let artifact = match mode {
         Mode::Source => build_source_artifact(&context, &project)?,
         Mode::Binary => build_binary_artifact(&context, &project, &args)?,
     };
 
-    // 4. Upload.
-    Ok(upload(&context, &client, &project, &digest, mode, artifact)?.into())
+    // 3. Upload.
+    Ok(upload(&context, &client, &project, mode, artifact)?.into())
+}
+
+fn check_targets_allowed(mode: Mode, targets: &[String]) -> Result<(), CliError> {
+    if mode == Mode::Source && !targets.is_empty() {
+        return Err(CliError::new(
+            ErrorKind::Usage,
+            "--target is only valid with --mode binary.",
+        ));
+    }
+    Ok(())
 }
 
 fn build_source_artifact(
@@ -198,7 +150,7 @@ fn build_source_artifact(
     spinner.start("Packaging workspace...");
     let spinner_clone = spinner.clone();
     let result = package_workspace(
-        project.get_workspace_name(),
+        &project.workspace_info,
         Arc::new(move |msg: PackageEvent| {
             spinner_clone.set_message(msg.message);
         }),
@@ -210,6 +162,7 @@ fn build_source_artifact(
     spinner.stop("Workspace packaged.");
 
     Ok(PreparedArtifact {
+        digest: result.digest,
         request: PublishArtifactRequest::Source {
             source: PublishSourceRequest {
                 checksum: result.checksum,
@@ -270,7 +223,7 @@ fn build_binary_artifact(
             linker,
             args.bin.as_deref(),
         )?;
-        let (checksum, size) = sha256_and_size(&path)?;
+        let (checksum, size) = file_sha256_and_size(&path)?;
         binaries.push(PublishBinaryRequest {
             os,
             architecture: arch,
@@ -280,7 +233,16 @@ fn build_binary_artifact(
         uploads.push((triple.to_string(), path));
     }
 
+    // The code version digest covers each uploaded binary and the target it is uploaded for.
+    let digest = manifest_digest(binaries.iter().map(|binary| {
+        (
+            target::target_triple(binary.os, binary.architecture),
+            binary.checksum.as_str(),
+        )
+    }));
+
     Ok(PreparedArtifact {
+        digest,
         request: PublishArtifactRequest::Binaries { binaries },
         uploads,
         targets: selected
@@ -392,22 +354,15 @@ fn build_release_binary(
     }
 }
 
-fn sha256_and_size(path: &Path) -> anyhow::Result<(String, u64)> {
-    let bytes = std::fs::read(path)
-        .with_context(|| format!("Failed to read binary at {}", path.display()))?;
-    let checksum = format!("{:x}", Sha256::digest(&bytes));
-    Ok((checksum, bytes.len() as u64))
-}
-
 fn upload(
     context: &CliContext,
     client: &Client,
     project: &ProjectContext,
-    digest: &str,
     mode: Mode,
     prepared: PreparedArtifact,
 ) -> anyhow::Result<Packaged> {
     let bc_project = project.get_project();
+    let digest = prepared.digest.as_str();
 
     let response = client
         .publish_project_version_urls(
@@ -436,7 +391,7 @@ fn upload(
     };
     let Some(urls) = response.urls else {
         context.terminal().print_success(&format!(
-            "This commit ({digest}) is already packaged (version {}).",
+            "This code is already packaged as code version {digest} ({}).",
             response.id
         ));
         context.terminal().finalize("Nothing to upload.");

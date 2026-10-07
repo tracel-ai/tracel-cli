@@ -354,7 +354,7 @@ pub fn ensure_git_repo_clean(
     commit: bool,
     allow_dirty: bool,
 ) -> anyhow::Result<()> {
-    let has_commit = git::get_last_commit_hash().is_ok();
+    let has_commit = git::has_commit();
     let dirty = match git::is_repo_dirty() {
         Ok(dirty) => dirty,
         Err(_) if !has_commit => true,
@@ -390,7 +390,7 @@ fn commit_required() -> CliError {
         .with_hint("Commit your changes, or pass --commit or --allow-dirty")
 }
 
-pub fn commit_sequence(terminal: &Terminal, commit: bool) -> anyhow::Result<()> {
+fn commit_sequence(terminal: &Terminal, commit: bool) -> anyhow::Result<()> {
     if commit
         || terminal.confirm(
             "Do you want to automatically commit all files?",
@@ -411,7 +411,7 @@ pub fn commit_sequence(terminal: &Terminal, commit: bool) -> anyhow::Result<()> 
         }
         let mut command = std::process::Command::new("git");
         command.args(["commit", "-m", commit_message]);
-        if git::get_last_commit_hash().is_err() {
+        if !git::has_commit() {
             command.arg("--allow-empty");
         }
         let status = command

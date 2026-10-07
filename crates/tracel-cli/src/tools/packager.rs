@@ -1,24 +1,27 @@
-//! Workspace packaging functionality for Tracel Console
+//! Workspace packaging for Tracel Console.
 //!
-//! This module provides functionality to package an entire workspace as a single compressed archive,
-//! respecting gitignore rules. This is used to upload workspace projects to Tracel Console while
-//! maintaining backwards compatibility with the single-crate API.
+//! Packages an entire workspace as a single compressed archive, respecting gitignore rules,
+//! and computes the code version digest from the packaged files.
 
 use std::{
+    collections::BTreeMap,
     fs::File,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use colored::Colorize;
-use sha2::Digest as _;
-use sha2::Sha256;
 
 use crate::tools::event::Reporter;
+use crate::tools::fs::{file_sha256_and_size, manifest_digest};
+use crate::tools::workspace::WorkspaceInfo;
 
 #[derive(Debug)]
 pub struct ArchiveMetadata {
+    /// The code version digest of the packaged files (see `source_digest`).
+    pub digest: String,
     pub path: PathBuf,
+    /// SHA-256 of the archive file.
     pub checksum: String,
     pub size: u64,
 }
@@ -30,21 +33,11 @@ pub struct PackageEvent {
 type PackageEventReporter = dyn Reporter<PackageEvent>;
 
 /// Package the entire workspace as a single compressed archive with gitignore applied.
-///
-/// Returns a `PackageResult` containing the packaged workspace data and digest
 pub fn package_workspace(
-    workspace_name: &str,
+    workspace: &WorkspaceInfo,
     event_reporter: Arc<PackageEventReporter>,
 ) -> anyhow::Result<ArchiveMetadata> {
-    event_reporter.report_event(PackageEvent {
-        message: "Initializing workspace packaging".to_string(),
-    });
-
-    // Get workspace metadata
-    let cmd = cargo_metadata::MetadataCommand::new();
-    let metadata = cmd.exec()?;
-
-    let workspace_root = metadata
+    let workspace_root = workspace
         .workspace_root
         .canonicalize()
         .map_err(|e| anyhow::anyhow!("Failed to canonicalize workspace root: {}", e))?;
@@ -67,6 +60,12 @@ pub fn package_workspace(
         message: format!("Discovered {} files", files.len()),
     });
 
+    event_reporter.report_event(PackageEvent {
+        message: "Computing digest".to_string(),
+    });
+
+    let digest = source_digest(&files)?;
+
     // Create the archive
     event_reporter.report_event(PackageEvent {
         message: "Creating compressed archive".to_string(),
@@ -74,21 +73,22 @@ pub fn package_workspace(
 
     // Write the archive under the cargo target directory, the idiomatic home for
     // build artifacts (kept out of the archive itself by the `target/` exclusion).
-    let output_dir = metadata
+    let output_dir = workspace
+        .metadata
         .target_directory
         .as_std_path()
         .join("tracel")
         .join("package");
-    let archive_path = output_dir.join(workspace_name);
+    let archive_path = output_dir.join(&workspace.workspace_name);
 
     std::fs::create_dir_all(&output_dir)?;
 
-    // Create archive at tarcel/package/{workspace_name}.tar.gz
     let archive_file = File::create(&archive_path)?;
 
-    // Organize files inside the archive (when uncompressed) it will be inside a directory named `{workspace_name}/` to match the standard cargo crate format.
+    // Inside the archive, files live under a `{workspace_name}/` directory to match the standard
+    // cargo crate format.
     let uncompressed_size =
-        create_workspace_archive(&workspace_root, &files, &archive_file, workspace_name)?;
+        create_workspace_archive(&files, &archive_file, &workspace.workspace_name)?;
 
     event_reporter.report_event(PackageEvent {
         message: format!(
@@ -102,30 +102,37 @@ pub fn package_workspace(
         message: "Computing checksum".to_string(),
     });
 
-    let archive_data = std::fs::read(&archive_path)?;
-    let checksum = format!("{:x}", Sha256::digest(&archive_data));
-    let size = archive_data.len() as u64;
+    let (checksum, size) = file_sha256_and_size(&archive_path)?;
 
-    // Build metadata from cargo_metadata
-    event_reporter.report_event(PackageEvent {
-        message: "Extracting package metadata".to_string(),
-    });
-
-    let archive_data = ArchiveMetadata {
+    Ok(ArchiveMetadata {
+        digest,
         path: archive_path,
-        checksum: checksum.clone(),
+        checksum,
         size,
-    };
-
-    event_reporter.report_event(PackageEvent {
-        message: "Workspace packaging completed successfully".to_string(),
-    });
-
-    Ok(archive_data)
+    })
 }
 
-/// Lists all files in the workspace that should be packaged, respecting gitignore rules.
-fn list_workspace_files(workspace_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+/// The code version digest of a source package: SHA-256 over the sorted `path:sha256` lines
+/// of the packaged files, with `/`-separated relative paths (see [`manifest_digest`]).
+fn source_digest(files: &BTreeMap<PathBuf, PathBuf>) -> anyhow::Result<String> {
+    let mut lines = Vec::with_capacity(files.len());
+    for (relative_path, file_path) in files {
+        let name = relative_path
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        let (checksum, _) = file_sha256_and_size(file_path)?;
+        lines.push((name, checksum));
+    }
+    Ok(manifest_digest(lines.iter().map(|(name, checksum)| {
+        (name.as_str(), checksum.as_str())
+    })))
+}
+
+/// Lists the files to package, respecting gitignore rules, as a map from their path relative
+/// to `workspace_root` to their full path.
+fn list_workspace_files(workspace_root: &Path) -> anyhow::Result<BTreeMap<PathBuf, PathBuf>> {
     let git_repo = discover_gix_repo(workspace_root)?;
 
     if let Some(ref repo) = git_repo {
@@ -166,21 +173,32 @@ fn list_workspace_files(workspace_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
     };
 
     // Use git if available, otherwise walk the filesystem
-    if let Some(repo) = git_repo {
-        list_files_gix(workspace_root, &repo, &filter)
+    let paths = if let Some(repo) = git_repo {
+        list_files_gix(workspace_root, &repo, &filter)?
     } else {
-        let mut files = Vec::new();
-        list_files_walk(workspace_root, &mut files, true, &filter)?;
-        Ok(files)
+        let mut paths = Vec::new();
+        list_files_walk(workspace_root, &mut paths, &filter)?;
+        paths
+    };
+
+    let mut files = BTreeMap::new();
+    for path in paths {
+        if !path.is_file() {
+            continue;
+        }
+        let relative_path = path
+            .strip_prefix(workspace_root)
+            .map_err(|e| anyhow::anyhow!("Failed to strip workspace root prefix: {}", e))?;
+        files.insert(relative_path.to_path_buf(), path);
     }
+    Ok(files)
 }
 
-/// Creates a compressed tar.gz archive of the workspace files.
+/// Creates a compressed tar.gz archive of `files`, in path order.
 ///
 /// All files are prefixed with `{package_prefix}/` to match the standard cargo crate format.
 fn create_workspace_archive(
-    workspace_root: &Path,
-    files: &[PathBuf],
+    files: &BTreeMap<PathBuf, PathBuf>,
     dst: &File,
     package_prefix: &str,
 ) -> anyhow::Result<u64> {
@@ -189,24 +207,16 @@ fn create_workspace_archive(
     let mut ar = tar::Builder::new(encoder);
     let mut uncompressed_size: u64 = 0;
 
-    for file_path in files {
-        let relative_path = file_path
-            .strip_prefix(workspace_root)
-            .map_err(|e| anyhow::anyhow!("Failed to strip workspace root prefix: {}", e))?;
+    for (relative_path, file_path) in files {
+        let mut file = File::open(file_path)?;
+        let metadata = file.metadata()?;
 
-        if file_path.is_file() {
-            let mut file = File::open(file_path)?;
-            let metadata = file.metadata()?;
+        let mut header = tar::Header::new_gnu();
+        header.set_metadata_in_mode(&metadata, tar::HeaderMode::Deterministic);
 
-            let mut header = tar::Header::new_gnu();
-            header.set_metadata_in_mode(&metadata, tar::HeaderMode::Deterministic);
-            header.set_cksum();
-
-            // Prefix all paths with {name}-{version}/ to match cargo crate format
-            let prefixed_path = PathBuf::from(package_prefix).join(relative_path);
-            ar.append_data(&mut header, &prefixed_path, &mut file)?;
-            uncompressed_size += metadata.len();
-        }
+        let prefixed_path = Path::new(package_prefix).join(relative_path);
+        ar.append_data(&mut header, &prefixed_path, &mut file)?;
+        uncompressed_size += metadata.len();
     }
 
     let encoder = ar.into_inner()?;
@@ -275,7 +285,7 @@ fn list_files_gix(
                         files.extend(list_files_gix(workspace_root, &sub_repo, filter)?);
                     }
                     Err(_) => {
-                        list_files_walk(&file_path, &mut files, false, filter)?;
+                        list_files_walk(&file_path, &mut files, filter)?;
                     }
                 }
             }
@@ -289,7 +299,6 @@ fn list_files_gix(
 fn list_files_walk(
     path: &Path,
     files: &mut Vec<PathBuf>,
-    _is_root: bool,
     filter: &impl Fn(&Path, bool) -> bool,
 ) -> anyhow::Result<()> {
     if !path.is_dir() {
@@ -339,4 +348,105 @@ fn human_readable_bytes(bytes: u64) -> String {
     }
 
     format!("{:.2} {}", size, UNITS[unit_idx])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// A uniquely named directory under the system temp directory, removed on drop.
+    struct TempWorkspace(PathBuf);
+
+    impl TempWorkspace {
+        fn new(name: &str) -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "tracel-cli-packager-{name}-{}-{nanos}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn write(&self, rel_path: &str, contents: &str) {
+            let path = self.0.join(rel_path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, contents).unwrap();
+        }
+
+        fn digest(&self) -> String {
+            let root = self.0.canonicalize().unwrap();
+            source_digest(&list_workspace_files(&root).unwrap()).unwrap()
+        }
+    }
+
+    impl Drop for TempWorkspace {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn digest_does_not_depend_on_file_creation_order() {
+        let first = TempWorkspace::new("order-first");
+        first.write("Cargo.toml", "[package]");
+        first.write("src/main.rs", "fn main() {}");
+        let second = TempWorkspace::new("order-second");
+        second.write("src/main.rs", "fn main() {}");
+        second.write("Cargo.toml", "[package]");
+
+        assert_eq!(first.digest(), second.digest());
+    }
+
+    #[test]
+    fn digest_changes_with_file_content_or_name() {
+        let workspace = TempWorkspace::new("changes");
+        workspace.write("src/main.rs", "fn main() {}");
+        let original = workspace.digest();
+
+        workspace.write("src/main.rs", "fn main() { println!(); }");
+        let edited = workspace.digest();
+        assert_ne!(edited, original);
+
+        std::fs::rename(
+            workspace.0.join("src/main.rs"),
+            workspace.0.join("src/lib.rs"),
+        )
+        .unwrap();
+        assert_ne!(workspace.digest(), edited);
+    }
+
+    #[test]
+    fn digest_ignores_excluded_files() {
+        let workspace = TempWorkspace::new("excluded");
+        workspace.write("src/main.rs", "fn main() {}");
+        let original = workspace.digest();
+
+        workspace.write("target/debug/app", "binary");
+        workspace.write(".env", "TOKEN=1");
+        assert_eq!(workspace.digest(), original);
+
+        workspace.write("src/lib.rs", "");
+        assert_ne!(workspace.digest(), original);
+    }
+
+    #[test]
+    fn digest_ignores_gitignored_files() {
+        let workspace = TempWorkspace::new("gitignored");
+        gix::init(&workspace.0).unwrap();
+        workspace.write(".gitignore", "*.log\n");
+        workspace.write("src/main.rs", "fn main() {}");
+        let original = workspace.digest();
+
+        workspace.write("train.log", "epoch 1");
+        workspace.write("target/debug/app", "binary");
+        assert_eq!(workspace.digest(), original);
+
+        workspace.write("src/lib.rs", "");
+        assert_ne!(workspace.digest(), original);
+    }
 }
