@@ -143,11 +143,13 @@ next `--complete`; a denied or expired login has to start again.
 
 ## Packaging
 
-`tracel package` uploads a code version, named by a digest of what it holds:
-the SHA-256 of `name:sha256` lines sorted by name, one per packaged file. In
-source mode the names are the files' paths in the workspace, and in binary mode
-the target triples. The same content gives the same digest, and `uploaded` is
-false when it was already packaged.
+`tracel package` uploads a code version, named by a digest of the workspace's
+source: the SHA-256 of `path:sha256` lines sorted by path, one per file a source
+package holds. Binary packages use the same digest and upload only the
+binaries, so every package of the same source, in either mode and for any
+target, belongs to one code version, and a binary replaces the one already
+uploaded for its target. `uploaded` is false when the code version already
+had what was packaged.
 
 - `--mode binary` builds a release binary for each `--target <triple>`, the
   host when there is none and no question can be asked. `--bin <name>` picks

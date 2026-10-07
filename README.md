@@ -133,7 +133,7 @@ tracel run -- --epochs 10
 ### `tracel package`
 
 Upload a code version of the workspace, the code compute providers run: a
-compiled binary, or the source to build there. Packaging the same content again
+compiled binary, or the source to build there. Packaging the same source again
 gives the same code version.
 
 ```bash
