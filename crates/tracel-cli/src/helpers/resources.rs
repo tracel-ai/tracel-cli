@@ -12,6 +12,7 @@ pub enum Resource<'a> {
     ModelAlias { model: &'a str, alias: &'a str },
     Experiment(i32),
     Dataset(&'a str),
+    Job(i32),
 }
 
 /// Turn the Tracel Console's "not found" for `resource` into an error that names it and
@@ -70,6 +71,10 @@ pub fn map_resource_error(
         (ClientError::NotFoundWithCode(ApiErrorCode::Dataset), Resource::Dataset(dataset)) => (
             format!("No dataset '{dataset}' in {namespace}/{project}."),
             "List datasets with `tracel datasets list`.".to_string(),
+        ),
+        (ClientError::NotFoundWithCode(ApiErrorCode::ComputeProviderJob), Resource::Job(job)) => (
+            format!("No job {job} in {namespace}/{project}."),
+            "List jobs with `tracel jobs list`.".to_string(),
         ),
         _ => return error.into(),
     };

@@ -181,6 +181,19 @@ tracel datasets get images
 tracel datasets versions images
 ```
 
+### `tracel jobs`
+
+Browse the project's jobs on compute providers, read and follow their logs,
+cancel them, and wait for them to finish.
+
+```bash
+tracel jobs list
+tracel jobs get 12
+tracel jobs logs 12 --follow
+tracel jobs cancel 12
+tracel jobs wait 12 --timeout 3600
+```
+
 ## Development
 
 ```bash

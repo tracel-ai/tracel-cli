@@ -48,8 +48,9 @@ and the instructions a login asks you to follow.
 
 `tracel experiments logs --follow --json` writes one line of JSON per event
 instead: each log entry, with `"type":"log"` added, then
-`{"type":"end","running":false}` when the experiment has finished. An error
-still writes the failure line.
+`{"type":"end","running":false}` when the experiment has finished.
+`tracel jobs logs --follow --json` does the same with each page of logs, then
+`{"type":"end","status":"<status>"}`. An error still writes the failure line.
 
 The data of commands that read is the Tracel Console's own response, with
 `null` for a metric series or summary that doesn't exist. The other commands
@@ -72,6 +73,7 @@ return:
 | `models alias set` | the alias |
 | `models alias remove` | `model`, `alias`, `removed` |
 | `artifacts download` | `experiment`, `artifact`, `directory`, `files`, `bytes` |
+| `jobs cancel`, `jobs wait` | the job, as read afterwards |
 
 Times are RFC 3339 in UTC.
 
@@ -88,10 +90,11 @@ Times are RFC 3339 in UTC.
 | `CONFLICT` | 6 |
 | `CONFIRMATION_REQUIRED` | 7 |
 | `LIMIT_REACHED` | 8 |
+| `JOB_FAILED` | 9 |
 | `TIMEOUT` | 10 |
 | `UNAVAILABLE` | 11 |
 
-Exit code 9 is reserved. `train` exits with the code of the program it runs.
+`train` exits with the code of the program it runs.
 
 ## Questions
 
@@ -175,3 +178,17 @@ Each file's size and SHA-256 checksum are checked before it is saved.
   shows them oldest first. `--after <seq>` reads from a sequence number and
   can't be combined with `--from`, `--to` or `--offset`. `--follow` reads from
   there until the experiment finishes.
+
+## Jobs
+
+- A job's status is `new`, `queued`, `running`, `pending_cancellation`,
+  `completed`, `failed` or `cancelled`.
+- `jobs logs <number>` reads one page of the job's log file. `--start <byte>`
+  reads from a byte offset, and a page's `end` is the next page's `start`.
+  `--follow` reads until the job has finished.
+- `jobs cancel <number>` cancels a new, queued or running job, after asking;
+  `--yes` skips the question. A running job stays `pending_cancellation` until
+  its compute provider stops it.
+- `jobs wait <number>` checks the job every `--interval` seconds until it
+  finishes. It fails with `JOB_FAILED` when the job fails or is cancelled, and
+  with `TIMEOUT` when `--timeout` seconds pass first.

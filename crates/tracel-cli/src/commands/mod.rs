@@ -3,6 +3,7 @@ pub mod auth;
 pub mod datasets;
 pub mod experiments;
 pub mod init;
+pub mod jobs;
 pub mod login;
 pub mod logout;
 pub mod me;

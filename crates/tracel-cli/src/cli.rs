@@ -87,6 +87,8 @@ pub enum Commands {
     /// Browse experiments, their metrics and logs
     #[command(visible_alias = "exp")]
     Experiments(commands::experiments::ExperimentsArgs),
+    /// Browse, follow and cancel jobs
+    Jobs(commands::jobs::JobsArgs),
     /// Link the workspace to a Tracel Console project
     Init(commands::init::InitArgs),
     /// Unlink the workspace from its project
@@ -113,6 +115,7 @@ impl Commands {
             Self::Login(args) => args.layout(),
             Self::Logout => Layout::flow("Log out of the Tracel Console"),
             Self::Experiments(args) => args.layout(),
+            Self::Jobs(args) => args.layout(),
             Self::Init(_) => Layout::flow("Link this workspace to a Tracel Console project"),
             Self::Unlink(_) => Layout::flow("Unlink this workspace from its project"),
             Self::Me | Self::Project(_) | Self::Datasets(_) => Layout::Read,
@@ -127,6 +130,7 @@ impl Commands {
             self,
             Self::Package(_)
                 | Self::Experiments(_)
+                | Self::Jobs(_)
                 | Self::Models(_)
                 | Self::Artifacts(_)
                 | Self::Datasets(_)
@@ -333,6 +337,7 @@ fn handle_command(command: Commands, context: CliContext) -> anyhow::Result<Outc
         Commands::Experiments(experiments_args) => {
             commands::experiments::handle_command(experiments_args, context)
         }
+        Commands::Jobs(jobs_args) => commands::jobs::handle_command(jobs_args, context),
         Commands::Init(init_args) => commands::init::handle_command(init_args, context),
         Commands::Unlink(unlink_args) => commands::unlink::handle_command(unlink_args, context),
         Commands::Me => commands::me::handle_command(context),
