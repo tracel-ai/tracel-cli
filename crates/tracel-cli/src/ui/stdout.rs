@@ -1,11 +1,12 @@
 use std::io::{self, Write};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use serde::Serialize;
 
 use super::Format;
 use super::human::{Human, Style};
-use super::screen::Screen;
+use super::screen::{Outro, Screen};
 use crate::error::ErrorReport;
 
 /// A command result: serialized for JSON output, written as text for people.
@@ -15,6 +16,12 @@ pub trait Render: Serialize {
     fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         let _ = out;
         Ok(())
+    }
+
+    /// One line that sums the result up: the badge that closes the frame on a
+    /// terminal, the last line of the text otherwise.
+    fn summary(&self) -> Option<String> {
+        None
     }
 }
 
@@ -37,6 +44,7 @@ impl<T: Render + 'static> From<T> for Outcome {
 trait Report {
     fn write_json(&self, out: &mut dyn Write) -> serde_json::Result<()>;
     fn write_text(&self, out: &mut Human<'_>) -> io::Result<()>;
+    fn summary(&self) -> Option<String>;
 }
 
 impl<T: Render> Report for T {
@@ -52,6 +60,10 @@ impl<T: Render> Report for T {
 
     fn write_text(&self, out: &mut Human<'_>) -> io::Result<()> {
         self.render(out)
+    }
+
+    fn summary(&self) -> Option<String> {
+        Render::summary(self)
     }
 }
 
@@ -83,19 +95,31 @@ impl Output {
         Self { screen }
     }
 
-    /// Writes the result of a finished command.
+    /// Writes the result of a finished command, and closes the frame it was drawn in
+    /// with its summary.
     pub fn finish(&self, outcome: Outcome) -> anyhow::Result<()> {
         let format = self.screen.format();
         let style = self.screen.text_style();
-        self.write_stdout(|out| finish(format, style, outcome, out))
+        let framed = self.screen.frame_open();
+        let summary = outcome.0.as_ref().and_then(|report| report.summary());
+        let line_start = AtomicBool::new(true);
+        self.write_stdout(|out| {
+            let summary = if framed { None } else { summary.as_deref() };
+            finish(format, style, &line_start, outcome, summary, out)
+        })?;
+        if framed {
+            self.screen.outro(Outro::Done(summary.as_deref()));
+        }
+        Ok(())
     }
 
     /// Writes one event of a stream as it happens: an NDJSON line, or its text.
     pub fn event(&self, event: &impl Render) -> anyhow::Result<()> {
         let format = self.screen.format();
         let style = self.screen.text_style();
+        let line_start = self.screen.line_start();
         self.write_stdout(|out| {
-            write_event(format, style, event, out)?;
+            write_event(format, style, line_start, event, out)?;
             out.flush()
         })
     }
@@ -118,12 +142,31 @@ impl Output {
     }
 }
 
-fn finish(format: Format, style: Style, outcome: Outcome, out: &mut dyn Write) -> io::Result<()> {
+/// `summary` is the result's last line, when no frame shows it.
+fn finish(
+    format: Format,
+    style: Style,
+    line_start: &AtomicBool,
+    outcome: Outcome,
+    summary: Option<&str>,
+    out: &mut dyn Write,
+) -> io::Result<()> {
     let Some(report) = outcome.0 else {
         return Ok(());
     };
     match format {
-        Format::Human => report.write_text(&mut Human::new(out, style)),
+        Format::Human => {
+            let mut out = Human::new(out, style, line_start);
+            report.write_text(&mut out)?;
+            out.spacer()?;
+            match summary {
+                Some(summary) => {
+                    let summary = out.dim(summary);
+                    writeln!(out, "{summary}")
+                }
+                None => Ok(()),
+            }
+        }
         Format::Json => {
             report.write_json(out)?;
             writeln!(out)
@@ -134,11 +177,12 @@ fn finish(format: Format, style: Style, outcome: Outcome, out: &mut dyn Write) -
 fn write_event(
     format: Format,
     style: Style,
+    line_start: &AtomicBool,
     event: &impl Render,
     out: &mut dyn Write,
 ) -> io::Result<()> {
     match format {
-        Format::Human => event.render(&mut Human::new(out, style)),
+        Format::Human => event.render(&mut Human::new(out, style, line_start)),
         Format::Json => {
             serde_json::to_writer(&mut *out, event)?;
             writeln!(out)
@@ -171,6 +215,10 @@ mod tests {
         fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
             writeln!(out, "Hello, {}.", self.name)
         }
+
+        fn summary(&self) -> Option<String> {
+            Some("Greeted.".into())
+        }
     }
 
     #[derive(Serialize)]
@@ -184,42 +232,52 @@ mod tests {
         String::from_utf8(out).unwrap()
     }
 
+    fn finished(format: Format, outcome: Outcome, summary: Option<&str>) -> String {
+        let line_start = AtomicBool::new(true);
+        written(|out| finish(format, Style::plain(), &line_start, outcome, summary, out))
+    }
+
     #[test]
     fn results_are_an_envelope_or_their_text() {
         let greeting = || Outcome::from(Greeting { name: "Ada" });
         assert_eq!(
-            written(|out| finish(Format::Json, Style::plain(), greeting(), out)),
+            finished(Format::Json, greeting(), None),
             "{\"ok\":true,\"data\":{\"name\":\"Ada\"}}\n"
         );
+        assert_eq!(finished(Format::Human, greeting(), None), "Hello, Ada.\n");
+        assert_eq!(finished(Format::Human, Done {}.into(), None), "");
+    }
+
+    #[test]
+    fn without_a_frame_the_summary_ends_the_text() {
+        let greeting = || Outcome::from(Greeting { name: "Ada" });
         assert_eq!(
-            written(|out| finish(Format::Human, Style::plain(), greeting(), out)),
-            "Hello, Ada.\n"
+            finished(Format::Human, greeting(), Some("Greeted.")),
+            "Hello, Ada.\nGreeted.\n"
         );
         assert_eq!(
-            written(|out| finish(Format::Human, Style::plain(), Done {}.into(), out)),
-            ""
+            finished(Format::Json, greeting(), Some("Greeted.")),
+            "{\"ok\":true,\"data\":{\"name\":\"Ada\"}}\n"
         );
     }
 
     #[test]
     fn streamed_output_is_not_followed_by_an_envelope() {
         for format in [Format::Human, Format::Json] {
-            assert_eq!(
-                written(|out| finish(format, Style::plain(), Outcome::streamed(), out)),
-                ""
-            );
+            assert_eq!(finished(format, Outcome::streamed(), None), "");
         }
     }
 
     #[test]
     fn events_are_bare_json_lines_or_their_text() {
         let event = Greeting { name: "Ada" };
+        let line_start = AtomicBool::new(true);
         assert_eq!(
-            written(|out| write_event(Format::Json, Style::plain(), &event, out)),
+            written(|out| write_event(Format::Json, Style::plain(), &line_start, &event, out)),
             "{\"name\":\"Ada\"}\n"
         );
         assert_eq!(
-            written(|out| write_event(Format::Human, Style::plain(), &event, out)),
+            written(|out| write_event(Format::Human, Style::plain(), &line_start, &event, out)),
             "Hello, Ada.\n"
         );
     }

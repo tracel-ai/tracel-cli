@@ -19,12 +19,23 @@ use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
 use crate::helpers::project::resolve_namespace_project;
 use crate::tools::tracel_config::TracelProject;
-use crate::ui::{Details, Human, Outcome, Output, Render, Table, json_section};
+use crate::ui::{Details, Human, Outcome, Output, Render, Table, counted, when};
 
 #[derive(Args, Debug)]
 pub struct ExperimentsArgs {
     #[command(subcommand)]
     pub command: ExperimentsCommands,
+}
+
+impl ExperimentsArgs {
+    pub fn title(&self) -> &'static str {
+        match self.command {
+            ExperimentsCommands::List(_) => "Experiments",
+            ExperimentsCommands::Get(_) => "Experiment",
+            ExperimentsCommands::Metrics(_) => "Experiment metrics",
+            ExperimentsCommands::Logs(_) => "Experiment logs",
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -209,12 +220,20 @@ impl Render for ListExperimentsResponse {
                     experiment.experiment_num.to_string(),
                     experiment.name.clone().unwrap_or_default(),
                     experiment.status.clone(),
-                    experiment.created_at.clone(),
+                    when(&experiment.created_at),
                     experiment.created_by.username.clone(),
                 ]
             }))
-            .total(self.total)
             .write(out)
+    }
+
+    fn summary(&self) -> Option<String> {
+        Some(counted(
+            self.items.len(),
+            self.total,
+            ["experiment", "experiments"],
+            "No experiments in this project yet.",
+        ))
     }
 }
 
@@ -227,33 +246,59 @@ impl Render for ExperimentDetailsResponse {
             .optional("Name", self.name.as_ref())
             .field("Status", &self.status)
             .field("Description", &self.description)
-            .field("Created at", &self.created_at)
+            .field("Created at", when(&self.created_at))
             .field("Created by", &self.created_by.username)
-            .write(out)?;
-        json_section(out, "Config", &self.config)?;
-        json_section(out, "Configurations", &self.configurations)?;
-        json_section(out, "Attributes", &self.attributes)
+            .section("Config", &self.config)
+            .section("Configurations", &self.configurations)
+            .section("Attributes", &self.attributes)
+            .write(out)
+    }
+
+    fn summary(&self) -> Option<String> {
+        Some(format!(
+            "Experiment {} is {}.",
+            self.experiment_num, self.status
+        ))
     }
 }
 
 impl Render for MetricMetadataResponse {
     fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         Table::new(["METRIC"])
+            .empty("No metrics recorded.")
             .rows(self.metric_types.iter().map(|name| [name.clone()]))
             .write(out)?;
-        writeln!(out)?;
+        if out.framed() {
+            out.spacer()?;
+        } else {
+            writeln!(out)?;
+        }
         Table::new(["GROUP"])
+            .empty("No metric groups.")
             .rows(self.groups.iter().map(|name| [name.clone()]))
             .write(out)
+    }
+
+    fn summary(&self) -> Option<String> {
+        let plural = |count: usize, one: &str, many: &str| {
+            format!("{count} {}", if count == 1 { one } else { many })
+        };
+        Some(format!(
+            "{} in {}.",
+            plural(self.metric_types.len(), "metric", "metrics"),
+            plural(self.groups.len(), "group", "groups")
+        ))
     }
 }
 
 impl Render for Option<MetricResponse> {
     fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         let Some(metrics) = self else {
-            return writeln!(out, "No metric series available.");
+            let none = out.dim("No metric series available.");
+            return writeln!(out, "{none}");
         };
         Table::new(["GROUP", "EPOCH", "ITERATION", "VALUE", "LOW", "HIGH"])
+            .empty("No points in this series.")
             .rows(metrics.groups.iter().flat_map(|group| {
                 group.entries.iter().map(|entry| {
                     [
@@ -273,9 +318,11 @@ impl Render for Option<MetricResponse> {
 impl Render for Option<MetricSummaryResponse> {
     fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         let Some(summary) = self else {
-            return writeln!(out, "No metric summary available.");
+            let none = out.dim("No metric summary available.");
+            return writeln!(out, "{none}");
         };
         Table::new(["GROUP", "OPTIMAL VALUE", "EPOCH"])
+            .empty("No metric groups.")
             .rows(summary.groups.iter().map(|group| {
                 [
                     group.group.clone(),
@@ -290,6 +337,15 @@ impl Render for Option<MetricSummaryResponse> {
 impl Render for ExperimentLogQueryResponse {
     fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         self.items.iter().try_for_each(|item| write_log(out, item))
+    }
+
+    fn summary(&self) -> Option<String> {
+        Some(counted(
+            self.items.len(),
+            self.total,
+            ["log entry", "log entries"],
+            "No log entries.",
+        ))
     }
 }
 
@@ -417,6 +473,9 @@ pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Res
             let request = args.into_request();
             if follow {
                 follow_logs(&client, &project, num, request, context.output())?;
+                context
+                    .terminal()
+                    .outro(&format!("Experiment {num} has finished."));
                 return Ok(Outcome::streamed());
             }
             Ok(client

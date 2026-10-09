@@ -1,4 +1,4 @@
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -6,6 +6,9 @@ use cliclack::{MultiProgress, ProgressBar};
 
 use super::Format;
 use super::human::Style;
+
+/// The width cliclack's bar and the space after it take at the start of a line.
+const GUTTER_WIDTH: usize = 3;
 
 /// The terminal a command draws on. Stderr draws cliclack frames and widgets on it
 /// when it is a styled terminal, and stdout shares it when stdout is a terminal too.
@@ -32,6 +35,12 @@ struct Live {
 pub enum Ending {
     Done,
     Failed,
+}
+
+/// How a frame ends: a green badge, a bare corner, or a red badge.
+pub enum Outro<'a> {
+    Done(Option<&'a str>),
+    Cancelled(&'a str),
 }
 
 impl Screen {
@@ -61,16 +70,26 @@ impl Screen {
         self.styled && self.stdout_is_terminal
     }
 
-    /// How text on stdout may look: colors and width only on a terminal.
+    /// How text on stdout may look: colors and width only on a terminal, and drawn
+    /// inside the frame when one is open there.
     pub fn text_style(&self) -> Style {
         if !self.stdout_is_terminal {
             return Style::plain();
         }
+        let framed = self.shares_stdout() && self.frame_open();
         Style {
             color: console::colors_enabled(),
             width: console::Term::stdout()
                 .size_checked()
-                .map(|(_, columns)| usize::from(columns)),
+                .map(|(_, columns)| usize::from(columns))
+                .map(|columns| {
+                    if framed {
+                        columns.saturating_sub(GUTTER_WIDTH)
+                    } else {
+                        columns
+                    }
+                }),
+            framed,
         }
     }
 
@@ -78,8 +97,40 @@ impl Screen {
         self.frame.load(Ordering::Relaxed)
     }
 
-    pub fn set_frame(&self, open: bool) {
-        self.frame.store(open, Ordering::Relaxed);
+    /// Whether the next text on stdout starts a line, across the writes of a stream.
+    pub fn line_start(&self) -> &AtomicBool {
+        &self.line_start
+    }
+
+    /// Opens the frame a command draws in, under a green title badge.
+    pub fn intro(&self, title: &str) {
+        if !self.styled {
+            return;
+        }
+        self.settle(Ending::Done);
+        let badge = console::style(format!(" ▶ {title} ")).black().on_green();
+        let _ = cliclack::intro(badge);
+        self.line_start.store(true, Ordering::Relaxed);
+        self.frame.store(true, Ordering::Relaxed);
+    }
+
+    /// Ends the frame, open or not, so a command always finishes on its badge.
+    pub fn outro(&self, outro: Outro<'_>) {
+        if !self.styled {
+            return;
+        }
+        self.settle(Ending::Done);
+        let _ = match outro {
+            Outro::Done(Some(message)) => {
+                cliclack::outro(console::style(format!(" {message} ")).black().on_green())
+            }
+            Outro::Done(None) => cliclack::outro(""),
+            Outro::Cancelled(message) => {
+                cliclack::outro_cancel(console::style(format!(" {message} ")).black().on_red())
+            }
+        };
+        self.line_start.store(true, Ordering::Relaxed);
+        self.frame.store(false, Ordering::Relaxed);
     }
 
     pub fn next_id(&self) -> u64 {
@@ -140,16 +191,12 @@ impl Screen {
         }
     }
 
-    /// Stdout for text: inside an open frame, each line starts with the frame's bar.
-    pub fn stdout(&self) -> impl Write + '_ {
+    /// Stdout, once nothing else draws where it lands.
+    pub fn stdout(&self) -> io::StdoutLock<'static> {
         if self.shares_stdout() {
             self.settle(Ending::Done);
         }
-        Gutter {
-            out: io::stdout().lock(),
-            bar: (self.shares_stdout() && self.frame_open()).then(gutter),
-            line_start: &self.line_start,
-        }
+        io::stdout().lock()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<Live>> {
@@ -176,87 +223,5 @@ impl Live {
                 }
             }
         }
-    }
-}
-
-/// The bar cliclack draws down the left of a frame.
-fn gutter() -> String {
-    let bar = console::style(console::Emoji("│", "|")).bright().black();
-    format!("{}  ", bar.for_stdout())
-}
-
-/// Writes through to `out`, starting each line with `bar` when there is one.
-/// `line_start` persists across writes, since a stream arrives in pieces.
-struct Gutter<'a, W> {
-    out: W,
-    bar: Option<String>,
-    line_start: &'a AtomicBool,
-}
-
-impl<W: Write> Write for Gutter<'_, W> {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        let Some(bar) = &self.bar else {
-            return self.out.write(buffer);
-        };
-        for line in buffer.split_inclusive(|&byte| byte == b'\n') {
-            if self.line_start.load(Ordering::Relaxed) {
-                self.out.write_all(bar.as_bytes())?;
-            }
-            self.out.write_all(line)?;
-            self.line_start
-                .store(line.ends_with(b"\n"), Ordering::Relaxed);
-        }
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.out.flush()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn through_gutter(pieces: &[&str]) -> String {
-        let line_start = AtomicBool::new(true);
-        let mut written = Vec::new();
-        for piece in pieces {
-            let mut gutter = Gutter {
-                out: &mut written,
-                bar: Some("| ".into()),
-                line_start: &line_start,
-            };
-            gutter.write_all(piece.as_bytes()).unwrap();
-        }
-        String::from_utf8(written).unwrap()
-    }
-
-    #[test]
-    fn every_line_in_a_frame_starts_with_its_bar() {
-        assert_eq!(through_gutter(&["a\nb\n"]), "| a\n| b\n");
-        assert_eq!(through_gutter(&["\n"]), "| \n");
-    }
-
-    #[test]
-    fn lines_split_across_writes_get_one_bar() {
-        assert_eq!(
-            through_gutter(&["par", "tial\nnext", "\n"]),
-            "| partial\n| next\n"
-        );
-    }
-
-    #[test]
-    fn without_a_frame_text_passes_through() {
-        let line_start = AtomicBool::new(true);
-        let mut written = Vec::new();
-        Gutter {
-            out: &mut written,
-            bar: None,
-            line_start: &line_start,
-        }
-        .write_all(b"a\nb")
-        .unwrap();
-        assert_eq!(written, b"a\nb");
     }
 }

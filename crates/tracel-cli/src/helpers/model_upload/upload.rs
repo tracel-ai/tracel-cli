@@ -222,7 +222,7 @@ mod tests {
         ];
         let uploader = FakeUploader::new(None);
 
-        let result = upload_parts(&uploader, tasks, &channels(Format::Json, true).1);
+        let result = upload_parts(&uploader, tasks, &channels(Format::Json, true, None).1);
 
         assert!(result.is_ok());
         assert_eq!(uploader.calls.lock().unwrap().len(), 2);
@@ -239,7 +239,7 @@ mod tests {
         ];
         let uploader = FakeUploader::new(Some("https://example.com/b"));
 
-        let result = upload_parts(&uploader, tasks, &channels(Format::Json, true).1);
+        let result = upload_parts(&uploader, tasks, &channels(Format::Json, true, None).1);
 
         assert!(result.is_err());
 

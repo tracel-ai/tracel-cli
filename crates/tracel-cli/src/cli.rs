@@ -84,6 +84,26 @@ pub enum Commands {
 }
 
 impl Commands {
+    /// The title of the frame a terminal shows the command in. None where stdout is
+    /// a bare value or another program's output.
+    fn title(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::Train(_) => return None,
+            Self::Auth(args) => return args.title(),
+            Self::Package(_) => "Package project",
+            Self::Login(_) => "Login",
+            Self::Logout => "Logout",
+            Self::Experiments(args) => args.title(),
+            Self::Init(_) => "Project initialization",
+            Self::Unlink(_) => "Unlink",
+            Self::Me => "User information",
+            Self::Project(args) => args.title(),
+            Self::Models(args) => args.title(),
+            Self::Artifacts(args) => args.title(),
+            Self::Datasets(args) => args.title(),
+        })
+    }
+
     /// What `auto` output means: human on a terminal and JSON otherwise, except where
     /// stdout carries plain text: the bare token for `$(tracel auth token)`, or the
     /// output of the program `train` runs.
@@ -148,7 +168,7 @@ pub fn cli_main() {
     };
 
     let format = format.unwrap_or_else(|error| fail_early(&error.into(), auto));
-    let (output, terminal) = ui::channels(format, args.no_input);
+    let (output, terminal) = ui::channels(format, args.no_input, command.title());
     let environment_value =
         std::env::var_os("TRACEL_ENV").map(|value| value.to_string_lossy().into_owned());
     let environment = resolve_environment(args.dev, args.staging, environment_value.as_deref())
@@ -209,7 +229,7 @@ fn fail(error: &anyhow::Error, output: &Output, terminal: &Terminal) -> ! {
 
 /// Fails before the command's channels exist.
 fn fail_early(error: &anyhow::Error, format: Format) -> ! {
-    let (output, terminal) = ui::channels(format, true);
+    let (output, terminal) = ui::channels(format, true, None);
     fail(error, &output, &terminal)
 }
 

@@ -156,7 +156,7 @@ fn start_pending_login(context: &CliContext) -> anyhow::Result<LoginPending> {
         )?),
         console::style(&pending.authorization.user_code).bold()
     ));
-    terminal.print("Then run 'tracel login --complete'.");
+    terminal.outro("Then run 'tracel login --complete'.");
 
     Ok(LoginPending {
         verification_uri_complete: pending.authorization.verification_uri_complete,
@@ -302,8 +302,6 @@ fn complete_pending_login(context: &CliContext, timeout: Option<u64>) -> anyhow:
 }
 
 pub fn handle_command(args: LoginArgs, context: CliContext) -> anyhow::Result<Outcome> {
-    context.terminal().command_title("Login");
-
     if args.no_wait {
         return Ok(start_pending_login(&context)?.into());
     }
@@ -321,7 +319,7 @@ pub fn handle_command(args: LoginArgs, context: CliContext) -> anyhow::Result<Ou
             "TRACEL_API_KEY is set, so other commands use it instead of this login.",
         );
     }
-    context.terminal().finalize(&format!(
+    context.terminal().outro(&format!(
         "Logged in as {}{}.",
         client.user().username,
         environment_suffix(&context.environment())

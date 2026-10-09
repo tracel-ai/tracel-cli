@@ -11,12 +11,21 @@ use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
 use crate::helpers::project::ProjectSource;
 use crate::helpers::resolve_namespace_project;
-use crate::ui::{Details, Human, Outcome, Render, Table};
+use crate::ui::{Details, Human, Outcome, Render, Table, counted, when};
 
 #[derive(Args, Debug)]
 pub struct ProjectArgs {
     #[command(subcommand)]
     pub command: Option<ProjectCommands>,
+}
+
+impl ProjectArgs {
+    pub fn title(&self) -> &'static str {
+        match self.command {
+            None => "Project",
+            Some(ProjectCommands::List(_)) => "Projects",
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -45,10 +54,19 @@ impl Render for Projects {
                     format!("{}/{}", project.namespace_name, project.project_name),
                     visibility_name(&project.visibility).into(),
                     project.description.clone(),
-                    project.created_at.clone(),
+                    when(&project.created_at),
                 ]
             }))
             .write(out)
+    }
+
+    fn summary(&self) -> Option<String> {
+        Some(counted(
+            self.0.len(),
+            self.0.len() as u64,
+            ["project", "projects"],
+            "No projects yet. Create one with `tracel init`.",
+        ))
     }
 }
 
@@ -72,6 +90,10 @@ impl Render for ProjectInfo {
             .field("Created by", &self.created_by)
             .field("Selected by", &self.source)
             .write(out)
+    }
+
+    fn summary(&self) -> Option<String> {
+        Some(format!("Commands use {}/{}.", self.namespace, self.name))
     }
 }
 

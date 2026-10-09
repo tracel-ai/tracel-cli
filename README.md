@@ -81,8 +81,12 @@ tables and details of commands that read, while progress, prompts, warnings,
 and errors go to stderr. Commands that change something, such as `init`,
 `login`, `models push`, or `artifacts download`, report on stderr and print
 nothing on stdout. `auth token` prints the bare token unless JSON is requested,
-even when stdout is redirected. On a terminal, tables shorten long descriptions
-to fit its width; redirected output is never shortened.
+even when stdout is redirected.
+
+On a terminal, each command draws in one frame: a title, its progress and result,
+and a closing line that sums it up. Tables shorten long descriptions to fit the
+width and show times in your time zone. Redirected output stays plain text, is
+never shortened, and ends with that summary line.
 
 | Error code | Exit code |
 | --- | --- |

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use cliclack::ProgressBar;
 
 use super::Format;
-use super::screen::{Ending, Screen};
+use super::screen::{Ending, Outro, Screen};
 use crate::error::{CliError, ErrorKind, ErrorReport};
 
 /// Stderr, for the person running a command: what it is doing, its progress, and
@@ -96,27 +96,24 @@ impl Terminal {
     }
 
     /// Reports a failed command: the message and hint here, the envelope on stdout
-    /// with JSON output. An open frame ends with the hint, or with the error itself.
+    /// with JSON output. On a terminal the frame ends on a red badge: the hint after
+    /// the error, or the error itself.
     pub fn error(&self, report: &ErrorReport<'_>) {
         self.screen.settle(Ending::Failed);
         if !self.is_human() {
             self.line(format_args!("error: {}", one_line(&report.message)));
-        } else if self.is_styled() && self.screen.frame_open() {
+        } else if self.is_styled() {
             match report.hint {
                 Some(hint) => {
-                    self.draw(|| {
-                        cliclack::log::error(&report.message)?;
-                        cliclack::outro_cancel(hint)
-                    });
-                    self.screen.set_frame(false);
+                    self.draw(|| cliclack::log::error(&report.message));
+                    self.screen.outro(Outro::Cancelled(hint));
                 }
-                None => self.cancel_finalize(&report.message),
+                None => self.screen.outro(Outro::Cancelled(&report.message)),
             }
         } else {
-            let label = console::style("error:").for_stderr().red().bold();
-            let _ = writeln!(io::stderr(), "{label} {}", report.message);
+            self.line(format_args!("error: {}", report.message));
             if let Some(hint) = report.hint {
-                let _ = writeln!(io::stderr(), "{hint}");
+                self.line(hint);
             }
         }
     }
@@ -240,32 +237,21 @@ impl Terminal {
             .map_err(anyhow::Error::from)
     }
 
-    /// Opens the frame that an action's progress is drawn in.
-    pub fn command_title(&self, title: &str) {
-        if self.is_styled() {
-            let title = console::style(format!(" ▶ {title} ")).black().on_green();
-            self.draw(|| cliclack::intro(title));
-            self.screen.set_frame(true);
+    /// Ends the command's frame on a green badge, for an action that did its work.
+    pub fn outro(&self, message: &str) {
+        if self.is_styled() && self.screen.frame_open() {
+            self.screen.outro(Outro::Done(Some(message)));
+        } else {
+            self.print_success(message);
         }
     }
 
-    pub fn finalize(&self, msg: &str) {
-        if self.is_styled() {
-            let message = console::style(format!(" {msg} ")).black().on_green();
-            self.draw(|| cliclack::outro(message));
-            self.screen.set_frame(false);
+    /// Ends the command's frame on a red badge, for an action that stopped short.
+    pub fn outro_cancel(&self, message: &str) {
+        if self.is_styled() && self.screen.frame_open() {
+            self.screen.outro(Outro::Cancelled(message));
         } else {
-            self.print_success(msg);
-        }
-    }
-
-    pub fn cancel_finalize(&self, msg: &str) {
-        if self.is_styled() {
-            let message = console::style(format!(" {msg} ")).black().on_red();
-            self.draw(|| cliclack::outro_cancel(message));
-            self.screen.set_frame(false);
-        } else {
-            self.print_err(msg);
+            self.print_err(message);
         }
     }
 

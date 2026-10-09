@@ -96,7 +96,6 @@ pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<
     for triple in &args.targets {
         target::parse_target(triple)?;
     }
-    context.terminal().command_title("Package project");
 
     // 0. Require a workspace and a project that exists on the server.
     let workspace_info = require_cargo_workspace()?;
@@ -439,7 +438,7 @@ fn upload(
             "This commit ({digest}) is already packaged (version {}).",
             response.id
         ));
-        context.terminal().finalize("Nothing to upload.");
+        context.terminal().outro("Nothing to upload.");
         return Ok(packaged(false));
     };
 
@@ -471,8 +470,6 @@ fn upload(
     context
         .terminal()
         .print_success(&format!("New code version uploaded: {}", response.digest));
-    context
-        .terminal()
-        .finalize("Project packaged successfully.");
+    context.terminal().outro("Project packaged successfully.");
     Ok(packaged(true))
 }

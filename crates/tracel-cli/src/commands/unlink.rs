@@ -30,7 +30,6 @@ impl Render for Unlinked {}
 
 pub fn handle_command(args: UnlinkArgs, context: CliContext) -> anyhow::Result<Outcome> {
     let project = require_linked_project()?;
-    context.terminal().command_title("Unlink");
 
     if !args.yes {
         let confirmed = context.terminal().confirm(
@@ -39,7 +38,7 @@ pub fn handle_command(args: UnlinkArgs, context: CliContext) -> anyhow::Result<O
             false,
         )?;
         if !confirmed {
-            context.terminal().cancel_finalize("Cancelled");
+            context.terminal().outro_cancel("Cancelled");
             return Ok(Unlinked {
                 unlinked: false,
                 namespace: None,
@@ -50,7 +49,7 @@ pub fn handle_command(args: UnlinkArgs, context: CliContext) -> anyhow::Result<O
     }
 
     ProjectContext::unlink(&project.get_manifest_path()).context("Failed to unlink project")?;
-    context.terminal().finalize("Project unlinked successfully");
+    context.terminal().outro("Project unlinked successfully");
 
     let linked = project.get_project();
     Ok(Unlinked {

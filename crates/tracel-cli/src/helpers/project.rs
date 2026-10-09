@@ -205,22 +205,11 @@ pub fn require_cargo_workspace() -> anyhow::Result<WorkspaceInfo> {
     ProjectContext::load_workspace_info(&manifest_path).map_err(explain_project_context_error)
 }
 
-/// Whether `tracel init` should go ahead. Fails outside a Rust project, and stops
-/// without error when the project is already linked and `force` is off.
-pub fn can_initialize_project(context: &CliContext, force: bool) -> anyhow::Result<bool> {
+/// Whether `tracel init` should go ahead: fails outside a Rust project, and is
+/// false when the project is already linked and `force` is off.
+pub fn can_initialize_project(force: bool) -> anyhow::Result<bool> {
     find_manifest()?;
-
-    if is_tracel_project_linked() && !force {
-        context
-            .terminal()
-            .print("Project is already linked to Tracel Console.");
-        context
-            .terminal()
-            .print("Use --force flag to reinitialize.");
-        return Ok(false);
-    }
-
-    Ok(true)
+    Ok(force || !is_tracel_project_linked())
 }
 
 /// Validate that the linked project exists on Tracel Console server

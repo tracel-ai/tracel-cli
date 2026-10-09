@@ -9,12 +9,22 @@ use tracel_client::console::dataset::response::{
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::helpers::{Resource, map_resource_error, resolve_namespace_project};
-use crate::ui::{Details, Human, Outcome, Render, Table, json_section};
+use crate::ui::{Details, Human, Outcome, Render, Table, counted, when};
 
 #[derive(Args, Debug)]
 pub struct DatasetsArgs {
     #[command(subcommand)]
     pub command: DatasetsCommands,
+}
+
+impl DatasetsArgs {
+    pub fn title(&self) -> &'static str {
+        match self.command {
+            DatasetsCommands::List(_) => "Datasets",
+            DatasetsCommands::Get(_) => "Dataset",
+            DatasetsCommands::Versions(_) => "Dataset versions",
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -113,8 +123,16 @@ impl Render for DatasetListResponse {
                     dataset.id.clone(),
                 ]
             }))
-            .total(self.total_count)
             .write(out)
+    }
+
+    fn summary(&self) -> Option<String> {
+        Some(counted(
+            self.items.len(),
+            self.total_count,
+            ["dataset", "datasets"],
+            "No datasets in this project yet.",
+        ))
     }
 }
 
@@ -124,8 +142,8 @@ impl Render for DatasetResponse {
             .field("Name", &self.name)
             .field("ID", &self.id)
             .optional("Description", self.description.as_ref())
-            .write(out)?;
-        json_section(out, "Metadata", &self.metadata)
+            .section("Metadata", &self.metadata)
+            .write(out)
     }
 }
 
@@ -141,11 +159,19 @@ impl Render for DatasetVersionListResponse {
                     version.version.to_string(),
                     version.item_count.to_string(),
                     source.into(),
-                    version.created_at.clone(),
+                    when(&version.created_at),
                 ]
             }))
-            .total(self.total_count)
             .write(out)
+    }
+
+    fn summary(&self) -> Option<String> {
+        Some(counted(
+            self.items.len(),
+            self.total_count,
+            ["version", "versions"],
+            "No published versions yet.",
+        ))
     }
 }
 

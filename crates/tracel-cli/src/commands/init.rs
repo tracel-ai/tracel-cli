@@ -54,7 +54,7 @@ pub fn handle_command(args: InitArgs, context: CliContext) -> anyhow::Result<Out
             CliError::new(ErrorKind::Usage, message).with_hint("Pass --name <project>.")
         })?;
     }
-    if !can_initialize_project(&context, args.force)? {
+    if !can_initialize_project(args.force)? {
         let project = require_linked_project()?;
         let linked = project.get_project();
         let other_owner = args.owner.as_deref().is_some_and(|o| o != linked.owner);
@@ -70,6 +70,13 @@ pub fn handle_command(args: InitArgs, context: CliContext) -> anyhow::Result<Out
             .with_hint("Pass --force to link it to another project.")
             .into());
         }
+        context
+            .terminal()
+            .print("Pass --force to link it to another project.");
+        context.terminal().outro(&format!(
+            "Already linked to {}/{}.",
+            linked.owner, linked.name
+        ));
         return Ok(ProjectLinked {
             namespace: linked.owner.clone(),
             name: linked.name.clone(),
@@ -92,8 +99,6 @@ fn prompt_init(
 ) -> anyhow::Result<ProjectLinked> {
     let user = client.get_current_user()?;
     let workspace_info = require_cargo_workspace()?;
-
-    context.terminal().command_title("Project Initialization");
 
     let terminal = context.terminal();
 
@@ -142,7 +147,7 @@ fn prompt_init(
 
     let frontend_url = project_url(context, &user.username, &project_owner, &project_name)?;
 
-    terminal.finalize(&format!(
+    terminal.outro(&format!(
         "Project initialized successfully! You can check out your project at {}",
         context.terminal().format_url(&frontend_url)
     ));

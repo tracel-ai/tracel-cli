@@ -26,6 +26,16 @@ pub enum AuthCommands {
     Status,
 }
 
+impl AuthArgs {
+    /// None for `token`, whose bare value is read by other programs.
+    pub fn title(&self) -> Option<&'static str> {
+        match self.command {
+            AuthCommands::Token => None,
+            AuthCommands::Status => Some("Authentication status"),
+        }
+    }
+}
+
 pub fn handle_command(args: AuthArgs, context: CliContext) -> anyhow::Result<Outcome> {
     match args.command {
         AuthCommands::Token => Ok(access_token(&context)?.into()),
@@ -59,6 +69,9 @@ struct AuthStatus {
     login_ends_at: Option<Timestamp>,
     user: User,
     environment: String,
+    /// " (development environment)" and the like, empty for production.
+    #[serde(skip)]
+    environment_suffix: String,
 }
 
 #[derive(Serialize)]
@@ -87,6 +100,13 @@ impl Render for AuthStatus {
             .field("Namespace", &self.user.namespace)
             .field("Environment", &self.environment)
             .write(out)
+    }
+
+    fn summary(&self) -> Option<String> {
+        Some(format!(
+            "Commands act as {}{}.",
+            self.user.username, self.environment_suffix
+        ))
     }
 }
 
@@ -132,6 +152,7 @@ fn status(context: &CliContext) -> anyhow::Result<AuthStatus> {
                 namespace: client.user().namespace.clone(),
             },
             environment: context.environment_name(),
+            environment_suffix: environment_suffix(&context.environment()),
         }),
         Err(ClientCreationError::NoCredentials | ClientCreationError::InvalidCredentials) => {
             Err(CliError::new(

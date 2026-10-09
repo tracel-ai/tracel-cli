@@ -13,12 +13,21 @@ use crate::helpers::{
     DownloadFile, DownloadResult, Resource, download_files, map_resource_error,
     resolve_namespace_project, select_artifact, validate_rel_path,
 };
-use crate::ui::{Human, Outcome, Render, Table};
+use crate::ui::{Human, Outcome, Render, Table, counted, when};
 
 #[derive(Args, Debug)]
 pub struct ArtifactsArgs {
     #[command(subcommand)]
     pub command: ArtifactsCommands,
+}
+
+impl ArtifactsArgs {
+    pub fn title(&self) -> &'static str {
+        match self.command {
+            ArtifactsCommands::List(_) => "Artifacts",
+            ArtifactsCommands::Download(_) => "Artifact download",
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -109,11 +118,19 @@ impl Render for ArtifactListResponse {
                     manifest_files(&artifact.manifest)
                         .map(|files| files.len().to_string())
                         .unwrap_or_default(),
-                    artifact.created_at.clone(),
+                    when(&artifact.created_at),
                 ]
             }))
-            .total(self.total)
             .write(out)
+    }
+
+    fn summary(&self) -> Option<String> {
+        Some(counted(
+            self.items.len(),
+            self.total as u64,
+            ["artifact", "artifacts"],
+            "No artifacts in this experiment.",
+        ))
     }
 }
 
@@ -150,7 +167,6 @@ pub fn handle_command(args: ArtifactsArgs, context: CliContext) -> anyhow::Resul
         })?
         .into()),
         ArtifactsCommands::Download(args) => {
-            context.terminal().command_title("Artifact download");
             let map_error = |error| {
                 map_resource_error(
                     error,
@@ -193,7 +209,7 @@ pub fn handle_command(args: ArtifactsArgs, context: CliContext) -> anyhow::Resul
                 .collect();
             let files =
                 download_files(&client, context.terminal(), &directory, &files, args.force)?;
-            context.terminal().finalize(&format!(
+            context.terminal().outro(&format!(
                 "Downloaded artifact '{}' to {}.",
                 artifact.name,
                 directory.display()

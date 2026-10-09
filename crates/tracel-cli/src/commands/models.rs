@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
@@ -25,12 +25,29 @@ use crate::helpers::{
 };
 use crate::tools::fs::{build_file_specs, collect_files};
 use crate::tools::tracel_config::TracelProject;
-use crate::ui::{Details, Human, Outcome, Render, Table, json_section};
+use crate::ui::{Details, Human, Outcome, Render, Table, counted, when};
 
 #[derive(Args, Debug)]
 pub struct ModelsArgs {
     #[command(subcommand)]
     pub command: ModelsCommands,
+}
+
+impl ModelsArgs {
+    pub fn title(&self) -> &'static str {
+        match &self.command {
+            ModelsCommands::List => "Models",
+            ModelsCommands::Get(_) => "Model",
+            ModelsCommands::Versions(_) => "Model versions",
+            ModelsCommands::Pull(_) => "Model download",
+            ModelsCommands::Push(_) => "Model upload",
+            ModelsCommands::Promote(_) => "Model promotion",
+            ModelsCommands::Alias(AliasArgs {
+                command: AliasCommands::List(_),
+            }) => "Model aliases",
+            ModelsCommands::Alias(_) => "Model alias",
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -213,11 +230,19 @@ impl Render for ModelListResponse {
                     model.version_count.to_string(),
                     latest_version(model),
                     alias_summary(&model.aliases),
-                    model.created_at.clone(),
+                    when(&model.created_at),
                 ]
             }))
-            .total(self.total)
             .write(out)
+    }
+
+    fn summary(&self) -> Option<String> {
+        Some(counted(
+            self.items.len(),
+            self.total as u64,
+            ["model", "models"],
+            "No models in this project yet.",
+        ))
     }
 }
 
@@ -232,9 +257,16 @@ impl Render for ModelResponse {
             .field("Versions", self.version_count)
             .field("Latest", latest_version(self))
             .field("Aliases", alias_summary(&self.aliases))
-            .field("Created at", &self.created_at)
+            .field("Created at", when(&self.created_at))
             .field("Created by", &self.created_by.username)
             .write(out)
+    }
+
+    fn summary(&self) -> Option<String> {
+        Some(match self.latest_version {
+            Some(version) => format!("Model '{}' is at v{version}.", self.name),
+            None => format!("Model '{}' has no versions yet.", self.name),
+        })
     }
 }
 
@@ -254,12 +286,13 @@ impl Render for ModelVersionResponse {
             .field("Size", self.size)
             .field("Digest", &self.digest)
             .field("Aliases", self.aliases.join(", "))
-            .field("Created at", &self.created_at)
+            .field("Created at", when(&self.created_at))
             .field("Created by", &self.created_by.username)
             .optional("Failure reason", self.failure_reason.as_ref())
             .write(out)?;
-        writeln!(out)?;
+        out.heading("Files")?;
         Table::new(["REL PATH", "SIZE", "CHECKSUM"])
+            .empty("No files.")
             .rows(self.manifest.files.iter().map(|file| {
                 [
                     file.rel_path.clone(),
@@ -268,8 +301,18 @@ impl Render for ModelVersionResponse {
                 ]
             }))
             .write(out)?;
-        writeln!(out)?;
-        json_section(out, "Metadata", &self.metadata)
+        out.spacer()?;
+        Details::new()
+            .section("Metadata", &self.metadata)
+            .write(out)
+    }
+
+    fn summary(&self) -> Option<String> {
+        Some(format!(
+            "Version v{} is {}.",
+            self.version,
+            state_name(self.state)
+        ))
     }
 }
 
@@ -299,11 +342,19 @@ impl Render for ModelVersionListResponse {
                 source,
                 version.size.to_string(),
                 version.aliases.join(", "),
-                version.created_at.clone(),
+                when(&version.created_at),
             ]
         }))
-        .total(self.total)
         .write(out)
+    }
+
+    fn summary(&self) -> Option<String> {
+        Some(counted(
+            self.items.len(),
+            self.total as u64,
+            ["version", "versions"],
+            "No versions yet.",
+        ))
     }
 }
 
@@ -315,8 +366,16 @@ impl Render for ModelAliasListResponse {
                     .iter()
                     .map(|alias| [alias.alias.clone(), format!("v{}", alias.version)]),
             )
-            .total(self.total)
             .write(out)
+    }
+
+    fn summary(&self) -> Option<String> {
+        Some(counted(
+            self.items.len(),
+            self.total as u64,
+            ["alias", "aliases"],
+            "No aliases yet.",
+        ))
     }
 }
 
@@ -432,7 +491,6 @@ fn pull(
     project: &TracelProject,
 ) -> anyhow::Result<ModelPulled> {
     let (namespace, name) = (&project.owner, &project.name);
-    context.terminal().command_title("Model download");
     validate_download_directory(args.directory.as_deref(), &args.model)?;
     let client = get_client_and_login_if_needed(context)?;
     let map_error = |error| {
@@ -466,7 +524,7 @@ fn pull(
         })
         .collect();
     let files = download_files(&client, context.terminal(), &directory, &files, args.force)?;
-    context.terminal().finalize(&format!(
+    context.terminal().outro(&format!(
         "Downloaded '{}' v{} to {}.",
         args.model,
         version.version,
@@ -487,7 +545,6 @@ fn push(
     project: &TracelProject,
 ) -> anyhow::Result<NewVersion> {
     let (namespace, name) = (&project.owner, &project.name);
-    context.terminal().command_title("Model upload");
     validate_auto_create(args.auto_create, args.description.as_deref())?;
     let files = collect_push_files(&args.directory, context)?;
     let client = get_client_and_login_if_needed(context)?;
@@ -550,7 +607,7 @@ fn push(
         .get_model_version(namespace, name, &args.model_name, upload.version)
         .map_err(map_error)?;
 
-    context.terminal().finalize(&format!(
+    context.terminal().outro(&format!(
         "Uploaded model '{}' v{} to {namespace}/{name}.",
         args.model_name, upload.version
     ));
@@ -577,7 +634,6 @@ fn promote(
     project: &TracelProject,
 ) -> anyhow::Result<NewVersion> {
     let (namespace, name) = (&project.owner, &project.name);
-    context.terminal().command_title("Model promotion");
     validate_auto_create(args.auto_create, args.description.as_deref())?;
     let client = get_client_and_login_if_needed(context)?;
     let artifacts = client
@@ -639,7 +695,7 @@ fn promote(
             .get_model_version(namespace, name, &args.model, version.version)
             .map_err(map_error)?;
     }
-    context.terminal().finalize(&format!(
+    context.terminal().outro(&format!(
         "Promoted artifact '{}' to '{}' v{}.",
         artifact.name, args.model, version.version
     ));
@@ -660,7 +716,6 @@ fn alias(
             })?
             .into()),
         AliasCommands::Set(args) => {
-            context.terminal().command_title("Model alias");
             let alias = get_client_and_login_if_needed(context)?
                 .set_model_alias(
                     namespace,
@@ -683,14 +738,13 @@ fn alias(
                         },
                     )
                 })?;
-            context.terminal().finalize(&format!(
+            context.terminal().outro(&format!(
                 "Alias '{}' of '{}' points to v{}.",
                 alias.alias, args.model, alias.version
             ));
             Ok(AliasSet(alias).into())
         }
         AliasCommands::Remove(args) => {
-            context.terminal().command_title("Model alias");
             get_client_and_login_if_needed(context)?
                 .remove_model_alias(namespace, name, &args.model, &args.alias)
                 .map_err(|error| {
@@ -704,7 +758,7 @@ fn alias(
                         },
                     )
                 })?;
-            context.terminal().finalize(&format!(
+            context.terminal().outro(&format!(
                 "Removed alias '{}' from '{}'.",
                 args.alias, args.model
             ));
