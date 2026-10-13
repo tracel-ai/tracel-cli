@@ -181,110 +181,116 @@ fn download_each(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::classify;
 
     #[test]
-    fn paths_must_contain_only_normal_relative_components() {
-        for path in ["a", "nested/weights.bin", "a-b/c_d"] {
-            assert!(validate_rel_path(path).is_ok());
-        }
-        for path in [
-            "",
-            ".",
-            "./a",
-            "a/./b",
-            "..",
-            "../a",
-            "a/../b",
-            "/a",
-            "C:\\a",
-            "C:a",
-            "C:/a",
-            "\\\\server\\file",
-            "\\a",
-            "a\0b",
+    fn a_download_path_stays_inside_its_directory() {
+        for (path, safe) in [
+            ("a", true),
+            ("nested/weights.bin", true),
+            ("a-b/c_d", true),
+            ("", false),
+            (".", false),
+            ("./a", false),
+            ("a/./b", false),
+            ("..", false),
+            ("../a", false),
+            ("a/../b", false),
+            ("/a", false),
+            ("C:\\a", false),
+            ("C:a", false),
+            ("C:/a", false),
+            ("\\\\server\\file", false),
+            ("\\a", false),
+            ("a\0b", false),
         ] {
-            let error = validate_rel_path(path).unwrap_err();
-            assert_eq!(crate::error::classify(&error), ErrorKind::Internal);
-            assert!(error.to_string().contains(path));
+            match validate_rel_path(path) {
+                Ok(()) => assert!(safe, "{path:?}"),
+                Err(error) => {
+                    assert!(!safe, "{path:?}");
+                    assert_eq!(classify(&error), ErrorKind::Internal, "{path:?}");
+                    assert!(error.to_string().contains(path), "{path:?}");
+                }
+            }
         }
     }
 
-    fn file(size_bytes: Option<u64>, checksum: Option<String>) -> DownloadFile {
+    fn file(size_bytes: Option<u64>, checksum: Option<&str>) -> DownloadFile {
         DownloadFile {
             rel_path: "hello".into(),
             url: String::new(),
             size_bytes,
-            checksum,
+            checksum: checksum.map(str::to_string),
+        }
+    }
+
+    /// A writer that takes two bytes at a time, as a socket may.
+    struct PartialWriter(Vec<u8>);
+
+    impl Write for PartialWriter {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            let count = data.len().min(2);
+            self.0.extend_from_slice(&data[..count]);
+            Ok(count)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
         }
     }
 
     #[test]
-    fn writer_hashes_and_counts_only_written_bytes() {
-        struct PartialWriter(Vec<u8>);
-        impl Write for PartialWriter {
-            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-                let count = data.len().min(2);
-                self.0.extend_from_slice(&data[..count]);
-                Ok(count)
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
+    fn the_writer_hashes_only_the_bytes_written() {
         let mut writer = HashingWriter::new(PartialWriter(Vec::new()));
+
         writer.write_all(b"hello world").unwrap();
+
         assert_eq!(writer.bytes, 11);
         assert_eq!(writer.inner.0, b"hello world");
-        let checksum = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
-        assert!(
-            writer
-                .verify(&file(Some(11), Some(checksum.to_uppercase())))
-                .is_ok()
-        );
-        assert!(writer.verify(&file(Some(0), Some(String::new()))).is_ok());
-        assert!(writer.verify(&file(None, None)).is_ok());
         assert_eq!(
-            crate::error::classify(&writer.verify(&file(Some(10), None)).unwrap_err()),
-            ErrorKind::Internal
-        );
-        assert_eq!(
-            crate::error::classify(&writer.verify(&file(None, Some("bad".into()))).unwrap_err()),
-            ErrorKind::Internal
+            format!("{:x}", writer.hasher.clone().finalize()),
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
         );
     }
 
     #[test]
-    fn preflight_validates_all_paths_before_checking_all_conflicts() {
-        let directory = std::env::temp_dir().join(format!(
-            "tracel-download-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&directory).unwrap();
-        fs::write(directory.join("hello"), b"existing").unwrap();
-        let mut files = vec![
-            DownloadFile {
-                rel_path: "new".into(),
-                ..file(None, None)
-            },
-            file(None, None),
-        ];
-        let error = check_destinations(&directory, &files, false).unwrap_err();
-        assert_eq!(crate::error::classify(&error), ErrorKind::Conflict);
-        assert!(error.to_string().contains("hello"));
-        assert!(!directory.join("new").exists());
-        assert!(check_destinations(&directory, &files, true).is_ok());
-        files.push(DownloadFile {
+    fn a_download_must_match_its_declared_size_and_checksum() {
+        let checksum = "B94D27B9934D3E08A52E52D7DA7DABFAC484EFE37A5380EE9088F7ACE2EFCDE9";
+        let mut writer = HashingWriter::new(Vec::new());
+        writer.write_all(b"hello world").unwrap();
+        for (declared, matches) in [
+            (file(Some(11), Some(checksum)), true),
+            (file(Some(0), Some("")), true),
+            (file(None, None), true),
+            (file(Some(10), None), false),
+            (file(None, Some("bad")), false),
+        ] {
+            let case = (declared.size_bytes, declared.checksum.clone());
+            assert_eq!(writer.verify(&declared).is_ok(), matches, "{case:?}");
+        }
+    }
+
+    #[test]
+    fn every_path_is_checked_before_any_existing_file() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("hello"), b"existing").unwrap();
+        let new = || DownloadFile {
+            rel_path: "new".into(),
+            ..file(None, None)
+        };
+        let unsafe_path = DownloadFile {
             rel_path: "../unsafe".into(),
             ..file(None, None)
-        });
-        assert_eq!(
-            crate::error::classify(&check_destinations(&directory, &files, false).unwrap_err()),
-            ErrorKind::Internal
-        );
-        fs::remove_dir_all(directory).unwrap();
+        };
+
+        let existing = check_destinations(directory.path(), &[new(), file(None, None)], false);
+        let forced = check_destinations(directory.path(), &[new(), file(None, None)], true);
+        let unsafe_first =
+            check_destinations(directory.path(), &[file(None, None), unsafe_path], false);
+
+        assert_eq!(classify(&existing.unwrap_err()), ErrorKind::Conflict);
+        assert!(forced.is_ok());
+        assert_eq!(classify(&unsafe_first.unwrap_err()), ErrorKind::Internal);
+        assert!(!directory.path().join("new").exists());
     }
 }

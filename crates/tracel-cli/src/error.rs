@@ -156,7 +156,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exit_codes_and_code_strings_are_stable() {
+    fn each_kind_keeps_its_documented_code_and_exit_code() {
         for (kind, code, exit) in [
             (ErrorKind::Internal, "INTERNAL", 1),
             (ErrorKind::Usage, "USAGE", 2),
@@ -169,147 +169,161 @@ mod tests {
             (ErrorKind::Timeout, "TIMEOUT", 10),
             (ErrorKind::Unavailable, "UNAVAILABLE", 11),
         ] {
-            assert_eq!(kind.exit_code(), exit);
-            assert_eq!(serde_json::to_value(kind).unwrap(), code);
+            assert_eq!(kind.exit_code(), exit, "{kind:?}");
+            assert_eq!(serde_json::to_value(kind).unwrap(), code, "{kind:?}");
+        }
+    }
+
+    fn api_error(status: u16, code: ApiErrorCode) -> ClientError {
+        ClientError::ApiError {
+            status: status.try_into().unwrap(),
+            body: tracel_client::error::ApiErrorBody {
+                code,
+                message: "from the server".into(),
+            },
         }
     }
 
     #[test]
-    fn client_errors_survive_context() {
+    fn an_error_takes_the_kind_of_its_cause_under_any_context() {
+        let console = url::Url::parse("http://localhost:9001/").unwrap();
+        let unreachable = || ClientError::UnknownError("connection refused".into());
         for (error, kind) in [
-            (ClientError::Unauthenticated, ErrorKind::NotAuthenticated),
-            (ClientError::AppSessionEnded, ErrorKind::NotAuthenticated),
-            (ClientError::CredentialNotAllowed, ErrorKind::Forbidden),
-            (ClientError::NotFound, ErrorKind::NotFound),
             (
-                ClientError::NotFoundWithCode(tracel_client::ApiErrorCode::Unknown),
+                ClientError::Unauthenticated.into(),
+                ErrorKind::NotAuthenticated,
+            ),
+            (
+                ClientError::AppSessionEnded.into(),
+                ErrorKind::NotAuthenticated,
+            ),
+            (
+                ClientError::CredentialNotAllowed.into(),
+                ErrorKind::Forbidden,
+            ),
+            (ClientError::NotFound.into(), ErrorKind::NotFound),
+            (
+                ClientError::NotFoundWithCode(ApiErrorCode::Unknown).into(),
                 ErrorKind::NotFound,
             ),
-            (ClientError::InternalServerError, ErrorKind::Unavailable),
             (
-                ClientError::UnknownError("connection refused".into()),
+                ClientError::InternalServerError.into(),
                 ErrorKind::Unavailable,
             ),
+            (unreachable().into(), ErrorKind::Unavailable),
             (
-                ClientError::SessionStore("unreadable".into()),
+                ClientError::SessionStore("unreadable".into()).into(),
                 ErrorKind::Internal,
             ),
-        ] {
-            assert_eq!(
-                classify(&anyhow::Error::new(error).context("request failed")),
-                kind
-            );
-        }
-    }
-
-    #[test]
-    fn api_status_determines_kind() {
-        for (status, kind) in [
-            (400, ErrorKind::Usage),
-            (422, ErrorKind::Usage),
-            (401, ErrorKind::NotAuthenticated),
-            (403, ErrorKind::Forbidden),
-            (404, ErrorKind::NotFound),
-            (409, ErrorKind::Conflict),
-            (429, ErrorKind::Unavailable),
-            (500, ErrorKind::Unavailable),
-            (503, ErrorKind::Unavailable),
-            (599, ErrorKind::Unavailable),
-            (408, ErrorKind::Internal),
-        ] {
-            let error = ClientError::ApiError {
-                status: status.try_into().unwrap(),
-                body: Default::default(),
-            };
-            assert_eq!(
-                classify(&anyhow::Error::new(error).context("request failed")),
-                kind
-            );
-        }
-    }
-
-    #[test]
-    fn server_limit_code_is_limit_reached() {
-        for status in [400, 403] {
-            let error = ClientError::ApiError {
-                status: status.try_into().unwrap(),
-                body: tracel_client::error::ApiErrorBody {
-                    code: ApiErrorCode::LimitReached,
-                    message: "limit".into(),
-                },
-            };
-            assert_eq!(
-                classify(&anyhow::Error::new(error).context("request failed")),
-                ErrorKind::LimitReached
-            );
-        }
-    }
-
-    #[test]
-    fn device_flow_errors_separate_outcomes_from_outages() {
-        for (error, kind) in [
-            (DeviceFlowError::AccessDenied, ErrorKind::NotAuthenticated),
-            (DeviceFlowError::ExpiredToken, ErrorKind::NotAuthenticated),
             (
-                DeviceFlowError::Client(ClientError::UnknownError("connection refused".into())),
-                ErrorKind::Unavailable,
+                api_error(400, ApiErrorCode::Unknown).into(),
+                ErrorKind::Usage,
             ),
-        ] {
-            assert_eq!(
-                classify(&anyhow::Error::new(error).context("login failed")),
-                kind
-            );
-        }
-    }
-
-    #[test]
-    fn creation_errors_keep_their_kind() {
-        for (error, kind) in [
             (
-                ClientCreationError::NoCredentials,
+                api_error(422, ApiErrorCode::Unknown).into(),
+                ErrorKind::Usage,
+            ),
+            (
+                api_error(401, ApiErrorCode::Unknown).into(),
                 ErrorKind::NotAuthenticated,
             ),
             (
-                ClientCreationError::InvalidCredentials,
-                ErrorKind::NotAuthenticated,
+                api_error(403, ApiErrorCode::Unknown).into(),
+                ErrorKind::Forbidden,
             ),
             (
-                ClientCreationError::ApiKeyRefused,
-                ErrorKind::NotAuthenticated,
+                api_error(404, ApiErrorCode::Unknown).into(),
+                ErrorKind::NotFound,
             ),
             (
-                ClientCreationError::ServerConnectionError(
-                    url::Url::parse("http://localhost:9001/").unwrap(),
-                ),
+                api_error(409, ApiErrorCode::Unknown).into(),
+                ErrorKind::Conflict,
+            ),
+            (
+                api_error(429, ApiErrorCode::Unknown).into(),
                 ErrorKind::Unavailable,
             ),
             (
-                ClientCreationError::SessionStore(ClientError::SessionStore("unreadable".into())),
+                api_error(503, ApiErrorCode::Unknown).into(),
+                ErrorKind::Unavailable,
+            ),
+            (
+                api_error(408, ApiErrorCode::Unknown).into(),
                 ErrorKind::Internal,
             ),
+            (
+                api_error(400, ApiErrorCode::LimitReached).into(),
+                ErrorKind::LimitReached,
+            ),
+            (
+                api_error(403, ApiErrorCode::LimitReached).into(),
+                ErrorKind::LimitReached,
+            ),
+            (
+                DeviceFlowError::AccessDenied.into(),
+                ErrorKind::NotAuthenticated,
+            ),
+            (
+                DeviceFlowError::ExpiredToken.into(),
+                ErrorKind::NotAuthenticated,
+            ),
+            (
+                DeviceFlowError::Client(unreachable()).into(),
+                ErrorKind::Unavailable,
+            ),
+            (
+                ClientCreationError::NoCredentials.into(),
+                ErrorKind::NotAuthenticated,
+            ),
+            (
+                ClientCreationError::InvalidCredentials.into(),
+                ErrorKind::NotAuthenticated,
+            ),
+            (
+                ClientCreationError::ApiKeyRefused.into(),
+                ErrorKind::NotAuthenticated,
+            ),
+            (
+                ClientCreationError::ServerConnectionError(console.clone()).into(),
+                ErrorKind::Unavailable,
+            ),
+            (
+                ClientCreationError::SessionStore(ClientError::SessionStore("x".into())).into(),
+                ErrorKind::Internal,
+            ),
+            (anyhow::anyhow!("unclassified"), ErrorKind::Internal),
         ] {
-            assert_eq!(
-                classify(&anyhow::Error::new(error).context("client failed")),
-                kind
-            );
+            let error: anyhow::Error = error;
+            let shown = format!("{error:?}");
+            assert_eq!(classify(&error.context("Can't do it")), kind, "{shown}");
         }
     }
 
     #[test]
-    fn explicit_kind_and_hint_survive_context() {
+    fn a_cli_error_keeps_its_kind_and_hint_under_context() {
         let error = anyhow::Error::new(ClientError::NotFound)
-            .context(
-                CliError::new(ErrorKind::LimitReached, "limit reached")
-                    .with_hint("Try again later."),
-            )
-            .context("operation failed");
+            .context(CliError::new(ErrorKind::LimitReached, "Limit reached.").with_hint("Wait."))
+            .context("Can't do it");
+
         let report = ErrorReport::new(&error);
+
         assert_eq!(report.code, ErrorKind::LimitReached);
-        assert_eq!(report.hint, Some("Try again later."));
+        assert_eq!(report.hint, Some("Wait."));
         assert_eq!(report.exit_code, 8);
-        assert_eq!(
-            classify(&anyhow::anyhow!("unclassified")),
-            ErrorKind::Internal
-        );
+    }
+
+    #[test]
+    fn a_reported_message_ends_as_a_sentence() {
+        for (error, expected) in [
+            (anyhow::anyhow!("No model 'w'."), "No model 'w'."),
+            (
+                anyhow::anyhow!("No such file").context("Can't read 'a'"),
+                "Can't read 'a': No such file.",
+            ),
+            (anyhow::anyhow!("Ready?"), "Ready?"),
+            (anyhow::anyhow!("trailing space  "), "trailing space."),
+        ] {
+            assert_eq!(ErrorReport::new(&error).message, expected);
+        }
     }
 }

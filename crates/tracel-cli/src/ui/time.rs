@@ -23,13 +23,16 @@ impl Serialize for Timestamp {
 /// Show a server's RFC 3339 time in the local zone, to the minute. Other text stays as
 /// it is.
 pub fn when(text: &str) -> String {
-    local(text, &Local, "%Y-%m-%d %H:%M")
+    local(text, &Local, TO_THE_MINUTE)
 }
 
 /// Show a log entry's RFC 3339 time in the local zone, to the second.
 pub fn log_time(text: &str) -> String {
-    local(text, &Local, "%Y-%m-%d %H:%M:%S")
+    local(text, &Local, TO_THE_SECOND)
 }
+
+const TO_THE_MINUTE: &str = "%Y-%m-%d %H:%M";
+const TO_THE_SECOND: &str = "%Y-%m-%d %H:%M:%S";
 
 fn local<Tz: TimeZone>(text: &str, zone: &Tz, format: &str) -> String
 where
@@ -49,27 +52,33 @@ mod tests {
 
     #[test]
     fn server_times_read_in_the_local_zone() {
-        let zone = chrono::FixedOffset::west_opt(4 * 3600).unwrap();
-        let minute = "%Y-%m-%d %H:%M";
-        assert_eq!(
-            local("2026-10-09T20:21:06.075Z", &zone, minute),
-            "2026-10-09 16:21"
-        );
-        assert_eq!(
-            local("2026-10-09T20:21:06Z", &Utc, minute),
-            "2026-10-09 20:21"
-        );
-        assert_eq!(local("yesterday", &Utc, minute), "yesterday");
-        assert_eq!(local("", &Utc, minute), "");
+        let west = chrono::FixedOffset::west_opt(4 * 3600).unwrap();
+        for (text, expected) in [
+            ("2026-10-09T20:21:06.075Z", "2026-10-09 16:21"),
+            ("2026-10-09T20:21:06+00:00", "2026-10-09 16:21"),
+            ("yesterday", "yesterday"),
+            ("", ""),
+        ] {
+            assert_eq!(local(text, &west, TO_THE_MINUTE), expected, "{text:?}");
+        }
     }
 
     #[test]
-    fn timestamps_are_rfc_3339_in_utc() {
+    fn a_log_time_keeps_its_seconds() {
+        let utc = chrono::Utc;
+
+        let time = local("2026-10-09T20:21:06.075Z", &utc, TO_THE_SECOND);
+
+        assert_eq!(time, "2026-10-09 20:21:06");
+    }
+
+    #[test]
+    fn a_timestamp_is_rfc_3339_in_utc() {
         let time = Timestamp(UNIX_EPOCH + Duration::from_secs(1_900_000_000));
-        assert_eq!(time.to_string(), "2030-03-17T17:46:40+00:00");
-        assert_eq!(
-            serde_json::to_value(time).unwrap(),
-            "2030-03-17T17:46:40+00:00"
-        );
+
+        let (text, json) = (time.to_string(), serde_json::to_value(time).unwrap());
+
+        assert_eq!(text, "2030-03-17T17:46:40+00:00");
+        assert_eq!(json, "2030-03-17T17:46:40+00:00");
     }
 }

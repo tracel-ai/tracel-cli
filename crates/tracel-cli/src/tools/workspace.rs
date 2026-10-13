@@ -98,67 +98,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_extract_workspace_name_from_workspace_package() {
-        let toml_content = r#"
-[workspace]
-members = ["crate1", "crate2"]
-
-[workspace.package]
-name = "my-awesome-workspace"
-version = "0.1.0"
-"#;
-        let result = extract_workspace_name_from_toml(toml_content);
-        assert_eq!(result, Some("my-awesome-workspace".to_string()));
-    }
-
-    #[test]
-    fn test_extract_workspace_name_from_package() {
-        let toml_content = r#"
-[package]
-name = "single-crate-project"
-version = "0.1.0"
-"#;
-        let result = extract_workspace_name_from_toml(toml_content);
-        assert_eq!(result, Some("single-crate-project".to_string()));
-    }
-
-    #[test]
-    fn test_extract_workspace_name_prefers_workspace_over_package() {
-        let toml_content = r#"
-[workspace]
-members = ["crate1"]
-
-[workspace.package]
-name = "workspace-name"
-
-[package]
-name = "package-name"
-"#;
-        let result = extract_workspace_name_from_toml(toml_content);
-        assert_eq!(result, Some("workspace-name".to_string()));
-    }
-
-    #[test]
-    fn test_extract_workspace_name_returns_none_when_no_name() {
-        let toml_content = r#"
-[workspace]
-members = ["crate1", "crate2"]
-"#;
-        let result = extract_workspace_name_from_toml(toml_content);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_extract_workspace_name_returns_none_for_invalid_toml() {
-        let toml_content = "this is not valid toml { [ }";
-        let result = extract_workspace_name_from_toml(toml_content);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_extract_workspace_name_returns_none_for_empty_toml() {
-        let toml_content = "";
-        let result = extract_workspace_name_from_toml(toml_content);
-        assert_eq!(result, None);
+    fn the_workspace_name_comes_from_workspace_package_then_package() {
+        for (toml, expected) in [
+            (
+                "[workspace]\nmembers = ['a']\n[workspace.package]\nname = 'workspace-name'\n",
+                Some("workspace-name"),
+            ),
+            ("[package]\nname = 'single-crate'\n", Some("single-crate")),
+            (
+                "[workspace.package]\nname = 'workspace-name'\n[package]\nname = 'package-name'\n",
+                Some("workspace-name"),
+            ),
+            ("[workspace]\nmembers = ['a']\n", None),
+            ("this is not valid toml { [ }", None),
+            ("", None),
+        ] {
+            assert_eq!(
+                extract_workspace_name_from_toml(toml).as_deref(),
+                expected,
+                "{toml:?}"
+            );
+        }
     }
 }

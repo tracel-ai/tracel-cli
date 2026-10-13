@@ -507,84 +507,53 @@ pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Res
 
 #[cfg(test)]
 mod tests {
-    use clap::{CommandFactory, Parser};
     use serde_json::json;
 
     use super::*;
-    use crate::cli::{CliArgs, Commands};
+    use crate::cli::Commands;
+    use crate::test_support::{command, plain};
 
-    fn parse_command(arguments: &[&str]) -> ExperimentsArgs {
-        let args = CliArgs::try_parse_from(arguments).unwrap();
-        let Some(Commands::Experiments(args)) = args.command else {
-            panic!("Expected experiments command");
-        };
-        args
-    }
-
-    #[test]
-    fn command_definitions_are_valid_and_alias_preserves_sort() {
-        CliArgs::command().debug_assert();
-        let args = parse_command(&[
-            "tracel",
-            "exp",
-            "list",
-            "--page",
-            "0",
-            "--limit",
-            "25",
-            "--sort",
-            "created_at,desc",
-            "--sort",
-            "name,asc",
-        ]);
-        let ExperimentsCommands::List(args) = args.command else {
-            panic!("Expected list command");
-        };
-        assert_eq!(args.page, Some(0));
-        assert_eq!(args.limit, Some(25));
-        assert_eq!(args.sort, ["created_at,desc", "name,asc"]);
-    }
-
-    #[test]
-    fn experiment_selectors_and_metric_defaults_are_validated() {
-        for (selector, number) in [("latest", None), ("42", Some(42))] {
-            let args = parse_command(&["tracel", "experiments", "get", selector]);
-            let ExperimentsCommands::Get(args) = args.command else {
-                panic!("Expected get command");
-            };
-            match args.experiment {
-                ExperimentSelector::Latest => assert!(number.is_none()),
-                ExperimentSelector::Number(value) => assert_eq!(Some(value), number),
-            }
+    fn logs_args(args: &[&str]) -> LogsArgs {
+        let mut argv = vec!["experiments", "logs", "42"];
+        argv.extend(args);
+        match command(&argv) {
+            Commands::Experiments(ExperimentsArgs {
+                command: ExperimentsCommands::Logs(args),
+            }) => args,
+            other => panic!("{argv:?} parse as {other:?}"),
         }
-        let args = parse_command(&["tracel", "exp", "metrics", "42", "--metric", "loss"]);
-        let ExperimentsCommands::Metrics(args) = args.command else {
-            panic!("Expected metrics command");
-        };
-        assert_eq!(args.num, 42);
-        assert_eq!(args.metric.as_deref(), Some("loss"));
-        assert_eq!(args.max_points, 100);
-        assert_eq!(args.downsampling, 1);
-        for arguments in [
-            vec!["tracel", "exp", "get", "invalid"],
-            vec!["tracel", "exp", "get", "0"],
-            vec!["tracel", "exp", "metrics", "42", "--summary"],
-            vec!["tracel", "exp", "metrics", "42", "--max-points", "0"],
-            vec!["tracel", "exp", "metrics", "42", "--downsampling", "0"],
-            vec!["tracel", "exp", "logs", "42", "--limit", "0"],
-            vec!["tracel", "exp", "list", "--limit", "0"],
+    }
+
+    fn log(seq: u64, message: &str) -> ExperimentLogItemResponse {
+        ExperimentLogItemResponse {
+            seq,
+            log_level: LogLevelResponse::Warn,
+            timestamp: "2026-10-07T00:00:00Z".into(),
+            message: message.into(),
+            metadata: json!({"epoch": 3}),
+        }
+    }
+
+    #[test]
+    fn an_experiment_is_a_positive_number_or_latest() {
+        for (value, expected) in [
+            ("latest", Some("latest")),
+            ("42", Some("42")),
+            ("0", None),
+            ("-1", None),
+            ("v7", None),
         ] {
-            assert!(CliArgs::try_parse_from(arguments).is_err());
+            let parsed = parse_experiment(value).ok().map(|selector| match selector {
+                ExperimentSelector::Latest => "latest".to_string(),
+                ExperimentSelector::Number(number) => number.to_string(),
+            });
+            assert_eq!(parsed.as_deref(), expected, "{value}");
         }
     }
 
     #[test]
-    fn log_filters_map_to_the_client_request() {
-        let args = parse_command(&[
-            "tracel",
-            "exp",
-            "logs",
-            "42",
+    fn log_filters_become_the_client_request() {
+        let args = logs_args(&[
             "--limit",
             "25",
             "--level",
@@ -606,10 +575,9 @@ mod tests {
             "--metadata-exists",
             "epoch",
         ]);
-        let ExperimentsCommands::Logs(args) = args.command else {
-            panic!("Expected logs command");
-        };
+
         let request = args.into_request();
+
         assert_eq!(request.limit, Some(25));
         assert_eq!(
             request.levels,
@@ -631,69 +599,68 @@ mod tests {
     }
 
     #[test]
-    fn follow_starts_from_a_sequence_cursor() {
-        for after in [None, Some("12")] {
-            let mut arguments = vec!["tracel", "exp", "logs", "42", "--follow", "--json"];
-            if let Some(after) = after {
-                arguments.extend(["--after", after]);
-            }
-            let args = parse_command(&arguments);
-            let ExperimentsCommands::Logs(args) = args.command else {
-                panic!("Expected logs command");
-            };
-            let request = args.into_request();
-            assert_eq!(
-                request.after,
-                Some(after.map_or(0, |value| value.parse().unwrap()))
-            );
-            assert_eq!(request.limit, Some(100));
-            assert!(request.levels.is_none());
-        }
-        for flag in ["--follow", "--after"] {
-            for (filter, value) in [("--from", "start"), ("--to", "end"), ("--offset", "5")] {
-                let mut arguments = vec!["tracel", "exp", "logs", "42", flag];
-                if flag == "--after" {
-                    arguments.push("12");
-                }
-                arguments.extend([filter, value]);
-                assert_eq!(
-                    CliArgs::try_parse_from(arguments).unwrap_err().kind(),
-                    clap::error::ErrorKind::ArgumentConflict
-                );
-            }
+    fn following_logs_reads_from_a_sequence_cursor() {
+        for (args, after) in [
+            (&["--follow"][..], Some(0)),
+            (&["--follow", "--after", "12"], Some(12)),
+            (&["--after", "12"], Some(12)),
+            (&[], None),
+        ] {
+            assert_eq!(logs_args(args).into_request().after, after, "{args:?}");
         }
     }
 
     #[test]
-    fn followed_logs_are_typed_events() {
-        let item = ExperimentLogItemResponse {
-            seq: 7,
-            log_level: LogLevelResponse::Warn,
-            timestamp: "2026-10-07T00:00:00Z".into(),
-            message: "loss\nspiked".into(),
-            metadata: json!({"epoch": 3}),
+    fn logs_read_oldest_first() {
+        let logs = ExperimentLogQueryResponse {
+            running: false,
+            items: vec![log(9, "second"), log(8, "first")],
+            has_more: false,
+            next_cursor: None,
+            total: 2,
         };
+
+        let text = plain(&logs);
+
+        let messages: Vec<&str> = text
+            .lines()
+            .map(|line| line.rsplit(' ').next().unwrap())
+            .collect();
+        assert_eq!(messages, ["first", "second"]);
+    }
+
+    #[test]
+    fn a_followed_log_is_an_event_with_its_type() {
+        let item = log(7, "loss\nspiked");
+        for (event, expected) in [
+            (
+                LogEvent::Log(&item),
+                json!({
+                    "type": "log",
+                    "seq": 7,
+                    "log_level": "warn",
+                    "timestamp": "2026-10-07T00:00:00Z",
+                    "message": "loss\nspiked",
+                    "metadata": {"epoch": 3},
+                }),
+            ),
+            (
+                LogEvent::End { running: false },
+                json!({"type": "end", "running": false}),
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(&event).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn a_log_line_shows_its_local_time_level_and_one_line_message() {
+        let item = log(7, "loss\nspiked");
+
+        let text = plain(&LogEvent::Log(&item)) + &plain(&LogEvent::End { running: false });
+
         assert_eq!(
-            serde_json::to_value(LogEvent::Log(&item)).unwrap(),
-            json!({
-                "type": "log",
-                "seq": 7,
-                "log_level": "warn",
-                "timestamp": "2026-10-07T00:00:00Z",
-                "message": "loss\nspiked",
-                "metadata": {"epoch": 3},
-            })
-        );
-        assert_eq!(
-            serde_json::to_value(LogEvent::End { running: false }).unwrap(),
-            json!({"type": "end", "running": false})
-        );
-        let mut text = Vec::new();
-        let mut out = Human::plain(&mut text, None);
-        LogEvent::Log(&item).render(&mut out).unwrap();
-        LogEvent::End { running: false }.render(&mut out).unwrap();
-        assert_eq!(
-            String::from_utf8(text).unwrap(),
+            text,
             format!("{} warn loss spiked\n", log_time("2026-10-07T00:00:00Z"))
         );
     }

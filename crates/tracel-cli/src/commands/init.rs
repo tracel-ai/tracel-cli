@@ -421,17 +421,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn project_name_allows_alphanumeric_underscores_and_hyphens() {
-        for name in ["project", "Project123", "my_project-1", "modèle"] {
-            assert!(validate_project_name(name).is_ok());
+    fn a_project_name_has_only_letters_digits_underscores_and_hyphens() {
+        for (name, valid) in [
+            ("project", true),
+            ("Project123", true),
+            ("my_project-1", true),
+            ("modèle", true),
+            ("", false),
+            ("my project", false),
+            ("project.name", false),
+            ("project/name", false),
+        ] {
+            assert_eq!(validate_project_name(name).is_ok(), valid, "{name:?}");
         }
-        for name in ["", "my project", "project.name", "project/name"] {
-            assert!(validate_project_name(name).is_err());
+    }
+
+    #[test]
+    fn a_project_is_on_the_web_console_under_its_namespace() {
+        for (namespace, expected) in [
+            (Namespace::User("ada".into()), "/users/ada/projects/demo"),
+            (
+                Namespace::Organization("tracel".into()),
+                "/orgs/tracel/projects/demo",
+            ),
+        ] {
+            assert_eq!(namespace.project_path("demo"), expected);
         }
-        assert!(
-            validate_project_name("project.name")
-                .unwrap_err()
-                .contains("'_' and '-'")
-        );
     }
 }

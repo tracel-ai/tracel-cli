@@ -65,47 +65,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn auto_is_the_command_default() {
-        for auto in [Format::Human, Format::Json] {
-            assert_eq!(Format::resolve(None, false, None, auto).unwrap(), auto);
-            assert_eq!(
-                Format::resolve(Some(FormatArg::Auto), false, Some("json"), auto).unwrap(),
-                auto
-            );
+    fn json_then_output_then_tracel_output_choose_the_format() {
+        use FormatArg::{Auto, Human as HumanArg, Json as JsonArg};
+        for (flag, json, environment, auto, expected) in [
+            (None, false, None, Format::Human, Some(Format::Human)),
+            (None, false, None, Format::Json, Some(Format::Json)),
+            (
+                Some(Auto),
+                false,
+                Some("json"),
+                Format::Human,
+                Some(Format::Human),
+            ),
+            (
+                None,
+                false,
+                Some("human"),
+                Format::Json,
+                Some(Format::Human),
+            ),
+            (None, false, Some("json"), Format::Human, Some(Format::Json)),
+            (
+                Some(HumanArg),
+                false,
+                Some("json"),
+                Format::Json,
+                Some(Format::Human),
+            ),
+            (
+                Some(JsonArg),
+                false,
+                Some("human"),
+                Format::Human,
+                Some(Format::Json),
+            ),
+            (
+                Some(HumanArg),
+                false,
+                Some("xml"),
+                Format::Json,
+                Some(Format::Human),
+            ),
+            (None, true, Some("human"), Format::Human, Some(Format::Json)),
+            (None, true, Some("xml"), Format::Human, Some(Format::Json)),
+            (None, false, Some("xml"), Format::Human, None),
+            (None, false, Some("auto"), Format::Human, None),
+        ] {
+            let case = (flag, json, environment, auto);
+            let resolved = Format::resolve(flag, json, environment, auto);
+            assert_eq!(resolved.as_ref().ok().copied(), expected, "{case:?}");
+            if let Err(error) = resolved {
+                assert_eq!(error.kind, ErrorKind::Usage, "{case:?}");
+            }
         }
-        assert_eq!(Format::for_stdout(true), Format::Human);
-        assert_eq!(Format::for_stdout(false), Format::Json);
-    }
-
-    #[test]
-    fn flags_override_environment() {
-        for environment in [Some("human"), Some("json"), Some("invalid")] {
-            assert_eq!(
-                Format::resolve(Some(FormatArg::Human), false, environment, Format::Json).unwrap(),
-                Format::Human
-            );
-            assert_eq!(
-                Format::resolve(None, true, environment, Format::Human).unwrap(),
-                Format::Json
-            );
-            assert_eq!(
-                Format::resolve(Some(FormatArg::Auto), false, environment, Format::Json).unwrap(),
-                Format::Json
-            );
-        }
-    }
-
-    #[test]
-    fn environment_selects_format_or_reports_usage() {
-        assert_eq!(
-            Format::resolve(None, false, Some("human"), Format::Json).unwrap(),
-            Format::Human
-        );
-        assert_eq!(
-            Format::resolve(None, false, Some("json"), Format::Human).unwrap(),
-            Format::Json
-        );
-        let error = Format::resolve(None, false, Some("auto"), Format::Human).unwrap_err();
-        assert_eq!(error.kind, ErrorKind::Usage);
     }
 }

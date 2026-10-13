@@ -150,17 +150,23 @@ impl Output {
         &self,
         write: impl FnOnce(&mut dyn Write) -> io::Result<()>,
     ) -> anyhow::Result<()> {
-        match write(&mut self.screen.stdout()) {
-            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Err(StdoutClosed.into()),
-            result => Ok(result?),
-        }
+        closed_on_broken_pipe(write(&mut self.screen.stdout()))
+    }
+}
+
+/// Turn a write that failed because the reader went away into `StdoutClosed`.
+fn closed_on_broken_pipe(written: io::Result<()>) -> anyhow::Result<()> {
+    match written {
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Err(StdoutClosed.into()),
+        written => Ok(written?),
     }
 }
 
 /// Write a result's text for its box, fitted to `width`.
 fn box_text(report: &dyn Report, width: Option<usize>) -> io::Result<String> {
     let mut text = Vec::new();
-    report.write_text(&mut Human::for_box(&mut text, width))?;
+    let styled = console::colors_enabled_stderr();
+    report.write_text(&mut Human::new(&mut text, width, styled))?;
     Ok(String::from_utf8_lossy(&text).into_owned())
 }
 
@@ -218,6 +224,7 @@ fn write_failure(report: &ErrorReport<'_>, out: &mut dyn Write) -> io::Result<()
 mod tests {
     use super::*;
     use crate::error::{CliError, ErrorKind};
+    use crate::test_support::ClosedPipe;
 
     #[derive(Serialize)]
     struct Greeting {
@@ -234,81 +241,83 @@ mod tests {
         }
     }
 
-    #[derive(Serialize)]
-    struct Done {}
-
-    impl Render for Done {
-        fn render(&self, _: &mut Human<'_>) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
     fn written(write: impl FnOnce(&mut dyn Write) -> io::Result<()>) -> String {
         let mut out = Vec::new();
         write(&mut out).unwrap();
         String::from_utf8(out).unwrap()
     }
 
-    fn result(format: Format, report: &dyn Report, summary: Option<&str>) -> String {
-        written(|out| write_result(format, report, summary, None, out))
-    }
-
     #[test]
-    fn results_are_an_envelope_or_their_text() {
+    fn a_result_on_stdout_is_an_envelope_or_text_ending_with_its_summary() {
         let greeting = Greeting { name: "Ada" };
-        assert_eq!(
-            result(Format::Json, &greeting, None),
-            "{\"ok\":true,\"data\":{\"name\":\"Ada\"}}\n"
-        );
-        assert_eq!(result(Format::Human, &greeting, None), "Hello, Ada.\n");
-        assert_eq!(result(Format::Human, &Done {}, None), "");
+        let data = Outcome::data(Greeting { name: "Ada" });
+        let data = data.0.as_deref().unwrap();
+        for (format, report, summary, expected) in [
+            (
+                Format::Json,
+                &greeting as &dyn Report,
+                Some("Greeted."),
+                "{\"ok\":true,\"data\":{\"name\":\"Ada\"}}\n",
+            ),
+            (Format::Human, &greeting, None, "Hello, Ada.\n"),
+            (
+                Format::Human,
+                &greeting,
+                Some("Greeted."),
+                "Hello, Ada.\nGreeted.\n",
+            ),
+            (
+                Format::Json,
+                data,
+                None,
+                "{\"ok\":true,\"data\":{\"name\":\"Ada\"}}\n",
+            ),
+            (Format::Human, data, None, ""),
+        ] {
+            assert_eq!(
+                written(|out| write_result(format, report, summary, None, out)),
+                expected,
+                "{format:?} {summary:?}"
+            );
+        }
     }
 
     #[test]
-    fn plain_text_ends_with_the_summary() {
+    fn a_box_holds_the_text_of_a_result_without_its_summary() {
         let greeting = Greeting { name: "Ada" };
-        assert_eq!(
-            result(Format::Human, &greeting, Some("Greeted.")),
-            "Hello, Ada.\nGreeted.\n"
-        );
-        assert_eq!(
-            result(Format::Json, &greeting, Some("Greeted.")),
-            "{\"ok\":true,\"data\":{\"name\":\"Ada\"}}\n"
-        );
+
+        let text = box_text(&greeting, None).unwrap();
+
+        assert_eq!(console::strip_ansi_codes(&text), "Hello, Ada.\n");
     }
 
     #[test]
-    fn a_box_holds_the_text_of_a_result() {
-        assert_eq!(
-            box_text(&Greeting { name: "Ada" }, None).unwrap(),
-            "Hello, Ada.\n"
-        );
-        assert_eq!(box_text(&Done {}, None).unwrap(), "");
-    }
-
-    #[test]
-    fn events_are_bare_json_lines_or_their_text() {
+    fn an_event_is_a_bare_json_line_or_its_text() {
         let event = Greeting { name: "Ada" };
-        assert_eq!(
-            written(|out| write_event(Format::Json, None, &event, out)),
-            "{\"name\":\"Ada\"}\n"
-        );
-        assert_eq!(
-            written(|out| write_event(Format::Human, None, &event, out)),
-            "Hello, Ada.\n"
-        );
+        for (format, expected) in [
+            (Format::Json, "{\"name\":\"Ada\"}\n"),
+            (Format::Human, "Hello, Ada.\n"),
+        ] {
+            assert_eq!(
+                written(|out| write_event(format, None, &event, out)),
+                expected,
+                "{format:?}"
+            );
+        }
     }
 
     #[test]
-    fn failures_carry_the_error_report() {
+    fn a_failure_envelope_carries_the_error_report() {
         let error = anyhow::Error::new(
             CliError::new(ErrorKind::NotFound, "No model 'weights'.").with_hint("List models."),
         );
         let report = ErrorReport::new(&error);
-        let value: serde_json::Value =
+
+        let envelope: serde_json::Value =
             serde_json::from_str(&written(|out| write_failure(&report, out))).unwrap();
+
         assert_eq!(
-            value,
+            envelope,
             serde_json::json!({
                 "ok": false,
                 "error": {
@@ -319,5 +328,15 @@ mod tests {
                 },
             })
         );
+    }
+
+    #[test]
+    fn a_reader_that_went_away_closes_stdout() {
+        let greeting = Greeting { name: "Ada" };
+        let written = write_result(Format::Human, &greeting, None, None, &mut ClosedPipe);
+
+        let error = closed_on_broken_pipe(written).unwrap_err();
+
+        assert!(error.is::<StdoutClosed>(), "{error:?}");
     }
 }

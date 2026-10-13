@@ -154,3 +154,25 @@ fn time_left(until: SystemTime, now: SystemTime) -> String {
         format!("{minutes}m")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    use super::*;
+
+    #[test]
+    fn the_time_left_on_a_login_reads_in_its_two_largest_units() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_900_000_000);
+        for (seconds, expected) in [
+            (0, "0m"),
+            (59, "0m"),
+            (45 * 60, "45m"),
+            (3 * 3600 + 5 * 60, "3h 5m"),
+            (6 * 86400 + 23 * 3600 + 59 * 60, "6d 23h"),
+        ] {
+            let until = now + Duration::from_secs(seconds);
+            assert_eq!(time_left(until, now), expected, "{seconds}");
+        }
+    }
+}

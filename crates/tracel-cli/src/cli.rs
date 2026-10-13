@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::io::IsTerminal;
 
 use clap::{CommandFactory, Parser, Subcommand};
@@ -58,6 +59,17 @@ pub struct CliArgs {
         conflicts_with = "dev"
     )]
     pub staging: Option<u8>,
+}
+
+impl CliArgs {
+    /// Parse the arguments `tracel` was started with.
+    pub fn try_parse_args<I, T>(args: I) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<OsString> + Clone,
+    {
+        Self::try_parse_from(args)
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -135,20 +147,19 @@ impl Commands {
 }
 
 pub fn cli_main() {
-    let args = match CliArgs::try_parse() {
+    let args = match CliArgs::try_parse_args(std::env::args_os()) {
         Ok(args) => args,
         Err(error) if !error.use_stderr() => error.exit(),
         Err(error) => {
-            let format = usage_format(std::env::args_os().skip(1));
+            let format = usage_format(
+                std::env::args_os().skip(1),
+                std::env::var("TRACEL_OUTPUT").ok().as_deref(),
+                std::io::stdout().is_terminal(),
+            );
             if format == Format::Human {
                 error.exit();
             }
-            let message = error.to_string();
-            let message = message
-                .trim()
-                .strip_prefix("error: ")
-                .unwrap_or(message.trim());
-            fail_early(&CliError::new(ErrorKind::Usage, message).into(), format);
+            fail_early(&usage_error(&error).into(), format);
         }
     };
 
@@ -208,23 +219,50 @@ pub fn cli_main() {
     }
 }
 
-/// Report a command that stopped on `error` and exit with its code. A closed stdout
-/// and a declined prompt aren't failures, so they exit 0.
+/// How a command that stopped on an error ends.
+enum Stop<'a> {
+    /// Its reader closed stdout, having got all it wanted.
+    Closed,
+    /// The user answered a prompt no, and the command ends on what it didn't do.
+    Declined(&'a str),
+    Failed(ErrorReport<'a>),
+}
+
+impl<'a> Stop<'a> {
+    fn of(error: &'a anyhow::Error) -> Self {
+        if error.chain().any(|cause| cause.is::<StdoutClosed>()) {
+            return Self::Closed;
+        }
+        match error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<Declined>())
+        {
+            Some(declined) => Self::Declined(declined.outcome()),
+            None => Self::Failed(ErrorReport::new(error)),
+        }
+    }
+
+    fn exit_code(&self) -> i32 {
+        match self {
+            Self::Closed | Self::Declined(_) => 0,
+            Self::Failed(report) => report.exit_code,
+        }
+    }
+}
+
+/// End a command that stopped on `error`: report a failure on both channels, and exit
+/// with its code.
 fn fail(error: &anyhow::Error, output: &Output, terminal: &Terminal) -> ! {
-    if error.chain().any(|cause| cause.is::<StdoutClosed>()) {
-        std::process::exit(0);
+    let stop = Stop::of(error);
+    match &stop {
+        Stop::Closed => {}
+        Stop::Declined(outcome) => terminal.outro(outcome),
+        Stop::Failed(report) => {
+            output.error(report);
+            terminal.error(report);
+        }
     }
-    if let Some(declined) = error
-        .chain()
-        .find_map(|cause| cause.downcast_ref::<Declined>())
-    {
-        terminal.outro(declined.outcome());
-        std::process::exit(0);
-    }
-    let report = ErrorReport::new(error);
-    output.error(&report);
-    terminal.error(&report);
-    std::process::exit(report.exit_code)
+    std::process::exit(stop.exit_code())
 }
 
 /// Fail before the command's channels exist.
@@ -233,8 +271,24 @@ fn fail_early(error: &anyhow::Error, format: Format) -> ! {
     fail(error, &output, &terminal)
 }
 
-/// Choose the format for an error in arguments that did not parse.
-fn usage_format(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> Format {
+/// Turn arguments that did not parse into a usage error, without clap's "error: "
+/// prefix.
+fn usage_error(error: &clap::Error) -> CliError {
+    let message = error.to_string();
+    let message = message.trim();
+    CliError::new(
+        ErrorKind::Usage,
+        message.strip_prefix("error: ").unwrap_or(message),
+    )
+}
+
+/// Choose the format for an error in arguments that did not parse, from the output
+/// flags among them and `environment`, the value of TRACEL_OUTPUT.
+fn usage_format(
+    arguments: impl IntoIterator<Item = OsString>,
+    environment: Option<&str>,
+    stdout_is_terminal: bool,
+) -> Format {
     let mut arguments = arguments.into_iter();
     let mut flag = None;
     let mut json = false;
@@ -265,14 +319,8 @@ fn usage_format(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> Form
             }
         }
     }
-    let auto = Format::for_stdout(std::io::stdout().is_terminal());
-    Format::resolve(
-        flag,
-        json,
-        std::env::var("TRACEL_OUTPUT").ok().as_deref(),
-        auto,
-    )
-    .unwrap_or(auto)
+    let auto = Format::for_stdout(stdout_is_terminal);
+    Format::resolve(flag, json, environment, auto).unwrap_or(auto)
 }
 
 fn handle_command(command: Commands, context: CliContext) -> anyhow::Result<Outcome> {
@@ -298,137 +346,93 @@ fn handle_command(command: Commands, context: CliContext) -> anyhow::Result<Outc
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{command, parse, report};
+    use crate::ui::{Declined, StdoutClosed};
 
     #[test]
-    fn command_definitions_are_valid() {
+    fn command_definitions_pass_clap_checks() {
         CliArgs::command().debug_assert();
-        assert!(
-            CliArgs::try_parse_from(["tracel", "model", "upload", "weights", "-d", "."]).is_err()
-        );
     }
 
     #[test]
-    fn project_and_directory_flags_are_global() {
-        for arguments in [
-            ["tracel", "--project", "alice/demo", "-C", "/tmp", "project"],
-            ["tracel", "project", "--project", "alice/demo", "-C", "/tmp"],
+    fn auto_output_is_plain_text_where_another_program_reads_stdout() {
+        for (args, stdout_is_terminal, expected) in [
+            (&["auth", "token"][..], false, Format::Human),
+            (&["auth", "token"], true, Format::Human),
+            (&["train", "--", "--epochs", "1"], false, Format::Human),
+            (&["auth", "status"], false, Format::Json),
+            (&["auth", "status"], true, Format::Human),
+            (&["me"], false, Format::Json),
         ] {
-            let args = CliArgs::try_parse_from(arguments).unwrap();
-            let project = args.project.unwrap();
-            assert_eq!(project.namespace, "alice");
-            assert_eq!(project.name, "demo");
             assert_eq!(
-                args.working_directory.unwrap(),
-                std::path::Path::new("/tmp")
+                command(args).auto_format(stdout_is_terminal),
+                expected,
+                "{args:?} {stdout_is_terminal}"
             );
         }
-        let args = CliArgs::try_parse_from([
-            "tracel",
-            "models",
-            "push",
-            "weights",
-            "-d",
-            ".",
-            "--project",
-            "alice/demo",
-        ])
-        .unwrap();
-        assert!(args.working_directory.is_none());
-        assert_eq!(args.project.unwrap().name, "demo");
-        let error = CliArgs::try_parse_from(["tracel", "--project", "bad", "project"]).unwrap_err();
-        assert_eq!(error.exit_code(), 2);
     }
 
     #[test]
-    fn working_directory_is_separate_from_upload_directory() {
-        let args = CliArgs::try_parse_from([
-            "tracel",
-            "models",
-            "push",
-            "weights",
-            "-d",
-            "./weights",
-            "-C",
-            "/tmp",
-        ])
-        .unwrap();
-        assert_eq!(
-            args.working_directory.unwrap(),
-            std::path::Path::new("/tmp")
-        );
-        let Some(Commands::Models(model)) = args.command else {
-            panic!("Expected models push command");
-        };
-        let commands::models::ModelsCommands::Push(upload) = model.command else {
-            panic!("Expected models push command");
-        };
-        assert_eq!(upload.directory, std::path::Path::new("./weights"));
-    }
-
-    #[test]
-    fn models_push_rejects_removed_flags() {
-        for flag in ["--namespace", "-n", "-p"] {
-            let error = CliArgs::try_parse_from([
-                "tracel", "models", "push", "weights", "-d", ".", flag, "alice",
-            ])
-            .unwrap_err();
-            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
-        }
-    }
-
-    #[test]
-    fn environment_flags_conflict() {
-        assert_eq!(
-            CliArgs::try_parse_from(["tracel", "--dev", "--staging", "1", "me"])
-                .unwrap_err()
-                .kind(),
-            clap::error::ErrorKind::ArgumentConflict
-        );
-    }
-
-    #[test]
-    fn output_flags_are_global_and_conflict() {
-        for arguments in [
-            vec!["tracel", "me", "--json"],
-            vec!["tracel", "--json", "me"],
+    fn arguments_that_do_not_parse_report_in_the_format_they_ask_for() {
+        for (args, environment, expected) in [
+            (&["models", "get", "--json"][..], None, Format::Json),
+            (&["-o", "json", "models", "get"], None, Format::Json),
+            (&["--output=json", "models", "get"], None, Format::Json),
+            (&["-ojson", "models", "get"], None, Format::Json),
+            (&["models", "get"], Some("json"), Format::Json),
+            (
+                &["models", "get", "-o", "human"],
+                Some("json"),
+                Format::Human,
+            ),
+            (&["models", "get"], None, Format::Human),
+            (&["models", "get"], Some("xml"), Format::Human),
+            (&["train", "--", "--json"], None, Format::Human),
         ] {
-            assert!(CliArgs::try_parse_from(arguments).unwrap().json);
-        }
-        assert_eq!(
-            CliArgs::try_parse_from(["tracel", "auth", "status", "-o", "human"])
-                .unwrap()
-                .output,
-            Some(FormatArg::Human)
-        );
-        let error = CliArgs::try_parse_from(["tracel", "me", "--json", "-o", "json"]).unwrap_err();
-        assert_eq!(error.exit_code(), 2);
-    }
-
-    #[test]
-    fn auto_output_is_text_where_another_program_reads_stdout() {
-        for arguments in [
-            vec!["tracel", "auth", "token"],
-            vec!["tracel", "train", "--", "--epochs", "1"],
-        ] {
-            let command = CliArgs::try_parse_from(arguments).unwrap().command.unwrap();
-            for stdout_is_terminal in [false, true] {
-                assert_eq!(command.auto_format(stdout_is_terminal), Format::Human);
-            }
-        }
-        for arguments in [vec!["tracel", "auth", "status"], vec!["tracel", "me"]] {
-            let command = CliArgs::try_parse_from(arguments).unwrap().command.unwrap();
-            assert_eq!(command.auto_format(true), Format::Human);
-            assert_eq!(command.auto_format(false), Format::Json);
+            let arguments = args.iter().map(OsString::from);
+            assert_eq!(
+                usage_format(arguments, environment, true),
+                expected,
+                "{args:?} {environment:?}"
+            );
         }
     }
 
     #[test]
-    fn no_input_is_global() {
-        for arguments in [
-            ["tracel", "--no-input", "unlink"],
-            ["tracel", "unlink", "--no-input"],
-        ] {
-            assert!(CliArgs::try_parse_from(arguments).unwrap().no_input);
-        }
+    fn arguments_that_do_not_parse_are_a_usage_error() {
+        let parse_error = parse(&["models", "get", "--json"]).unwrap_err();
+
+        let error = anyhow::Error::new(usage_error(&parse_error));
+
+        assert_eq!(report(&error), (ErrorKind::Usage, 2, false));
+        assert!(!error.to_string().starts_with("error:"), "{error}");
+    }
+
+    #[test]
+    fn a_closed_stdout_ends_the_command_with_exit_code_0() {
+        let error = anyhow::Error::new(StdoutClosed).context("Can't write the result");
+
+        let stop = Stop::of(&error);
+
+        assert!(matches!(stop, Stop::Closed));
+        assert_eq!(stop.exit_code(), 0);
+    }
+
+    #[test]
+    fn a_declined_prompt_ends_the_command_on_its_outcome_with_exit_code_0() {
+        let error = anyhow::Error::new(Declined::new("Nothing was linked."))
+            .context("Can't link the workspace");
+
+        let stop = Stop::of(&error);
+
+        assert!(matches!(stop, Stop::Declined("Nothing was linked.")));
+        assert_eq!(stop.exit_code(), 0);
+    }
+
+    #[test]
+    fn a_failure_ends_the_command_with_its_exit_code() {
+        let error = anyhow::Error::new(CliError::new(ErrorKind::NotFound, "No model 'w'."));
+
+        assert_eq!(Stop::of(&error).exit_code(), 5);
     }
 }

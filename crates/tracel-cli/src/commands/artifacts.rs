@@ -229,84 +229,47 @@ pub fn handle_command(args: ArtifactsArgs, context: CliContext) -> anyhow::Resul
 
 #[cfg(test)]
 mod tests {
-    use clap::{CommandFactory, Parser};
     use serde_json::json;
 
     use super::*;
-    use crate::cli::{CliArgs, Commands};
-
-    fn parse_command(arguments: &[&str]) -> ArtifactsArgs {
-        let args = CliArgs::try_parse_from(arguments).unwrap();
-        let Some(Commands::Artifacts(args)) = args.command else {
-            panic!("Expected artifacts command");
-        };
-        args
-    }
+    use crate::test_support::report;
 
     #[test]
-    fn definitions_and_arguments_are_valid() {
-        CliArgs::command().debug_assert();
-        let args = parse_command(&["tracel", "artifacts", "list", "7", "--name", "weights"]);
-        let ArtifactsCommands::List(args) = args.command else {
-            panic!("Expected list");
-        };
-        assert_eq!(args.experiment, 7);
-        assert_eq!(args.name.as_deref(), Some("weights"));
-        let args = parse_command(&[
-            "tracel",
-            "artifacts",
-            "download",
-            "7",
-            "artifact-id",
-            "-d",
-            "weights",
-            "--force",
-            "-o",
-            "json",
-        ]);
-        let ArtifactsCommands::Download(args) = args.command else {
-            panic!("Expected download");
-        };
-        assert_eq!(args.experiment, 7);
-        assert_eq!(args.artifact, "artifact-id");
-        assert_eq!(args.directory.unwrap(), Path::new("weights"));
-        assert!(args.force);
-        let args = parse_command(&["tracel", "artifacts", "download", "1", "weights"]);
-        let ArtifactsCommands::Download(args) = args.command else {
-            panic!("Expected download");
-        };
-        assert!(args.directory.is_none());
-        assert!(!args.force);
-        for number in ["0", "-1", "2147483648", "latest"] {
-            assert!(CliArgs::try_parse_from(["tracel", "artifacts", "list", number]).is_err());
-        }
-    }
-
-    #[test]
-    fn default_directory_and_integrity_use_manifest_fields() {
-        assert_eq!(
-            default_directory("weights").unwrap(),
-            Path::new("./weights")
-        );
-        for name in [
-            "",
-            ".",
-            "..",
-            "../weights",
-            "weights/nested",
-            "/weights",
-            "C:\\weights",
+    fn an_artifact_downloads_into_a_directory_named_after_it() {
+        for (name, expected) in [
+            ("weights", Some("./weights")),
+            ("", None),
+            (".", None),
+            ("..", None),
+            ("../weights", None),
+            ("weights/nested", None),
+            ("/weights", None),
+            ("C:\\weights", None),
         ] {
-            assert_eq!(default_directory(name).unwrap_err().kind, ErrorKind::Usage);
+            match default_directory(name) {
+                Ok(directory) => assert_eq!(Some(directory.as_path()), expected.map(Path::new)),
+                Err(error) => {
+                    assert_eq!(expected, None, "{name:?}");
+                    let error = anyhow::Error::new(error);
+                    assert_eq!(report(&error), (ErrorKind::Usage, 2, true), "{name:?}");
+                }
+            }
         }
-        let manifest = json!({"files": [{"rel_path": "a", "size_bytes": 7, "checksum": "abc"}, {"rel_path": "b"}]});
-        assert_eq!(manifest_files(&manifest).unwrap().len(), 2);
-        assert_eq!(
-            file_integrity(&manifest, "a"),
-            (Some(7), Some("abc".into()))
-        );
-        assert_eq!(file_integrity(&manifest, "b"), (None, None));
-        assert_eq!(file_integrity(&manifest, "missing"), (None, None));
-        assert!(manifest_files(&Value::Null).is_none());
+    }
+
+    #[test]
+    fn a_file_is_checked_against_its_manifest_entry() {
+        let manifest = json!({"files": [
+            {"rel_path": "a", "size_bytes": 7, "checksum": "abc"},
+            {"rel_path": "b"},
+        ]});
+        for (rel_path, expected) in [
+            ("a", (Some(7), Some("abc".to_string()))),
+            ("b", (None, None)),
+            ("missing", (None, None)),
+        ] {
+            assert_eq!(file_integrity(&manifest, rel_path), expected, "{rel_path}");
+        }
+        assert_eq!(file_integrity(&Value::Null, "a"), (None, None));
     }
 }

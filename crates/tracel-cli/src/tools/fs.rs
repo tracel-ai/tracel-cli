@@ -90,57 +90,44 @@ mod tests {
     use super::*;
     use std::fs;
 
-    fn make_temp_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("tracel-cli-test-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(dir.join("nested")).unwrap();
-        dir
+    #[test]
+    fn files_are_listed_by_their_relative_path_with_slashes() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::create_dir(directory.path().join("nested")).unwrap();
+        fs::write(directory.path().join("a.txt"), b"a").unwrap();
+        fs::write(directory.path().join("nested").join("b.txt"), b"b").unwrap();
+
+        let files = collect_files(directory.path()).unwrap();
+
+        assert_eq!(
+            files.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["a.txt", "nested/b.txt"]
+        );
     }
 
     #[test]
-    fn given_nested_directory_when_collect_files_then_returns_all_files_with_forward_slash_rel_paths()
-     {
-        let dir = make_temp_dir("collect-files");
-        fs::write(dir.join("a.txt"), b"a").unwrap();
-        fs::write(dir.join("nested").join("b.txt"), b"b").unwrap();
+    fn an_empty_directory_has_no_files_to_upload() {
+        let directory = tempfile::tempdir().unwrap();
 
-        let files = collect_files(&dir).unwrap();
+        let error = collect_files(directory.path()).unwrap_err();
 
-        assert_eq!(files.len(), 2);
-        assert!(files.contains_key("a.txt"));
-        assert!(files.contains_key("nested/b.txt"));
-        fs::remove_dir_all(&dir).unwrap();
+        assert!(error.to_string().starts_with("No files"), "{error}");
     }
 
     #[test]
-    fn given_empty_directory_when_collect_files_then_returns_error() {
-        let dir = make_temp_dir("collect-files-empty");
-
-        let result = collect_files(&dir);
-
-        assert!(result.is_err());
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn given_known_content_when_build_file_specs_then_computes_correct_sha256_and_size() {
-        let dir = make_temp_dir("build-file-specs");
-        fs::write(dir.join("hello.txt"), b"hello world").unwrap();
-
-        let mut files = BTreeMap::new();
-        files.insert("hello.txt".to_string(), dir.join("hello.txt"));
+    fn a_file_spec_has_its_size_and_sha256() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("hello.txt");
+        fs::write(&path, b"hello world").unwrap();
+        let files = BTreeMap::from([("hello.txt".to_string(), path)]);
 
         let specs = build_file_specs(&files).unwrap();
 
-        assert_eq!(specs.len(), 1);
-        assert_eq!(specs[0].rel_path, "hello.txt");
-        assert_eq!(specs[0].size_bytes, 11);
+        let spec = &specs[0];
+        assert_eq!((spec.rel_path.as_str(), spec.size_bytes), ("hello.txt", 11));
         assert_eq!(
-            specs[0].checksum,
+            spec.checksum,
             "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
         );
-
-        fs::remove_dir_all(&dir).unwrap();
     }
 }

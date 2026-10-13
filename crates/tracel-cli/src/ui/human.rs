@@ -17,22 +17,15 @@ pub struct Human<'a> {
 }
 
 impl<'a> Human<'a> {
-    /// Write plain text on `out`, with tables fitted to `width` columns when given.
-    pub fn plain(out: &'a mut dyn Write, width: Option<usize>) -> Self {
-        Self {
-            out,
-            width,
-            styled: false,
-        }
+    /// Write text on `out`, with tables fitted to `width` columns when given, and
+    /// styled for a terminal when `styled`.
+    pub fn new(out: &'a mut dyn Write, width: Option<usize>, styled: bool) -> Self {
+        Self { out, width, styled }
     }
 
-    /// Write text for a box on the terminal, styled unless stderr shows no colors.
-    pub fn for_box(out: &'a mut dyn Write, width: Option<usize>) -> Self {
-        Self {
-            out,
-            width,
-            styled: console::colors_enabled_stderr(),
-        }
+    /// Write plain text on `out`, with tables fitted to `width` columns when given.
+    pub fn plain(out: &'a mut dyn Write, width: Option<usize>) -> Self {
+        Self::new(out, width, false)
     }
 }
 
@@ -384,23 +377,18 @@ mod tests {
     use super::*;
     use crate::ui::screen::BOX_PADDING;
 
-    fn text(width: Option<usize>, write: impl FnOnce(&mut Human<'_>) -> io::Result<()>) -> String {
+    fn text(
+        width: Option<usize>,
+        styled: bool,
+        write: impl FnOnce(&mut Human<'_>) -> io::Result<()>,
+    ) -> String {
         let mut out = Vec::new();
-        write(&mut Human::plain(&mut out, width)).unwrap();
+        write(&mut Human::new(&mut out, width, styled)).unwrap();
         String::from_utf8(out).unwrap()
     }
 
     fn plain(write: impl FnOnce(&mut Human<'_>) -> io::Result<()>) -> String {
-        text(None, write)
-    }
-
-    /// Text for a box, styled.
-    fn boxed(width: Option<usize>, write: impl FnOnce(&mut Human<'_>) -> io::Result<()>) -> String {
-        let mut out = Vec::new();
-        let mut human = Human::for_box(&mut out, width);
-        human.styled = true;
-        write(&mut human).unwrap();
-        String::from_utf8(out).unwrap()
+        text(None, false, write)
     }
 
     fn table() -> Table<3> {
@@ -411,9 +399,11 @@ mod tests {
     }
 
     #[test]
-    fn table_aligns_columns_and_keeps_cells_on_one_line() {
+    fn a_table_aligns_its_cells_on_one_line_each() {
+        let written = plain(|out| table().write(out));
+
         assert_eq!(
-            plain(|out| table().write(out)),
+            written,
             "NAME     DESCRIPTION  ID\n\
              weights  two lines    1\n\
              w        -            22\n"
@@ -421,8 +411,9 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_table_writes_its_empty_text_or_nothing() {
+    fn an_empty_table_writes_only_its_empty_text() {
         let empty = || Table::new(["NAME"]);
+
         assert_eq!(plain(|out| empty().write(out)), "");
         assert_eq!(
             plain(|out| empty().empty("No files.").write(out)),
@@ -439,21 +430,28 @@ mod tests {
                 "0123456789".into(),
             ]])
         };
+
+        let shrunk = text(Some(36), false, |out| {
+            table().shrink("DESCRIPTION").write(out)
+        });
+        let whole = text(Some(36), false, |out| table().write(out));
+
         assert_eq!(
-            text(Some(36), |out| table().shrink("DESCRIPTION").write(out)),
+            shrunk,
             "NAME     DESCRIPTION      ID\n\
              weights  a rather long…   0123456789\n"
         );
-        assert_eq!(
-            text(Some(36), |out| table().write(out)),
-            plain(|out| table().write(out))
-        );
+        assert_eq!(whole, plain(|out| table().write(out)));
     }
 
     #[test]
     fn a_shrinking_column_can_cut_its_header() {
+        let written = text(Some(18), false, |out| {
+            table().shrink("DESCRIPTION").write(out)
+        });
+
         assert_eq!(
-            text(Some(18), |out| table().shrink("DESCRIPTION").write(out)),
+            written,
             "NAME     DESC…  ID\n\
              weights  two…   1\n\
              w        -      22\n"
@@ -466,18 +464,21 @@ mod tests {
             .optional("Description", None::<&str>)
             .section(
                 "Config",
-                &serde_json::json!({"lr": 0.1, "schedule": {"warmup": 2}, "tags": ["a"]}),
+                &serde_json::json!({"lr": 0.1, "loss": 0.7499999999999999, "schedule": {"warmup": 2}, "tags": ["a"]}),
             )
             .section("Attributes", &serde_json::json!({}))
     }
 
     #[test]
-    fn details_align_values_and_list_json_fields() {
+    fn details_align_their_fields_above_sections_of_dotted_keys() {
+        let written = plain(|out| details().write(out));
+
         assert_eq!(
-            plain(|out| details().write(out)),
+            written,
             "Name:         weights\n\
              Description:  -\n\
              Config:\n  \
+               loss             0.75\n  \
                lr               0.1\n  \
                schedule.warmup  2\n  \
                tags             [\"a\"]\n"
@@ -485,27 +486,18 @@ mod tests {
     }
 
     #[test]
-    fn plain_text_is_never_styled_and_a_box_is_the_same_text_styled() {
+    fn a_styled_text_is_the_plain_text_with_bold_and_dim_spans() {
         let write = |out: &mut Human<'_>| {
+            let (bold, dim) = (out.bold("NAME"), out.dim("-"));
+            writeln!(out, "{bold} {dim} x")?;
             details().write(out)?;
             table().write(out)
         };
-        let plain = plain(write);
-        let boxed = boxed(None, write);
-        assert!(!plain.contains('\u{1b}'));
-        assert!(boxed.contains('\u{1b}'));
-        assert_eq!(console::strip_ansi_codes(&boxed), plain);
-    }
 
-    #[test]
-    fn a_box_styles_its_spans() {
-        assert_eq!(
-            boxed(None, |out| {
-                let (bold, dim) = (out.bold("NAME"), out.dim("-"));
-                writeln!(out, "{bold} {dim} x")
-            }),
-            "\u{1b}[1mNAME\u{1b}[0m \u{1b}[2m-\u{1b}[0m x\n"
-        );
+        let styled = text(None, true, write);
+
+        assert!(styled.starts_with("\u{1b}[1mNAME\u{1b}[0m \u{1b}[2m-\u{1b}[0m x\n"));
+        assert_eq!(console::strip_ansi_codes(&styled), plain(write));
     }
 
     /// The columns inside a box, as cliclack measures them to wrap its text.
@@ -516,7 +508,8 @@ mod tests {
     #[test]
     fn a_table_fitted_to_the_box_is_not_wrapped_again() {
         let width = box_width();
-        let fitted = boxed(Some(width), |out| {
+
+        let fitted = text(Some(width), true, |out| {
             Table::new(["NAME", "DESCRIPTION", "ID"])
                 .shrink("DESCRIPTION")
                 .rows([[
@@ -526,6 +519,7 @@ mod tests {
                 ]])
                 .write(out)
         });
+
         let fitted = fitted.trim_end();
         assert!(
             fitted
@@ -536,11 +530,71 @@ mod tests {
     }
 
     #[test]
-    fn counts_mention_what_was_left_out() {
-        let count = |shown, total| list_summary(shown, total, ["model", "models"], "No models.");
-        assert_eq!(count(0, 0), "No models.");
-        assert_eq!(count(1, 1), "1 model.");
-        assert_eq!(count(3, 3), "3 models.");
-        assert_eq!(count(10, 16), "Showing 10 of 16 models.");
+    fn a_count_uses_the_plural_from_two() {
+        for (count, expected) in [(0, "0 files"), (1, "1 file"), (2, "2 files")] {
+            assert_eq!(counted(count, ["file", "files"]), expected, "{count}");
+        }
+    }
+
+    #[test]
+    fn a_list_summary_says_what_was_left_out() {
+        for (shown, total, expected) in [
+            (0, 0, "No models."),
+            (1, 1, "1 model."),
+            (3, 3, "3 models."),
+            (10, 16, "Showing 10 of 16 models."),
+            (3, 0, "3 models."),
+        ] {
+            assert_eq!(
+                list_summary(shown, total, ["model", "models"], "No models."),
+                expected,
+                "{shown} {total}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_number_keeps_about_four_significant_digits() {
+        for (value, expected) in [
+            (0.7499999999999999, "0.75"),
+            (0.923076923076923, "0.9231"),
+            (0.00001, "0.00001"),
+            (43.4, "43.4"),
+            (1234.5678, "1235"),
+            (1000000.0, "1000000"),
+            (-0.5, "-0.5"),
+            (2.0, "2"),
+            (0.0, "0"),
+        ] {
+            assert_eq!(number(value), expected, "{value}");
+        }
+    }
+
+    #[test]
+    fn a_size_is_in_bytes_kb_mb_or_gb() {
+        for (bytes, expected) in [
+            (0, "0 B"),
+            (999, "999 B"),
+            (6900, "6.9 KB"),
+            (4_732_426, "4.732 MB"),
+            (713_713_674, "713.7 MB"),
+            (2_500_000_000, "2.5 GB"),
+        ] {
+            assert_eq!(size(bytes), expected, "{bytes}");
+        }
+    }
+
+    #[test]
+    fn a_digest_shows_its_first_twelve_characters() {
+        for (digest, expected) in [
+            (
+                "a8dd58d70d796abee1ef941f1f14b350310f17cba90c37813305ce8254aee225",
+                "a8dd58d70d79",
+            ),
+            ("9e24f16700f2fb16090f7e18c7f174c4660e963b", "9e24f16700f2"),
+            ("short", "short"),
+        ] {
+            assert_eq!(short_digest(digest), expected, "{digest}");
+        }
     }
 }

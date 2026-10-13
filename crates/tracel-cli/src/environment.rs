@@ -69,26 +69,44 @@ fn parse(value: &str) -> Option<Env> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::report;
 
     #[test]
-    fn environment_values_match_sdk_and_lowercase_forms() {
-        for value in [None, Some("Production"), Some("production")] {
-            assert!(matches!(resolve(false, None, value), Ok(Env::Production)));
+    fn flags_choose_the_environment_before_tracel_env() {
+        for (dev, staging, variable, expected) in [
+            (false, None, None, "production"),
+            (false, None, Some("development"), "development"),
+            (true, None, Some("production"), "development"),
+            (true, None, Some("bogus"), "development"),
+            (false, Some(2), Some("Development"), "staging-2"),
+            (false, Some(2), Some("bogus"), "staging-2"),
+        ] {
+            let environment = resolve(dev, staging, variable).unwrap();
+            assert_eq!(
+                name(&environment),
+                expected,
+                "{dev} {staging:?} {variable:?}"
+            );
         }
-        for value in ["Development", "development"] {
-            assert!(matches!(
-                resolve(false, None, Some(value)),
-                Ok(Env::Development)
-            ));
-        }
-        for version in [0, 1, 255] {
-            for value in [format!("Staging({version})"), format!("staging-{version}")] {
-                assert!(matches!(
-                    resolve(false, None, Some(&value)),
-                    Ok(Env::Staging(number)) if number == version
-                ));
+    }
+
+    #[test]
+    fn tracel_env_reads_every_environment_as_the_cli_and_the_sdk_write_it() {
+        for environment in [
+            Env::Production,
+            Env::Development,
+            Env::Staging(0),
+            Env::Staging(255),
+        ] {
+            for written in [name(&environment), sdk_value(&environment)] {
+                let read = resolve(false, None, Some(&written)).unwrap();
+                assert_eq!(name(&read), name(&environment), "{written}");
             }
         }
+    }
+
+    #[test]
+    fn an_unknown_tracel_env_is_a_usage_error() {
         for value in [
             "bogus",
             "",
@@ -100,20 +118,27 @@ mod tests {
             "staging-256",
             "Production ",
         ] {
-            let error = resolve(false, None, Some(value)).unwrap_err();
-            assert_eq!(error.kind, ErrorKind::Usage);
-            assert!(error.to_string().contains("TRACEL_ENV"));
+            let error = anyhow::Error::new(resolve(false, None, Some(value)).unwrap_err());
+            assert_eq!(report(&error), (ErrorKind::Usage, 2, false), "{value:?}");
+            assert!(
+                error.to_string().contains(&format!("'{value}'")),
+                "{value:?}"
+            );
         }
     }
 
     #[test]
-    fn environment_flags_override_variable() {
-        for value in [None, Some("Production"), Some("Development"), Some("bogus")] {
-            assert!(matches!(resolve(true, None, value), Ok(Env::Development)));
-            assert!(matches!(
-                resolve(false, Some(2), value),
-                Ok(Env::Staging(2))
-            ));
+    fn each_environment_has_its_web_console() {
+        for (environment, expected) in [
+            (Env::Production, "https://console.tracel.ai/"),
+            (Env::Staging(3), "https://s3-console.tracel.ai/"),
+            (Env::Development, "http://localhost:9000/"),
+        ] {
+            assert_eq!(
+                web_console(&environment).as_str(),
+                expected,
+                "{environment:?}"
+            );
         }
     }
 }

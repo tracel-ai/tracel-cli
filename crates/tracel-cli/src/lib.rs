@@ -4,6 +4,8 @@ mod context;
 mod environment;
 mod error;
 mod helpers;
+#[cfg(test)]
+mod test_support;
 mod tools;
 mod ui;
 

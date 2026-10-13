@@ -150,45 +150,26 @@ pub fn cross_preflight(
 mod tests {
     use super::*;
 
-    const LINUX_X86: (Os, Arch) = (Os::Linux, Arch::X86_64);
-    const LINUX_ARM: (Os, Arch) = (Os::Linux, Arch::Arm64);
-    const MAC_ARM: (Os, Arch) = (Os::Macos, Arch::Arm64);
-    const WIN_X86: (Os, Arch) = (Os::Windows, Arch::X86_64);
-
-    fn both() -> AvailableDrivers {
-        AvailableDrivers {
-            zigbuild: true,
-            xwin: true,
+    #[test]
+    fn the_driver_follows_the_target_os_and_the_installed_tools() {
+        const LINUX_X86: (Os, Arch) = (Os::Linux, Arch::X86_64);
+        const LINUX_ARM: (Os, Arch) = (Os::Linux, Arch::Arm64);
+        const MAC_ARM: (Os, Arch) = (Os::Macos, Arch::Arm64);
+        const WIN_X86: (Os, Arch) = (Os::Windows, Arch::X86_64);
+        let drivers = |zigbuild, xwin| AvailableDrivers { zigbuild, xwin };
+        for (target, available, expected) in [
+            (LINUX_X86, drivers(true, true), BuildDriver::Cargo),
+            (LINUX_ARM, drivers(true, true), BuildDriver::Cargo),
+            (WIN_X86, drivers(true, true), BuildDriver::Xwin),
+            (WIN_X86, drivers(true, false), BuildDriver::Cargo),
+            (MAC_ARM, drivers(true, true), BuildDriver::Zigbuild),
+            (MAC_ARM, drivers(false, true), BuildDriver::Cargo),
+        ] {
+            assert_eq!(
+                choose(LINUX_X86, target, &available),
+                expected,
+                "{target:?}"
+            );
         }
-    }
-    fn none() -> AvailableDrivers {
-        AvailableDrivers {
-            zigbuild: false,
-            xwin: false,
-        }
-    }
-
-    #[test]
-    fn same_os_always_uses_cargo() {
-        // Even with every driver installed, same-OS cross-arch stays on cargo build.
-        assert_eq!(choose(LINUX_X86, LINUX_ARM, &both()), BuildDriver::Cargo);
-        assert_eq!(choose(LINUX_X86, LINUX_X86, &both()), BuildDriver::Cargo);
-    }
-
-    #[test]
-    fn cross_os_windows_uses_xwin_only() {
-        assert_eq!(choose(LINUX_X86, WIN_X86, &both()), BuildDriver::Xwin);
-        // Zig can't target MSVC, so without xwin it falls back to cargo, not zigbuild.
-        let only_zig = AvailableDrivers {
-            zigbuild: true,
-            xwin: false,
-        };
-        assert_eq!(choose(LINUX_X86, WIN_X86, &only_zig), BuildDriver::Cargo);
-    }
-
-    #[test]
-    fn cross_os_unix_uses_zigbuild() {
-        assert_eq!(choose(LINUX_X86, MAC_ARM, &both()), BuildDriver::Zigbuild);
-        assert_eq!(choose(LINUX_X86, MAC_ARM, &none()), BuildDriver::Cargo);
     }
 }

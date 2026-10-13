@@ -342,28 +342,38 @@ mod tests {
                     timeout.map(Duration::from_secs),
                     Duration::from_secs(elapsed)
                 ),
-                (Duration::from_secs(remaining), deadline)
+                (Duration::from_secs(remaining), deadline),
+                "{timeout:?} {elapsed}"
             );
         }
+    }
+
+    #[test]
+    fn an_expired_login_stops_polling_whatever_the_timeout() {
+        let expires_at = UNIX_EPOCH + Duration::from_secs(1_900_000_000);
         for timeout in [None, Some(Duration::ZERO), Some(Duration::MAX)] {
-            for current in [expires_at, expires_at + Duration::from_secs(1)] {
+            for now in [expires_at, expires_at + Duration::from_secs(1)] {
                 assert_eq!(
-                    poll_window(expires_at, current, timeout, Duration::ZERO),
-                    (Duration::ZERO, PollDeadline::Expiry)
+                    poll_window(expires_at, now, timeout, Duration::ZERO),
+                    (Duration::ZERO, PollDeadline::Expiry),
+                    "{timeout:?} {now:?}"
                 );
             }
         }
     }
 
     #[test]
-    fn a_pending_login_says_so() {
+    fn a_pending_login_says_so_in_its_json() {
         let pending = LoginPending {
             verification_uri_complete: "http://localhost:9001/verify?code=BCDF-GHJK".into(),
             user_code: "BCDF-GHJK".into(),
             expires_at: Timestamp(UNIX_EPOCH + Duration::from_secs(1_900_000_000)),
         };
+
+        let json = serde_json::to_value(pending).unwrap();
+
         assert_eq!(
-            serde_json::to_value(pending).unwrap(),
+            json,
             serde_json::json!({
                 "status": "pending",
                 "verification_uri_complete": "http://localhost:9001/verify?code=BCDF-GHJK",
@@ -374,13 +384,13 @@ mod tests {
     }
 
     #[test]
-    fn slow_down_adds_five_seconds_without_overflow() {
-        let interval = Duration::from_secs(7);
-        assert_eq!(poll_backoff(interval), Duration::from_secs(12));
-        assert_eq!(
-            poll_backoff(poll_backoff(interval)),
-            Duration::from_secs(17)
-        );
-        assert_eq!(poll_backoff(Duration::MAX), Duration::MAX);
+    fn a_slow_down_adds_five_seconds_to_the_interval() {
+        for (interval, expected) in [
+            (Duration::from_secs(7), Duration::from_secs(12)),
+            (Duration::from_secs(12), Duration::from_secs(17)),
+            (Duration::MAX, Duration::MAX),
+        ] {
+            assert_eq!(poll_backoff(interval), expected, "{interval:?}");
+        }
     }
 }

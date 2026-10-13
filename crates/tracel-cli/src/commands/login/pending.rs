@@ -131,29 +131,12 @@ mod tests {
 
     use super::*;
 
-    struct ScratchDirectory(PathBuf);
-
-    impl ScratchDirectory {
-        fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "tracel-pending-login-{}-{}",
-                std::process::id(),
-                TEMPORARY_ID.fetch_add(1, Ordering::Relaxed)
-            ));
-            fs::create_dir(&path).unwrap();
-            Self(path)
-        }
-
-        fn store(&self) -> PendingLoginStore {
-            PendingLoginStore {
-                path: self.0.join("sessions").join("localhost_9001.pending.json"),
-            }
-        }
-    }
-
-    impl Drop for ScratchDirectory {
-        fn drop(&mut self) {
-            fs::remove_dir_all(&self.0).unwrap();
+    fn store(directory: &tempfile::TempDir) -> PendingLoginStore {
+        PendingLoginStore {
+            path: directory
+                .path()
+                .join("sessions")
+                .join("localhost_9001.pending.json"),
         }
     }
 
@@ -169,12 +152,12 @@ mod tests {
     }
 
     #[test]
-    fn pending_login_round_trip_replace_and_clear() {
-        let directory = ScratchDirectory::new();
-        let store = directory.store();
+    fn a_saved_pending_login_loads_back_until_it_is_cleared() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = store(&directory);
+        let now = UNIX_EPOCH + Duration::from_secs(1_900_000_000);
         assert!(store.load().unwrap().is_none());
 
-        let now = UNIX_EPOCH + Duration::from_secs(1_900_000_000);
         for device_code in ["first", "second"] {
             let pending = PendingLogin::new(authorization(device_code), now).unwrap();
             store.save(&pending).unwrap();
@@ -183,63 +166,61 @@ mod tests {
                 serde_json::to_value(&loaded).unwrap(),
                 serde_json::to_value(&pending).unwrap()
             );
-            assert_eq!(
-                fs::read_dir(store.path.parent().unwrap()).unwrap().count(),
-                1
-            );
+            let entries = fs::read_dir(store.path.parent().unwrap()).unwrap().count();
+            assert_eq!(entries, 1, "a save leaves no temporary file");
         }
+        store.clear().unwrap();
+        store.clear().unwrap();
 
-        store.clear().unwrap();
-        store.clear().unwrap();
         assert!(store.load().unwrap().is_none());
     }
 
     #[cfg(unix)]
     #[test]
-    fn pending_login_and_its_directory_are_owner_only() {
+    fn a_pending_login_is_readable_by_its_owner_only() {
         use std::os::unix::fs::PermissionsExt;
 
-        let directory = ScratchDirectory::new();
-        let store = directory.store();
+        let directory = tempfile::tempdir().unwrap();
+        let store = store(&directory);
         let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
         let pending = PendingLogin::new(authorization("first"), SystemTime::now()).unwrap();
         store.save(&pending).unwrap();
-        assert_eq!(mode(&store.path), 0o600);
-        assert_eq!(mode(store.path.parent().unwrap()), 0o700);
-
         fs::set_permissions(&store.path, fs::Permissions::from_mode(0o644)).unwrap();
-        fs::set_permissions(
-            store.path.parent().unwrap(),
-            fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
+        let parent = store.path.parent().unwrap();
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o755)).unwrap();
+
         store.save(&pending).unwrap();
+
         assert_eq!(mode(&store.path), 0o600);
-        assert_eq!(mode(store.path.parent().unwrap()), 0o700);
+        assert_eq!(mode(parent), 0o700);
     }
 
     #[test]
-    fn expiry_uses_the_start_time_and_clamps_negative_lifetimes() {
+    fn a_pending_login_expires_its_lifetime_after_it_started() {
         let now = UNIX_EPOCH + Duration::from_secs(1_900_000_000);
-        for seconds in [-1, 0, 1, 600] {
+        for (seconds, expected) in [(-1, 0), (0, 0), (1, 1), (600, 600)] {
             let mut authorization = authorization("device-code");
             authorization.expires_in = seconds;
             let pending = PendingLogin::new(authorization, now).unwrap();
             assert_eq!(
                 pending.expires_at,
-                now + Duration::from_secs(seconds.max(0) as u64)
+                now + Duration::from_secs(expected),
+                "{seconds}"
             );
         }
     }
 
     #[test]
-    fn pending_path_is_a_sibling_of_the_session() {
+    fn a_pending_login_sits_beside_its_session() {
         for url in ["https://console.tracel.ai/api/", "http://localhost:9001/"] {
             let url = Url::parse(url).unwrap();
             let session = FileSessionStore::for_server(&url).unwrap();
             let pending = PendingLoginStore::for_server(&url).unwrap();
-            assert_eq!(pending.path.parent(), session.path().parent());
-            assert_eq!(pending.path, session.path().with_extension("pending.json"));
+            assert_eq!(
+                pending.path,
+                session.path().with_extension("pending.json"),
+                "{url}"
+            );
         }
     }
 }

@@ -174,34 +174,3 @@ fn show_project(context: CliContext) -> anyhow::Result<ProjectInfo> {
         source: resolved.source,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use clap::{CommandFactory, Parser};
-
-    use super::*;
-    use crate::cli::{CliArgs, Commands};
-
-    #[test]
-    fn bare_project_and_list_parse_without_a_selected_project() {
-        CliArgs::command().debug_assert();
-        let args = CliArgs::try_parse_from(["tracel", "project"]).unwrap();
-        let Some(Commands::Project(args)) = args.command else {
-            panic!("Expected project");
-        };
-        assert!(args.command.is_none());
-        for namespace in [None, Some("alice"), Some("team")] {
-            let mut arguments = vec!["tracel", "project", "list"];
-            arguments.extend(namespace);
-            let args = CliArgs::try_parse_from(arguments).unwrap();
-            assert!(args.project.is_none());
-            let Some(Commands::Project(args)) = args.command else {
-                panic!("Expected project");
-            };
-            let Some(ProjectCommands::List(args)) = args.command else {
-                panic!("Expected list");
-            };
-            assert_eq!(args.namespace.as_deref(), namespace);
-        }
-    }
-}

@@ -225,30 +225,40 @@ pub fn install_missing_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::report;
 
     #[test]
-    fn no_explicit_targets_defaults_to_host() {
+    fn no_requested_target_means_the_host() {
         for host in ALL_TARGETS {
-            assert_eq!(resolve_targets(host, &[]).unwrap(), vec![host]);
+            assert_eq!(resolve_targets(host, &[]).unwrap(), [host], "{host:?}");
         }
     }
 
     #[test]
-    fn explicit_targets_are_validated_and_deduplicated_in_order() {
-        let host = (Os::Linux, Arch::X86_64);
+    fn requested_targets_keep_their_order_without_repeats() {
         let requested = [
             "aarch64-unknown-linux-gnu".to_string(),
             "x86_64-pc-windows-msvc".to_string(),
             "aarch64-unknown-linux-gnu".to_string(),
         ];
+
+        let targets = resolve_targets((Os::Linux, Arch::X86_64), &requested).unwrap();
+
         assert_eq!(
-            resolve_targets(host, &requested).unwrap(),
-            vec![(Os::Linux, Arch::Arm64), (Os::Windows, Arch::X86_64),]
+            targets,
+            [(Os::Linux, Arch::Arm64), (Os::Windows, Arch::X86_64)]
         );
-        let error = parse_target("unknown-triple").unwrap_err();
-        assert_eq!(error.kind, ErrorKind::Usage);
+    }
+
+    #[test]
+    fn an_unknown_target_lists_the_targets() {
+        let error = anyhow::Error::new(parse_target("unknown-triple").unwrap_err());
+
+        assert_eq!(report(&error), (ErrorKind::Usage, 2, false));
+        let message = error.to_string();
+        assert!(message.contains("'unknown-triple'"), "{message}");
         for (os, arch) in ALL_TARGETS {
-            assert!(error.to_string().contains(target_triple(os, arch)));
+            assert!(message.contains(target_triple(os, arch)), "{message}");
         }
     }
 }

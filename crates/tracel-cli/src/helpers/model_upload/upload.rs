@@ -159,100 +159,73 @@ pub fn upload_parts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::{Format, Layout, Place, channels};
+    use crate::test_support::quiet_terminal;
     use std::fs;
-    use std::path::PathBuf;
-    use std::sync::Mutex as StdMutex;
+    use std::sync::Mutex;
 
-    fn make_temp_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("tracel-cli-test-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(dir.join("nested")).unwrap();
-        dir
+    /// Records the URLs it uploads to, and fails on `fail_url`.
+    struct RecordingUploader {
+        calls: Mutex<Vec<String>>,
+        fail_url: Option<&'static str>,
     }
 
-    struct FakeUploader {
-        calls: StdMutex<Vec<String>>,
-        fail_url: Option<String>,
-    }
-
-    impl FakeUploader {
-        fn new(fail_url: Option<&str>) -> Self {
+    impl RecordingUploader {
+        fn new(fail_url: Option<&'static str>) -> Self {
             Self {
-                calls: StdMutex::new(Vec::new()),
-                fail_url: fail_url.map(str::to_string),
+                calls: Mutex::new(Vec::new()),
+                fail_url,
             }
         }
     }
 
-    impl PartUploader for FakeUploader {
-        fn upload(&self, url: &str, _bytes: Vec<u8>) -> Result<(), tracel_client::ClientError> {
+    impl PartUploader for RecordingUploader {
+        fn upload(&self, url: &str, _bytes: Vec<u8>) -> Result<(), ClientError> {
             self.calls.lock().unwrap().push(url.to_string());
-            if self.fail_url.as_deref() == Some(url) {
-                return Err(tracel_client::ClientError::NotFound);
+            if self.fail_url == Some(url) {
+                return Err(ClientError::NotFound);
             }
             Ok(())
         }
     }
 
-    fn make_task(
-        dir: &Path,
-        rel_path: &str,
-        part: u32,
-        url: &str,
-        content: &[u8],
-    ) -> PartUploadTask {
-        let path = dir.join(rel_path);
-        fs::write(&path, content).unwrap();
-        PartUploadTask {
-            rel_path: rel_path.to_string(),
-            absolute_path: path,
-            part,
-            url: url.to_string(),
-            offset: 0,
-            size_bytes: content.len() as u64,
-        }
+    fn tasks(directory: &Path) -> Vec<PartUploadTask> {
+        ["a", "b"]
+            .into_iter()
+            .map(|name| {
+                let path = directory.join(format!("{name}.bin"));
+                fs::write(&path, b"data").unwrap();
+                PartUploadTask {
+                    rel_path: format!("{name}.bin"),
+                    absolute_path: path,
+                    part: 1,
+                    url: format!("https://example.com/{name}"),
+                    offset: 0,
+                    size_bytes: 4,
+                }
+            })
+            .collect()
     }
 
     #[test]
-    fn given_all_parts_succeed_when_upload_parts_then_returns_ok_and_uploads_each_once() {
-        let dir = make_temp_dir("upload-parts-ok");
-        let tasks = vec![
-            make_task(&dir, "a.bin", 1, "https://example.com/a", b"a-data"),
-            make_task(&dir, "b.bin", 1, "https://example.com/b", b"b-data"),
-        ];
-        let uploader = FakeUploader::new(None);
+    fn every_part_is_uploaded_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let uploader = RecordingUploader::new(None);
 
-        let result = upload_parts(
-            &uploader,
-            tasks,
-            &channels(Format::Json, true, Layout::Bare, Place::default()).1,
-        );
+        upload_parts(&uploader, tasks(directory.path()), &quiet_terminal()).unwrap();
 
-        assert!(result.is_ok());
-        assert_eq!(uploader.calls.lock().unwrap().len(), 2);
-
-        fs::remove_dir_all(&dir).unwrap();
+        let mut calls = uploader.calls.into_inner().unwrap();
+        calls.sort();
+        assert_eq!(calls, ["https://example.com/a", "https://example.com/b"]);
     }
 
     #[test]
-    fn given_one_part_fails_when_upload_parts_then_returns_error() {
-        let dir = make_temp_dir("upload-parts-fail");
-        let tasks = vec![
-            make_task(&dir, "a.bin", 1, "https://example.com/a", b"a-data"),
-            make_task(&dir, "b.bin", 1, "https://example.com/b", b"b-data"),
-        ];
-        let uploader = FakeUploader::new(Some("https://example.com/b"));
+    fn a_failed_part_fails_the_upload_naming_the_part() {
+        let directory = tempfile::tempdir().unwrap();
+        let uploader = RecordingUploader::new(Some("https://example.com/b"));
 
-        let result = upload_parts(
-            &uploader,
-            tasks,
-            &channels(Format::Json, true, Layout::Bare, Place::default()).1,
-        );
+        let error =
+            upload_parts(&uploader, tasks(directory.path()), &quiet_terminal()).unwrap_err();
 
-        assert!(result.is_err());
-
-        fs::remove_dir_all(&dir).unwrap();
+        assert!(error.to_string().contains("'b.bin' (part 1)"), "{error}");
     }
 }

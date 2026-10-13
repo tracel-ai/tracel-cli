@@ -251,109 +251,105 @@ pub fn validate_project_exists_on_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::report;
 
     #[test]
-    fn project_flag_requires_two_nonempty_parts() {
-        let project = parse_project("alice/demo").unwrap();
-        assert_eq!(project.namespace, "alice");
-        assert_eq!(project.name, "demo");
-        for value in [
-            "",
-            "alice",
-            "/demo",
-            "alice/",
-            "/",
-            "alice/demo/extra",
-            "alice//demo",
+    fn a_project_flag_is_a_namespace_and_a_name() {
+        for (value, expected) in [
+            ("alice/demo", Some(("alice", "demo"))),
+            ("", None),
+            ("alice", None),
+            ("/demo", None),
+            ("alice/", None),
+            ("/", None),
+            ("alice/demo/extra", None),
+            ("alice//demo", None),
         ] {
-            let error = parse_project(value).unwrap_err();
-            assert_eq!(error.kind, CliErrorKind::Usage);
-            assert!(error.to_string().contains("--project"));
+            match parse_project(value) {
+                Ok(project) => assert_eq!(
+                    Some((project.namespace.as_str(), project.name.as_str())),
+                    expected,
+                    "{value:?}"
+                ),
+                Err(error) => {
+                    assert_eq!(expected, None, "{value:?}");
+                    let error = anyhow::Error::new(error);
+                    assert_eq!(report(&error), (CliErrorKind::Usage, 2, false), "{value:?}");
+                    assert!(error.to_string().contains(&format!("'{value}'")));
+                }
+            }
         }
     }
 
     #[test]
-    fn complete_overrides_skip_file_discovery() {
-        let flag = parse_project("alice/demo").unwrap();
-        let resolved = resolve_project_from(
-            Some(&flag),
-            Some("other".into()),
-            Some("project".into()),
-            || panic!("File discovery must be skipped"),
-        )
-        .unwrap();
-        assert_eq!(resolved.project.namespace, "alice");
-        assert_eq!(resolved.project.name, "demo");
-        assert_eq!(resolved.source, ProjectSource::Flag);
-
-        let resolved =
-            resolve_project_from(None, Some("alice".into()), Some("demo".into()), || {
-                panic!("File discovery must be skipped")
-            })
-            .unwrap();
-        assert_eq!(resolved.project.namespace, "alice");
-        assert_eq!(resolved.project.name, "demo");
-        assert_eq!(resolved.source, ProjectSource::Env);
-    }
-
-    #[test]
-    fn environment_parts_independently_override_file() {
-        for (namespace, project, expected_namespace, expected_project, source) in [
+    fn the_flag_then_the_variables_then_tracel_toml_name_the_project() {
+        let flag = parse_project("flag/project").unwrap();
+        let file = "namespace = 'file'\nproject = 'project'";
+        for (flag, namespace, project, toml, expected) in [
             (
+                Some(&flag),
+                Some("env"),
+                Some("env"),
                 None,
-                None,
-                "file-owner",
-                "file-project",
-                ProjectSource::TracelToml,
+                ("flag", "project", ProjectSource::Flag),
             ),
             (
-                Some("alice"),
                 None,
-                "alice",
-                "file-project",
-                ProjectSource::Env,
+                Some("env"),
+                Some("demo"),
+                None,
+                ("env", "demo", ProjectSource::Env),
             ),
-            (None, Some("demo"), "file-owner", "demo", ProjectSource::Env),
-        ] {
-            let resolved = resolve_project_from(
+            (
                 None,
+                None,
+                None,
+                Some(file),
+                ("file", "project", ProjectSource::TracelToml),
+            ),
+            (
+                None,
+                Some("env"),
+                None,
+                Some(file),
+                ("env", "project", ProjectSource::Env),
+            ),
+            (
+                None,
+                None,
+                Some("demo"),
+                Some(file),
+                ("file", "demo", ProjectSource::Env),
+            ),
+            (
+                None,
+                None,
+                None,
+                Some("owner = 'old'\nname = 'names'"),
+                ("old", "names", ProjectSource::TracelToml),
+            ),
+        ] {
+            let case = (namespace, project, toml);
+            let config = || match toml {
+                Some(toml) => Ok(toml::from_str(toml).unwrap()),
+                None => panic!("tracel.toml is read for {case:?}"),
+            };
+            let resolved = resolve_project_from(
+                flag,
                 namespace.map(str::to_owned),
                 project.map(str::to_owned),
-                || {
-                    Ok(TracelTomlConfig {
-                        namespace: Some("file-owner".into()),
-                        project: Some("file-project".into()),
-                    })
-                },
+                config,
             )
             .unwrap();
-            assert_eq!(resolved.project.namespace, expected_namespace);
-            assert_eq!(resolved.project.name, expected_project);
-            assert_eq!(resolved.source, source);
+            let (namespace, name, source) = expected;
+            assert_eq!(resolved.project.namespace, namespace, "{case:?}");
+            assert_eq!(resolved.project.name, name, "{case:?}");
+            assert_eq!(resolved.source, source, "{case:?}");
         }
     }
 
     #[test]
-    fn partial_config_and_legacy_keys_match_sdk() {
-        for (contents, namespace, project) in [
-            ("project = 'demo'", Some("alice"), None),
-            ("namespace = 'alice'", None, Some("demo")),
-            ("owner = 'alice'\nname = 'demo'", None, None),
-        ] {
-            let resolved = resolve_project_from(
-                None,
-                namespace.map(str::to_owned),
-                project.map(str::to_owned),
-                || Ok(toml::from_str(contents).unwrap()),
-            )
-            .unwrap();
-            assert_eq!(resolved.project.namespace, "alice");
-            assert_eq!(resolved.project.name, "demo");
-        }
-    }
-
-    #[test]
-    fn incomplete_identity_reports_not_found_and_hint() {
+    fn an_incomplete_project_is_not_found_with_a_hint() {
         for (namespace, project) in [(None, None), (Some("alice"), None), (None, Some("demo"))] {
             let error = resolve_project_from(
                 None,
@@ -362,20 +358,40 @@ mod tests {
                 || Ok(TracelTomlConfig::default()),
             )
             .unwrap_err();
-            let report = crate::error::ErrorReport::new(&error);
-            assert_eq!(crate::error::classify(&error), CliErrorKind::NotFound);
-            assert_eq!(report.exit_code, 5);
             assert_eq!(
-                report.hint,
-                Some("Run `tracel init`, or pass --project <namespace>/<name>.")
+                report(&error),
+                (CliErrorKind::NotFound, 5, true),
+                "{namespace:?} {project:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_missing_project_names_itself_however_it_was_selected() {
+        let project = parse_project("alice/demo").unwrap();
+        for source in [
+            ProjectSource::Flag,
+            ProjectSource::Env,
+            ProjectSource::TracelToml,
+        ] {
+            let error = anyhow::Error::new(missing_project(&project, &source));
+            assert_eq!(
+                report(&error),
+                (CliErrorKind::NotFound, 5, true),
+                "{source:?}"
+            );
+            assert!(error.to_string().contains("alice/demo"), "{source:?}");
+        }
+    }
+
+    #[test]
+    fn a_project_source_has_its_documented_json_name() {
         for (source, value) in [
             (ProjectSource::Flag, "flag"),
             (ProjectSource::Env, "env"),
             (ProjectSource::TracelToml, "tracel.toml"),
         ] {
-            assert_eq!(serde_json::to_value(source).unwrap(), value);
+            assert_eq!(serde_json::to_value(&source).unwrap(), value, "{source:?}");
         }
     }
 }

@@ -49,25 +49,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_get_first_commit_hash() {
-        let hash = get_first_commit_hash().expect("Failed to get first commit hash");
-
+    fn the_first_commit_is_the_root_of_head() {
         let output = std::process::Command::new("git")
-            .args(["rev-list", "--parents", "HEAD"])
+            .args(["rev-list", "--max-parents=0", "--first-parent", "HEAD"])
             .output()
-            .expect("Failed to run git rev-list");
+            .expect("git runs");
+        let root = String::from_utf8_lossy(&output.stdout);
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let first = get_first_commit_hash().expect("the repository has commits");
 
-        if let Some(last_line) = stdout.lines().last() {
-            let parts: Vec<&str> = last_line.split_whitespace().collect();
-            if let Some(first_commit_hash) = parts.first() {
-                assert_eq!(hash, *first_commit_hash);
-            } else {
-                panic!("No commit hash found in the last line of git rev-list output.");
-            }
-        } else {
-            eprintln!("No commits found.");
-        }
+        assert_eq!(first, root.trim());
     }
 }

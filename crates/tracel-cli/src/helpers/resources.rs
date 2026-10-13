@@ -149,11 +149,10 @@ pub fn select_artifact<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::ErrorReport;
+    use crate::test_support::report;
 
-    #[test]
-    fn missing_models_use_the_resolved_project_in_every_model_context() {
-        for resource in [
+    fn models() -> [Resource<'static>; 4] {
+        [
             Resource::Model("weights"),
             Resource::ModelVersionRef {
                 model: "weights",
@@ -167,45 +166,39 @@ mod tests {
                 model: "weights",
                 alias: "production",
             },
-        ] {
-            let error = map_resource_error(
-                ClientError::NotFoundWithCode(ApiErrorCode::Model),
-                "alice",
-                "demo",
-                resource,
-            );
-            assert_eq!(
-                error.downcast_ref::<CliError>().unwrap().kind,
-                ErrorKind::NotFound
-            );
-            let report = ErrorReport::new(&error);
-            assert_eq!(report.message, "No model 'weights' in alice/demo.");
-            assert_eq!(report.hint, Some("List models with `tracel models list`."));
-            assert_eq!(report.exit_code, 5);
-        }
-        for client_error in [
-            ClientError::NotFound,
-            ClientError::NotFoundWithCode(ApiErrorCode::Unknown),
-        ] {
-            let error =
-                map_resource_error(client_error, "alice", "demo", Resource::Model("weights"));
-            let report = ErrorReport::new(&error);
-            assert_eq!(report.message, "No model 'weights' in alice/demo.");
-            assert_eq!(report.exit_code, 5);
-        }
+        ]
     }
 
     #[test]
-    fn missing_resources_have_specific_messages_and_listing_hints() {
-        for (client_error, resource, message, hint) in [
+    fn a_missing_resource_names_itself_with_a_listing_hint() {
+        let mut cases: Vec<(ClientError, Resource<'static>, &str)> = models()
+            .into_iter()
+            .map(|resource| {
+                (
+                    ClientError::NotFoundWithCode(ApiErrorCode::Model),
+                    resource,
+                    "'weights'",
+                )
+            })
+            .collect();
+        cases.extend([
+            (
+                ClientError::NotFound,
+                Resource::Model("weights"),
+                "'weights'",
+            ),
+            (
+                ClientError::NotFoundWithCode(ApiErrorCode::Unknown),
+                Resource::Model("weights"),
+                "'weights'",
+            ),
             (
                 ClientError::NotFoundWithCode(ApiErrorCode::ModelVersion),
                 Resource::ModelVersionRef {
                     model: "weights",
                     reference: "v7",
                 },
-                "No version or alias 'v7' on model 'weights'.",
-                "List versions with `tracel models versions weights` and aliases with `tracel models alias list weights`.",
+                "'v7'",
             ),
             (
                 ClientError::NotFoundWithCode(ApiErrorCode::ModelAlias),
@@ -213,8 +206,7 @@ mod tests {
                     model: "weights",
                     reference: "production",
                 },
-                "No version or alias 'production' on model 'weights'.",
-                "List versions with `tracel models versions weights` and aliases with `tracel models alias list weights`.",
+                "'production'",
             ),
             (
                 ClientError::NotFoundWithCode(ApiErrorCode::ModelVersion),
@@ -222,8 +214,7 @@ mod tests {
                     model: "weights",
                     version: 7,
                 },
-                "Model 'weights' has no version 7.",
-                "List versions with `tracel models versions weights`.",
+                "version 7",
             ),
             (
                 ClientError::NotFoundWithCode(ApiErrorCode::ModelAlias),
@@ -231,60 +222,36 @@ mod tests {
                     model: "weights",
                     alias: "production",
                 },
-                "Model 'weights' has no alias 'production'.",
-                "List aliases with `tracel models alias list weights`.",
+                "'production'",
             ),
             (
                 ClientError::NotFound,
                 Resource::Experiment(99),
-                "No experiment 99 in alice/demo.",
-                "List experiments with `tracel experiments list`.",
+                "experiment 99",
             ),
             (
                 ClientError::NotFoundWithCode(ApiErrorCode::Unknown),
                 Resource::Experiment(99),
-                "No experiment 99 in alice/demo.",
-                "List experiments with `tracel experiments list`.",
+                "experiment 99",
             ),
             (
                 ClientError::NotFoundWithCode(ApiErrorCode::Dataset),
                 Resource::Dataset("images"),
-                "No dataset 'images' in alice/demo.",
-                "List datasets with `tracel datasets list`.",
+                "'images'",
             ),
-        ] {
+        ]);
+        for (client_error, resource, named) in cases {
+            let case = format!("{client_error:?}");
             let error = map_resource_error(client_error, "alice", "demo", resource);
-            assert_eq!(
-                error.downcast_ref::<CliError>().unwrap().kind,
-                ErrorKind::NotFound
-            );
-            let report = ErrorReport::new(&error);
-            assert_eq!(report.message, message);
-            assert_eq!(report.hint, Some(hint));
-            assert_eq!(report.exit_code, 5);
+            assert_eq!(report(&error), (ErrorKind::NotFound, 5, true), "{case}");
+            assert!(error.to_string().contains(named), "{case}: {error}");
         }
     }
 
     #[test]
-    fn unrelated_errors_and_codes_keep_the_original_client_error() {
-        for resource in [
-            Resource::Model("weights"),
-            Resource::ModelVersionRef {
-                model: "weights",
-                reference: "production",
-            },
-            Resource::ModelVersion {
-                model: "weights",
-                version: 7,
-            },
-            Resource::ModelAlias {
-                model: "weights",
-                alias: "production",
-            },
-            Resource::Experiment(99),
-            Resource::Dataset("images"),
-        ] {
-            for client_error in [
+    fn other_errors_pass_through_unchanged() {
+        let unrelated = || {
+            [
                 ClientError::Unauthenticated,
                 ClientError::CredentialNotAllowed,
                 ClientError::InternalServerError,
@@ -298,17 +265,14 @@ mod tests {
                         message: "original message".into(),
                     },
                 },
-            ] {
-                let original = format!("{client_error:?}");
-                let error = map_resource_error(client_error, "alice", "demo", resource);
-                assert_eq!(
-                    format!("{:?}", error.downcast_ref::<ClientError>().unwrap()),
-                    original
-                );
-                assert_eq!(ErrorReport::new(&error).hint, None);
-            }
-        }
-        for (client_error, resource) in [
+            ]
+        };
+        let mut cases: Vec<(ClientError, Resource<'static>)> = models()
+            .into_iter()
+            .chain([Resource::Experiment(99), Resource::Dataset("images")])
+            .flat_map(|resource| unrelated().into_iter().map(move |error| (error, resource)))
+            .collect();
+        cases.extend([
             (
                 ClientError::NotFoundWithCode(ApiErrorCode::Unknown),
                 Resource::Dataset("images"),
@@ -339,61 +303,74 @@ mod tests {
                 ClientError::NotFoundWithCode(ApiErrorCode::Dataset),
                 Resource::Model("weights"),
             ),
-        ] {
+        ]);
+        for (client_error, resource) in cases {
             let original = format!("{client_error:?}");
             let error = map_resource_error(client_error, "alice", "demo", resource);
             assert_eq!(
                 format!("{:?}", error.downcast_ref::<ClientError>().unwrap()),
                 original
             );
-            assert_eq!(ErrorReport::new(&error).hint, None);
+            assert!(!report(&error).2, "{original}");
         }
     }
 
     #[test]
-    fn artifact_selection_prefers_id_and_reports_missing_or_ambiguous_names() {
+    fn an_artifact_is_found_by_id_then_by_a_unique_name() {
         let items = [
             ("a", "weights"),
             ("b", "weights"),
             ("c", "a"),
             ("d", "logs"),
         ];
-        assert_eq!(select_artifact(items, "a", 7).unwrap(), 0);
-        assert_eq!(select_artifact(items, "logs", 7).unwrap(), 3);
-        let error = select_artifact(items, "weights", 7).unwrap_err();
-        assert_eq!(error.kind, ErrorKind::Conflict);
-        assert_eq!(
-            ErrorReport::new(&error.into()).hint,
-            Some("Pass one of their ids: a, b.")
-        );
-        let error = select_artifact(items, "missing", 7).unwrap_err();
-        assert_eq!(error.kind, ErrorKind::NotFound);
-        assert_eq!(error.to_string(), "No artifact 'missing' in experiment 7.");
-        assert!(select_artifact([], "missing", 7).is_err());
-        assert_eq!(
-            select_artifact([("a", "b"), ("b", "weights")], "b", 7).unwrap(),
-            1
-        );
+        for (value, expected) in [
+            ("a", Ok(0)),
+            ("logs", Ok(3)),
+            ("weights", Err((ErrorKind::Conflict, 6, true))),
+            ("missing", Err((ErrorKind::NotFound, 5, true))),
+        ] {
+            let selected = select_artifact(items, value, 7).map_err(|error| {
+                let error = anyhow::Error::new(error);
+                assert!(error.to_string().contains(&format!("'{value}'")), "{value}");
+                report(&error)
+            });
+            assert_eq!(selected, expected, "{value}");
+        }
     }
 
     #[test]
-    fn metadata_requires_a_json_object_and_description_requires_creation() {
-        assert_eq!(
-            parse_metadata(r#"{"format":"bin"}"#).unwrap()["format"],
-            "bin"
-        );
-        for value in ["", "{", "null", "[]", "1", "true", r#""text""#] {
-            assert_eq!(parse_metadata(value).unwrap_err().kind, ErrorKind::Usage);
+    fn metadata_is_a_json_object() {
+        for (value, valid) in [
+            (r#"{"format":"bin"}"#, true),
+            ("{}", true),
+            ("", false),
+            ("{", false),
+            ("null", false),
+            ("[]", false),
+            ("1", false),
+            (r#""text""#, false),
+        ] {
+            assert_eq!(parse_metadata(value).is_ok(), valid, "{value:?}");
+            if let Err(error) = parse_metadata(value) {
+                assert_eq!(error.kind, ErrorKind::Usage, "{value:?}");
+            }
         }
-        for auto_create in [None, Some(false)] {
+    }
+
+    #[test]
+    fn a_description_needs_auto_create_true() {
+        for (auto_create, description, valid) in [
+            (Some(true), Some("text"), true),
+            (None, None, true),
+            (Some(false), None, true),
+            (None, Some("text"), false),
+            (Some(false), Some("text"), false),
+        ] {
             assert_eq!(
-                validate_auto_create(auto_create, Some("text"))
-                    .unwrap_err()
-                    .kind,
-                ErrorKind::Usage
+                validate_auto_create(auto_create, description).is_ok(),
+                valid,
+                "{auto_create:?} {description:?}"
             );
         }
-        assert!(validate_auto_create(Some(true), Some("text")).is_ok());
-        assert!(validate_auto_create(None, None).is_ok());
     }
 }

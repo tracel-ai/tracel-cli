@@ -347,9 +347,10 @@ impl Progress {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{quiet_terminal, report};
 
     #[test]
-    fn interactivity_requires_terminals_human_output_and_allowed_environment() {
+    fn prompts_need_terminals_human_output_and_no_ci() {
         for ci in [None, Some(""), Some("0"), Some("false")] {
             for format in [Format::Human, Format::Json] {
                 for stdin in [false, true] {
@@ -369,12 +370,62 @@ mod tests {
         }
     }
 
+    fn unlinking() -> Unanswered {
+        Unanswered::new(
+            "Unlinking test/demo needs confirmation.",
+            "Pass --yes to unlink without asking.",
+        )
+    }
+
     #[test]
-    fn a_hyperlink_shows_its_text_and_opens_its_url() {
+    fn an_unanswerable_confirmation_requires_its_flag() {
+        let terminal = quiet_terminal();
+
+        let error = terminal
+            .confirm("Unlink test/demo?", false, unlinking())
+            .unwrap_err();
+
+        assert_eq!(report(&error), (ErrorKind::ConfirmationRequired, 7, true));
+        assert_eq!(
+            ErrorReport::new(&error).hint,
+            Some("Pass --yes to unlink without asking.")
+        );
+    }
+
+    #[test]
+    fn other_unanswerable_input_is_a_usage_error() {
+        let terminal = quiet_terminal();
+        let items = [(1, "one", ""), (2, "two", "")];
+        for error in [
+            terminal.input("Name", unlinking()).unwrap_err(),
+            terminal
+                .select("Pick", &items, None, unlinking())
+                .unwrap_err(),
+            terminal
+                .multiselect("Pick", &items, vec![1], unlinking())
+                .unwrap_err(),
+        ] {
+            assert_eq!(report(&error), (ErrorKind::Usage, 2, true));
+        }
+    }
+
+    #[test]
+    fn an_unanswerable_offer_is_declined_without_asking() {
+        let terminal = quiet_terminal();
+
+        let accepted = terminal.offer("Open it in your browser?").unwrap();
+
+        assert!(!accepted);
+    }
+
+    #[test]
+    fn a_hyperlink_opens_its_url_from_its_text() {
         let url = url::Url::parse("http://localhost:9001/verify?code=BCDF-GHJK").unwrap();
 
+        let link = hyperlink(&url, "the approval page");
+
         assert_eq!(
-            hyperlink(&url, "the approval page"),
+            link,
             "\u{1b}]8;;http://localhost:9001/verify?code=BCDF-GHJK\u{1b}\\the approval page\u{1b}]8;;\u{1b}\\"
         );
     }

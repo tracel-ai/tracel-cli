@@ -132,3 +132,17 @@ fn first_credentials(
         None => stored_login(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tracel_api_key_comes_before_a_stored_login() {
+        let api_key = TracelCredentials::ApiKey("key".into());
+
+        let chosen = first_credentials(Some(api_key), || panic!("the stored login is read"));
+
+        assert!(matches!(chosen, Ok(Some(TracelCredentials::ApiKey(key))) if key == "key"));
+    }
+}

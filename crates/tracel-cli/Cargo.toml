@@ -37,3 +37,6 @@ ignore.workspace = true
 flate2.workspace = true
 tar.workspace = true
 walkdir.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

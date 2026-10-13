@@ -134,70 +134,26 @@ pub fn resolve_linker(
 mod tests {
     use super::*;
 
-    /// A unique, empty scratch directory for a test, removed on drop.
-    struct TempRoot(PathBuf);
-
-    impl TempRoot {
-        fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir()
-                .join(format!("burn_linker_test_{}_{name}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            TempRoot(dir)
-        }
-
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for TempRoot {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    const LINUX_X86: (Os, Arch) = (Os::Linux, Arch::X86_64);
-    const LINUX_ARM: (Os, Arch) = (Os::Linux, Arch::Arm64);
-    const MAC_X86: (Os, Arch) = (Os::Macos, Arch::X86_64);
-    const MAC_ARM: (Os, Arch) = (Os::Macos, Arch::Arm64);
-    const WIN_X86: (Os, Arch) = (Os::Windows, Arch::X86_64);
-
     #[test]
-    fn linker_need_same_target_is_none() {
-        assert!(matches!(
-            linker_need(LINUX_X86, LINUX_X86),
-            LinkerNeed::None
-        ));
-    }
-
-    #[test]
-    fn linker_need_linux_cross_arch_is_config_entry() {
-        match linker_need(LINUX_X86, LINUX_ARM) {
-            LinkerNeed::ConfigEntry { linker, .. } => assert_eq!(linker, "aarch64-linux-gnu-gcc"),
-            _ => panic!("expected ConfigEntry"),
+    fn a_linker_setting_is_needed_only_across_linux_architectures() {
+        const LINUX_X86: (Os, Arch) = (Os::Linux, Arch::X86_64);
+        const LINUX_ARM: (Os, Arch) = (Os::Linux, Arch::Arm64);
+        const MAC_X86: (Os, Arch) = (Os::Macos, Arch::X86_64);
+        const MAC_ARM: (Os, Arch) = (Os::Macos, Arch::Arm64);
+        const WIN_X86: (Os, Arch) = (Os::Windows, Arch::X86_64);
+        for (host, target, expected) in [
+            (LINUX_X86, LINUX_X86, None),
+            (LINUX_X86, LINUX_ARM, Some("aarch64-linux-gnu-gcc")),
+            (LINUX_ARM, LINUX_X86, Some("x86_64-linux-gnu-gcc")),
+            (MAC_X86, MAC_ARM, None),
+            (LINUX_X86, WIN_X86, None),
+            (LINUX_X86, MAC_ARM, None),
+        ] {
+            let linker = match linker_need(host, target) {
+                LinkerNeed::None => None,
+                LinkerNeed::ConfigEntry { linker, .. } => Some(linker),
+            };
+            assert_eq!(linker, expected, "{host:?} {target:?}");
         }
-        match linker_need(LINUX_ARM, LINUX_X86) {
-            LinkerNeed::ConfigEntry { linker, .. } => assert_eq!(linker, "x86_64-linux-gnu-gcc"),
-            _ => panic!("expected ConfigEntry"),
-        }
-    }
-
-    #[test]
-    fn linker_need_macos_cross_arch_is_none() {
-        assert!(matches!(linker_need(MAC_X86, MAC_ARM), LinkerNeed::None));
-    }
-
-    #[test]
-    fn linker_need_different_os_is_none() {
-        // Cross-OS linker setup is handled by the build driver, not a linker entry.
-        assert!(matches!(linker_need(LINUX_X86, WIN_X86), LinkerNeed::None));
-        assert!(matches!(linker_need(LINUX_X86, MAC_ARM), LinkerNeed::None));
-    }
-
-    #[test]
-    fn linker_configured_false_when_absent() {
-        let root = TempRoot::new("absent");
-        assert!(!linker_configured(root.path(), "aarch64-unknown-linux-gnu"));
     }
 }

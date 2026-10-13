@@ -780,287 +780,33 @@ fn alias(
 
 #[cfg(test)]
 mod tests {
-    use clap::{CommandFactory, Parser};
-    use serde_json::json;
-
     use super::*;
-    use crate::cli::{CliArgs, Commands};
-
-    fn parse_command(arguments: &[&str]) -> ModelsArgs {
-        let args = CliArgs::try_parse_from(arguments).unwrap();
-        let Some(Commands::Models(args)) = args.command else {
-            panic!("Expected models command");
-        };
-        args
-    }
+    use crate::test_support::report;
 
     #[test]
-    fn definitions_and_read_commands_are_valid() {
-        CliArgs::command().debug_assert();
-        assert!(matches!(
-            parse_command(&["tracel", "models", "list"]).command,
-            ModelsCommands::List
-        ));
-        let args = parse_command(&["tracel", "models", "get", "weights"]);
-        let ModelsCommands::Get(args) = args.command else {
-            panic!("Expected get");
-        };
-        assert_eq!(args.model, "weights");
-        assert!(args.version.is_none());
-        for reference in ["latest", "7", "v7", "production"] {
-            let args =
-                parse_command(&["tracel", "models", "get", "weights", "--version", reference]);
-            let ModelsCommands::Get(args) = args.command else {
-                panic!("Expected get");
-            };
-            assert_eq!(args.version.as_deref(), Some(reference));
-        }
-        let args = parse_command(&["tracel", "models", "versions", "weights", "--all"]);
-        let ModelsCommands::Versions(args) = args.command else {
-            panic!("Expected versions");
-        };
-        assert!(args.all);
-        let args = parse_command(&["tracel", "models", "pull", "weights"]);
-        let ModelsCommands::Pull(args) = args.command else {
-            panic!("Expected pull");
-        };
-        assert_eq!(args.version, "latest");
-        assert!(args.directory.is_none());
-        assert!(!args.force);
-        let args = parse_command(&[
-            "tracel",
-            "models",
-            "pull",
-            "weights",
-            "--version",
-            "production",
-            "-d",
-            "./out",
-            "--force",
-            "-o",
-            "json",
-        ]);
-        let ModelsCommands::Pull(args) = args.command else {
-            panic!("Expected pull");
-        };
-        assert_eq!(args.version, "production");
-        assert_eq!(args.directory.unwrap(), Path::new("./out"));
-        assert!(args.force);
-    }
-
-    #[test]
-    fn push_and_promote_parse_creation_and_metadata() {
-        let args = parse_command(&[
-            "tracel",
-            "models",
-            "push",
-            "weights",
-            "-d",
-            ".",
-            "-a",
-            "true",
-            "--description",
-            "Weights",
-            "--metadata",
-            r#"{"format":"bin"}"#,
-        ]);
-        let ModelsCommands::Push(args) = args.command else {
-            panic!("Expected push");
-        };
-        assert_eq!(args.model_name, "weights");
-        assert_eq!(args.directory, Path::new("."));
-        assert_eq!(args.auto_create, Some(true));
-        assert_eq!(args.description.as_deref(), Some("Weights"));
-        assert_eq!(args.metadata.unwrap(), json!({"format": "bin"}));
-        let args = parse_command(&[
-            "tracel",
-            "models",
-            "promote",
-            "weights",
-            "--experiment",
-            "7",
-            "--artifact",
-            "artifact-id",
-            "--alias",
-            "production",
-            "--auto-create",
-            "false",
-            "--metadata",
-            "{}",
-        ]);
-        let ModelsCommands::Promote(args) = args.command else {
-            panic!("Expected promote");
-        };
-        assert_eq!(args.experiment, 7);
-        assert_eq!(args.artifact, "artifact-id");
-        assert_eq!(args.alias.as_deref(), Some("production"));
-        assert_eq!(args.auto_create, Some(false));
-        assert_eq!(args.metadata.unwrap(), json!({}));
-        for value in ["null", "[]", "1", "{invalid"] {
-            assert!(
-                CliArgs::try_parse_from([
-                    "tracel",
-                    "models",
-                    "push",
-                    "weights",
-                    "-d",
-                    ".",
-                    "--metadata",
-                    value
-                ])
-                .is_err()
-            );
-            assert!(
-                CliArgs::try_parse_from([
-                    "tracel",
-                    "models",
-                    "promote",
-                    "weights",
-                    "--experiment",
-                    "7",
-                    "--artifact",
-                    "weights",
-                    "--metadata",
-                    value
-                ])
-                .is_err()
-            );
-        }
-        for arguments in [
-            vec!["tracel", "models", "push", "weights"],
-            vec![
-                "tracel",
-                "models",
-                "push",
-                "weights",
-                "-d",
-                ".",
-                "--description",
-                "text",
-            ],
-            vec![
-                "tracel",
-                "models",
-                "push",
-                "weights",
-                "-d",
-                ".",
-                "--auto-create",
-                "maybe",
-            ],
-            vec![
-                "tracel",
-                "models",
-                "promote",
-                "weights",
-                "--artifact",
-                "weights",
-            ],
-            vec![
-                "tracel",
-                "models",
-                "promote",
-                "weights",
-                "--experiment",
-                "0",
-                "--artifact",
-                "weights",
-            ],
+    fn a_default_pull_directory_needs_a_plain_model_name() {
+        for (model, valid) in [
+            ("weights", true),
+            ("", false),
+            (".", false),
+            ("..", false),
+            ("/weights", false),
+            ("../weights", false),
+            ("nested/weights", false),
+            ("C:\\weights", false),
         ] {
-            assert!(CliArgs::try_parse_from(arguments).is_err());
-        }
-    }
-
-    #[test]
-    fn aliases_require_positive_versions_and_parse_the_guard() {
-        let args = parse_command(&["tracel", "models", "alias", "list", "weights"]);
-        let ModelsCommands::Alias(args) = args.command else {
-            panic!("Expected alias");
-        };
-        assert!(
-            matches!(args.command, AliasCommands::List(AliasListArgs { model }) if model == "weights")
-        );
-        let args = parse_command(&[
-            "tracel",
-            "models",
-            "alias",
-            "set",
-            "weights",
-            "production",
-            "7",
-            "--expect",
-            "6",
-        ]);
-        let ModelsCommands::Alias(args) = args.command else {
-            panic!("Expected alias");
-        };
-        let AliasCommands::Set(args) = args.command else {
-            panic!("Expected set");
-        };
-        assert_eq!(args.model, "weights");
-        assert_eq!(args.alias, "production");
-        assert_eq!(args.version, 7);
-        assert_eq!(args.expect, Some(6));
-        let args = parse_command(&[
-            "tracel",
-            "models",
-            "alias",
-            "remove",
-            "weights",
-            "production",
-        ]);
-        let ModelsCommands::Alias(args) = args.command else {
-            panic!("Expected alias");
-        };
-        assert!(
-            matches!(args.command, AliasCommands::Remove(AliasRemoveArgs { model, alias }) if model == "weights" && alias == "production")
-        );
-        for version in ["0", "-1", "4294967296", "v7"] {
-            assert!(
-                CliArgs::try_parse_from([
-                    "tracel",
-                    "models",
-                    "alias",
-                    "set",
-                    "weights",
-                    "production",
-                    version
-                ])
-                .is_err()
-            );
-            assert!(
-                CliArgs::try_parse_from([
-                    "tracel",
-                    "models",
-                    "alias",
-                    "set",
-                    "weights",
-                    "production",
-                    "7",
-                    "--expect",
-                    version
-                ])
-                .is_err()
-            );
-        }
-    }
-
-    #[test]
-    fn default_pull_destination_requires_a_single_normal_model_name() {
-        assert!(validate_download_directory(None, "weights").is_ok());
-        for model in [
-            "",
-            ".",
-            "..",
-            "/weights",
-            "../weights",
-            "nested/weights",
-            "C:\\weights",
-        ] {
-            assert_eq!(
-                crate::error::classify(&validate_download_directory(None, model).unwrap_err()),
-                ErrorKind::Usage
-            );
+            let checked = validate_download_directory(None, model);
+            match checked {
+                Ok(()) => assert!(valid, "{model:?}"),
+                Err(error) => {
+                    assert!(!valid, "{model:?}");
+                    assert_eq!(report(&error), (ErrorKind::Usage, 2, true), "{model:?}");
+                    assert!(
+                        error.to_string().contains(&format!("'{model}'")),
+                        "{model:?}"
+                    );
+                }
+            }
             assert!(validate_download_directory(Some(Path::new("./out")), model).is_ok());
         }
     }
