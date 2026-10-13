@@ -25,7 +25,7 @@ use crate::helpers::{
 };
 use crate::tools::fs::{build_file_specs, collect_files};
 use crate::tools::tracel_config::TracelProject;
-use crate::ui::{Details, Human, Layout, Outcome, Render, Table, counted, when};
+use crate::ui::{Declined, Details, Human, Layout, Outcome, Render, Table, counted, when};
 
 #[derive(Args, Debug)]
 pub struct ModelsArgs {
@@ -572,7 +572,7 @@ fn push(
         .terminal()
         .print(&format!("Uploading to {namespace}/{name}"));
 
-    ensure_model_exists(
+    if !ensure_model_exists(
         context,
         &client,
         namespace,
@@ -580,7 +580,9 @@ fn push(
         &args.model_name,
         args.auto_create,
         args.description.clone(),
-    )?;
+    )? {
+        return Err(Declined::new("Nothing was uploaded.").into());
+    }
 
     let spinner = context.terminal().spinner();
     spinner.start("Computing checksums...");
@@ -675,7 +677,7 @@ fn promote(
         args.experiment,
     )?;
     let artifact = &artifacts.items[index];
-    ensure_model_exists(
+    if !ensure_model_exists(
         context,
         &client,
         namespace,
@@ -683,7 +685,9 @@ fn promote(
         &args.model,
         args.auto_create,
         args.description,
-    )?;
+    )? {
+        return Err(Declined::new("Nothing was promoted.").into());
+    }
     let map_error =
         |error| map_resource_error(error, namespace, name, Resource::Model(&args.model));
     let mut version = client

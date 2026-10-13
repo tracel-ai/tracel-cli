@@ -164,13 +164,6 @@ impl Screen {
         }
     }
 
-    /// Ends a flow's session on an outcome that stops short of what it set out to do.
-    pub fn close_short(&self, outcome: &str) {
-        if self.session.swap(false, Ordering::Relaxed) {
-            self.draw(|| cliclack::outro_cancel(outcome));
-        }
-    }
-
     /// Ends a flow's session with the commands to run next, one per line.
     pub fn close_with_next_steps(&self, steps: &str) {
         if self.session.swap(false, Ordering::Relaxed) {

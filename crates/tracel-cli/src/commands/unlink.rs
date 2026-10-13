@@ -6,7 +6,7 @@ use crate::{
     context::CliContext,
     helpers::require_linked_project,
     tools::project_context::ProjectContext,
-    ui::{Outcome, Render},
+    ui::{Declined, Outcome, Render},
 };
 
 #[derive(Args, Debug)]
@@ -16,14 +16,12 @@ pub struct UnlinkArgs {
     pub yes: bool,
 }
 
-/// `namespace` and `name` are the project that was unlinked, absent when cancelled.
+/// The project that was unlinked.
 #[derive(Serialize)]
 struct Unlinked {
     unlinked: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    namespace: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
+    namespace: String,
+    name: String,
 }
 
 impl Render for Unlinked {}
@@ -38,13 +36,7 @@ pub fn handle_command(args: UnlinkArgs, context: CliContext) -> anyhow::Result<O
             false,
         )?;
         if !confirmed {
-            context.terminal().outro_cancel("Cancelled");
-            return Ok(Unlinked {
-                unlinked: false,
-                namespace: None,
-                name: None,
-            }
-            .into());
+            return Err(Declined::new("Nothing was unlinked.").into());
         }
     }
 
@@ -54,8 +46,8 @@ pub fn handle_command(args: UnlinkArgs, context: CliContext) -> anyhow::Result<O
     let linked = project.get_project();
     Ok(Unlinked {
         unlinked: true,
-        namespace: Some(linked.owner.clone()),
-        name: Some(linked.name.clone()),
+        namespace: linked.owner.clone(),
+        name: linked.name.clone(),
     }
     .into())
 }

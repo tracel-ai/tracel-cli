@@ -18,8 +18,9 @@ use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
 use crate::helpers::project::resolve_namespace_project;
+use crate::helpers::{Resource, map_resource_error};
 use crate::tools::tracel_config::TracelProject;
-use crate::ui::{Details, Human, Layout, Outcome, Output, Render, Table, counted, when};
+use crate::ui::{Details, Human, Layout, Outcome, Output, Render, Table, counted, log_time, when};
 
 #[derive(Args, Debug)]
 pub struct ExperimentsArgs {
@@ -332,8 +333,11 @@ impl Render for Option<MetricSummaryResponse> {
 }
 
 impl Render for ExperimentLogQueryResponse {
+    /// Oldest first, as `--follow` writes them.
     fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
-        self.items.iter().try_for_each(|item| write_log(out, item))
+        let mut items: Vec<_> = self.items.iter().collect();
+        items.sort_by_key(|item| item.seq);
+        items.into_iter().try_for_each(|item| write_log(out, item))
     }
 
     fn summary(&self) -> Option<String> {
@@ -355,7 +359,7 @@ fn write_log(out: &mut Human<'_>, item: &ExperimentLogItemResponse) -> io::Resul
         LogLevelResponse::Error => "error",
     };
     let message = item.message.replace(['\r', '\n'], " ");
-    writeln!(out, "{} {level} {message}", item.timestamp)
+    writeln!(out, "{} {level} {message}", log_time(&item.timestamp))
 }
 
 /// An event of `logs --follow`. As JSON, a log item gains `"type": "log"`.
@@ -383,8 +387,16 @@ fn follow_logs(
     output: &Output,
 ) -> anyhow::Result<()> {
     loop {
-        let response =
-            client.query_experiment_logs(&project.owner, &project.name, num, request.clone())?;
+        let response = client
+            .query_experiment_logs(&project.owner, &project.name, num, request.clone())
+            .map_err(|error| {
+                map_resource_error(
+                    error,
+                    &project.owner,
+                    &project.name,
+                    Resource::Experiment(num),
+                )
+            })?;
         for item in &response.items {
             output.event(&LogEvent::Log(item))?;
         }
@@ -418,6 +430,8 @@ pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Res
     let client = get_client_and_login_if_needed(&context)?;
     let project = resolve_namespace_project(&context)?.project;
     let (owner, name) = (&project.owner, &project.name);
+    let missing =
+        |num| move |error| map_resource_error(error, owner, name, Resource::Experiment(num));
     match args.command {
         ExperimentsCommands::List(args) => Ok(client
             .get_project_experiments(
@@ -432,7 +446,9 @@ pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Res
             .into()),
         ExperimentsCommands::Get(args) => {
             let experiment = match args.experiment {
-                ExperimentSelector::Number(num) => client.get_experiment(owner, name, num)?,
+                ExperimentSelector::Number(num) => client
+                    .get_experiment(owner, name, num)
+                    .map_err(missing(num))?,
                 ExperimentSelector::Latest => client
                     .get_project_latest_experiment(owner, name)?
                     .ok_or_else(|| {
@@ -443,11 +459,15 @@ pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Res
         }
         ExperimentsCommands::Metrics(args) => {
             let Some(metric) = args.metric else {
-                return Ok(client.get_metric_metadata(owner, name, args.num)?.into());
+                return Ok(client
+                    .get_metric_metadata(owner, name, args.num)
+                    .map_err(missing(args.num))?
+                    .into());
             };
             if args.summary {
                 Ok(client
-                    .get_metric_summary(owner, name, args.num, MetricSummaryQuery { metric })?
+                    .get_metric_summary(owner, name, args.num, MetricSummaryQuery { metric })
+                    .map_err(missing(args.num))?
                     .into())
             } else {
                 Ok(client
@@ -460,7 +480,8 @@ pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Res
                             max_points: args.max_points,
                             downsampling_factor: args.downsampling,
                         },
-                    )?
+                    )
+                    .map_err(missing(args.num))?
                     .into())
             }
         }
@@ -476,7 +497,8 @@ pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Res
                 return Ok(Outcome::streamed());
             }
             Ok(client
-                .query_experiment_logs(owner, name, num, request)?
+                .query_experiment_logs(owner, name, num, request)
+                .map_err(missing(num))?
                 .into())
         }
     }
@@ -671,7 +693,7 @@ mod tests {
         LogEvent::End { running: false }.render(&mut out).unwrap();
         assert_eq!(
             String::from_utf8(text).unwrap(),
-            "2026-10-07T00:00:00Z warn loss spiked\n"
+            format!("{} warn loss spiked\n", log_time("2026-10-07T00:00:00Z"))
         );
     }
 }

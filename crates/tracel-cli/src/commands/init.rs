@@ -4,7 +4,7 @@ use crate::helpers::{can_initialize_project, require_cargo_workspace, require_li
 use crate::tools::git;
 use crate::tools::project_context::ProjectContext;
 use crate::tools::tracel_config::TracelProject;
-use crate::ui::{Outcome, Render, Terminal};
+use crate::ui::{Declined, Outcome, Render, Terminal};
 use anyhow::Context;
 use clap::Args;
 use serde::Serialize;
@@ -145,7 +145,7 @@ fn prompt_init(
         .context("Failed to initialize project metadata")?;
     terminal.print("Created project metadata");
 
-    let frontend_url = project_url(context, &user.username, &project_owner, &project_name)?;
+    let frontend_url = project_url(context, &project_owner, owner_name, &project_name)?;
 
     terminal.outro(&format!(
         "Project initialized successfully! You can check out your project at {}",
@@ -279,7 +279,7 @@ fn handle_existing_project(
             name: project.project_name.clone(),
         })
     } else {
-        Err(anyhow::anyhow!("Project initialization cancelled by user"))
+        Err(Declined::new("Nothing was linked.").into())
     }
 }
 
@@ -291,13 +291,13 @@ enum ProjectKind {
 
 fn project_url(
     context: &CliContext,
-    username: &str,
     owner: &ProjectKind,
+    namespace: &str,
     name: &str,
 ) -> anyhow::Result<url::Url> {
     let path = match owner {
-        ProjectKind::User => format!("/users/{username}/projects/{name}"),
-        ProjectKind::Organization(namespace) => format!("/orgs/{namespace}/projects/{name}"),
+        ProjectKind::User => format!("/users/{namespace}/projects/{name}"),
+        ProjectKind::Organization(_) => format!("/orgs/{namespace}/projects/{name}"),
     };
     Ok(context.get_frontend_endpoint().join(&path)?)
 }
@@ -369,7 +369,7 @@ pub fn ensure_git_repo_clean(
         return Ok(());
     }
     if commit {
-        return commit_sequence(terminal, true);
+        return commit_all(terminal);
     }
     if allow_dirty && has_commit {
         return Ok(());
@@ -387,7 +387,14 @@ pub fn ensure_git_repo_clean(
     terminal.print(
         "Repository is dirty. Tracel Console needs a valid commit hash to associate your code with your repository.",
     );
-    commit_sequence(terminal, false).context("Failed to make initial commit")
+    if !terminal.confirm(
+        "Do you want to automatically commit all files?",
+        "commit",
+        false,
+    )? {
+        return Err(Declined::new("Nothing was linked.").into());
+    }
+    commit_all(terminal).context("Failed to make initial commit")
 }
 
 fn commit_required() -> CliError {
@@ -395,44 +402,34 @@ fn commit_required() -> CliError {
         .with_hint("Commit your changes, or pass --commit or --allow-dirty")
 }
 
-pub fn commit_sequence(terminal: &Terminal, commit: bool) -> anyhow::Result<()> {
-    if commit
-        || terminal.confirm(
-            "Do you want to automatically commit all files?",
-            "commit",
-            false,
-        )?
-    {
-        let commit_message = "Automatic commit by Tracel Console CLI";
-        let status = std::process::Command::new("git")
-            .args(["add", "--all"])
-            .stdin(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .status()
-            .context("Failed to run `git add .`")?;
-        if !status.success() {
-            return Err(anyhow::anyhow!("Failed to add files to git"));
-        }
-        let mut command = std::process::Command::new("git");
-        command.args(["commit", "-m", commit_message]);
-        if git::get_last_commit_hash().is_err() {
-            command.arg("--allow-empty");
-        }
-        let status = command
-            .stdin(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .status()
-            .context("Failed to run `git commit -m`")?;
-        if !status.success() {
-            return Err(anyhow::anyhow!("Failed to commit files to git"));
-        }
-        terminal.print_success("Committed all files to git.");
-    } else {
-        return Err(commit_required().into());
+/// Commit everything in the working tree, making the first commit if there is none.
+pub fn commit_all(terminal: &Terminal) -> anyhow::Result<()> {
+    let commit_message = "Automatic commit by Tracel Console CLI";
+    let status = std::process::Command::new("git")
+        .args(["add", "--all"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .status()
+        .context("Failed to run `git add .`")?;
+    if !status.success() {
+        return Err(anyhow::anyhow!("Failed to add files to git"));
     }
-
+    let mut command = std::process::Command::new("git");
+    command.args(["commit", "-m", commit_message]);
+    if git::get_last_commit_hash().is_err() {
+        command.arg("--allow-empty");
+    }
+    let status = command
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .status()
+        .context("Failed to run `git commit -m`")?;
+    if !status.success() {
+        return Err(anyhow::anyhow!("Failed to commit files to git"));
+    }
+    terminal.print_success("Committed all files to git.");
     Ok(())
 }
 

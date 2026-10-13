@@ -23,18 +23,20 @@ impl Serialize for Timestamp {
 /// A server's RFC 3339 time as a person reads it: local, to the minute. Text that is
 /// not such a time is kept as it is.
 pub fn when(text: &str) -> String {
-    when_in(text, &Local)
+    local(text, &Local, "%Y-%m-%d %H:%M")
 }
 
-fn when_in<Tz: TimeZone>(text: &str, zone: &Tz) -> String
+/// A log entry's RFC 3339 time as a person reads it: local, to the second.
+pub fn log_time(text: &str) -> String {
+    local(text, &Local, "%Y-%m-%d %H:%M:%S")
+}
+
+fn local<Tz: TimeZone>(text: &str, zone: &Tz, format: &str) -> String
 where
     Tz::Offset: Display,
 {
     match DateTime::parse_from_rfc3339(text) {
-        Ok(time) => time
-            .with_timezone(zone)
-            .format("%Y-%m-%d %H:%M")
-            .to_string(),
+        Ok(time) => time.with_timezone(zone).format(format).to_string(),
         Err(_) => text.to_string(),
     }
 }
@@ -48,13 +50,17 @@ mod tests {
     #[test]
     fn server_times_read_in_the_local_zone() {
         let zone = chrono::FixedOffset::west_opt(4 * 3600).unwrap();
+        let minute = "%Y-%m-%d %H:%M";
         assert_eq!(
-            when_in("2026-10-09T20:21:06.075Z", &zone),
+            local("2026-10-09T20:21:06.075Z", &zone, minute),
             "2026-10-09 16:21"
         );
-        assert_eq!(when_in("2026-10-09T20:21:06Z", &Utc), "2026-10-09 20:21");
-        assert_eq!(when_in("yesterday", &Utc), "yesterday");
-        assert_eq!(when_in("", &Utc), "");
+        assert_eq!(
+            local("2026-10-09T20:21:06Z", &Utc, minute),
+            "2026-10-09 20:21"
+        );
+        assert_eq!(local("yesterday", &Utc, minute), "yesterday");
+        assert_eq!(local("", &Utc, minute), "");
     }
 
     #[test]

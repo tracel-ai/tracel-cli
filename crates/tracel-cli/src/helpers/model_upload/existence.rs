@@ -5,6 +5,8 @@ use tracel_client::console::model::request::CreateModelRequest;
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
 
+/// Make sure `model_name` exists, creating it when `auto_create` says so or the user
+/// agrees. False when the user declined to create it.
 pub fn ensure_model_exists(
     context: &CliContext,
     client: &Client,
@@ -13,35 +15,37 @@ pub fn ensure_model_exists(
     model_name: &str,
     auto_create: Option<bool>,
     description: Option<String>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     match client.get_model(namespace, project, model_name) {
-        Ok(_) => return Ok(()),
+        Ok(_) => return Ok(true),
         Err(e) if e.is_not_found() => {}
         Err(e) => return Err(e).with_context(|| format!("Failed to check model '{model_name}'")),
     }
 
-    if !context.terminal().is_interactive() && auto_create != Some(true) {
+    let create = match auto_create {
+        Some(create) => create,
+        None if context.terminal().is_interactive() => {
+            if !context.terminal().confirm(
+                &format!(
+                    "Model '{model_name}' does not exist in {namespace}/{project}. Create it now?"
+                ),
+                "auto-create",
+                false,
+            )? {
+                return Ok(false);
+            }
+            true
+        }
+        None => false,
+    };
+
+    if !create {
         return Err(CliError::new(
             ErrorKind::Usage,
             format!("Model '{model_name}' does not exist in {namespace}/{project}."),
         )
         .with_hint("Pass --auto-create true to create it")
         .into());
-    }
-
-    let create = match auto_create {
-        Some(create) => create,
-        None => context.terminal().confirm(
-            &format!(
-                "Model '{model_name}' does not exist in {namespace}/{project}. Create it now?"
-            ),
-            "auto-create",
-            false,
-        )?,
-    };
-
-    if !create {
-        anyhow::bail!("Model upload cancelled: model '{model_name}' does not exist.");
     }
 
     let description = match description {
@@ -69,5 +73,5 @@ pub fn ensure_model_exists(
         "Created model '{model_name}' in {namespace}/{project}."
     ));
 
-    Ok(())
+    Ok(true)
 }

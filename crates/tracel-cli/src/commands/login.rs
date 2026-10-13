@@ -45,66 +45,54 @@ impl LoginArgs {
     }
 }
 
-pub fn get_client_and_login_if_needed(context: &CliContext) -> anyhow::Result<Client> {
-    const MAX_RETRIES: u32 = 3;
-    let mut attempts = 0;
+/// How long to wait before each new attempt to reach the Tracel Console.
+const RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_millis(250),
+    Duration::from_millis(500),
+    Duration::from_secs(1),
+];
 
+pub fn get_client_and_login_if_needed(context: &CliContext) -> anyhow::Result<Client> {
+    let mut delays = RETRY_DELAYS.into_iter();
+    let mut logged_in = false;
     loop {
         match context.create_client() {
-            Ok(client) => {
-                if attempts > 0 {
-                    context.terminal().print_success("Successfully logged in!");
-                }
-                return Ok(client);
-            }
-            Err(err) => {
-                attempts += 1;
-                match err {
-                    ClientCreationError::InvalidCredentials
-                    | ClientCreationError::NoCredentials => {
-                        if attempts > MAX_RETRIES {
-                            return Err(CliError::new(
-                                ErrorKind::NotAuthenticated,
-                                "Maximum login attempts exceeded",
-                            )
-                            .into());
-                        }
-                        let env_msg = environment_suffix(&context.environment());
-                        if !context.terminal().is_interactive() {
-                            return Err(CliError::new(
-                                ErrorKind::NotAuthenticated,
-                                format!(
-                                    "Not logged in{}. Run 'tracel login' or set TRACEL_API_KEY.",
-                                    env_msg
-                                ),
-                            )
-                            .with_hint(
-                                "Run 'tracel login', or 'tracel login --no-wait' then 'tracel login --complete'.",
-                            )
-                            .into());
-                        }
-                        context.terminal().print_err(&format!(
-                            "Not logged in{}. Log in below, or press Ctrl+C to exit.",
+            Ok(client) => return Ok(client),
+            Err(ClientCreationError::InvalidCredentials | ClientCreationError::NoCredentials)
+                if !logged_in =>
+            {
+                let env_msg = environment_suffix(&context.environment());
+                if !context.terminal().is_interactive() {
+                    return Err(CliError::new(
+                        ErrorKind::NotAuthenticated,
+                        format!(
+                            "Not logged in{}. Run 'tracel login' or set TRACEL_API_KEY.",
                             env_msg
-                        ));
-
-                        log_in(context)?;
-                    }
-                    ClientCreationError::ServerConnectionError(msg) => {
-                        if attempts > MAX_RETRIES {
-                            return Err(CliError::new(
-                                ErrorKind::Unavailable,
-                                format!("Server connection failed after maximum retries: {}", msg),
-                            )
-                            .into());
-                        }
-                        context.terminal().print_err(&format!(
-                            "Failed to connect to the server: {msg}. Retrying..."
-                        ));
-                    }
-                    err => return Err(err.into()),
+                        ),
+                    )
+                    .with_hint(
+                        "Run 'tracel login', or 'tracel login --no-wait' then 'tracel login --complete'.",
+                    )
+                    .into());
                 }
+                context.terminal().print_err(&format!(
+                    "Not logged in{}. Log in below, or press Ctrl+C to exit.",
+                    env_msg
+                ));
+                log_in(context)?;
+                logged_in = true;
             }
+            Err(ClientCreationError::ServerConnectionError(msg)) => match delays.next() {
+                Some(delay) => std::thread::sleep(delay),
+                None => {
+                    return Err(CliError::new(
+                        ErrorKind::Unavailable,
+                        format!("Server connection failed after maximum retries: {}", msg),
+                    )
+                    .into());
+                }
+            },
+            Err(err) => return Err(err.into()),
         }
     }
 }

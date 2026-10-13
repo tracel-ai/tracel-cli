@@ -18,9 +18,9 @@ use std::sync::Arc;
 pub use format::{Format, FormatArg};
 pub use human::{Details, Human, Table, counted};
 pub use layout::{Layout, Place};
-pub use stderr::Terminal;
+pub use stderr::{Declined, Terminal};
 pub use stdout::{Outcome, Output, Render, StdoutClosed};
-pub use time::{Timestamp, when};
+pub use time::{Timestamp, log_time, when};
 
 /// Stdout and stderr for one command, drawing on the same screen. A flow's session
 /// opens on the terminal now, saying what it does and where.

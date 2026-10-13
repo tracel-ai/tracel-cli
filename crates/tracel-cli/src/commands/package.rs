@@ -11,7 +11,7 @@ use tracel_client::console::project::request::{
     PublishSourceRequest,
 };
 
-use crate::commands::init::commit_sequence;
+use crate::commands::init::commit_all;
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
@@ -118,7 +118,7 @@ pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<
     }
     if args.commit {
         if !has_commit || git::is_repo_dirty()? {
-            commit_sequence(context.terminal(), true)?;
+            commit_all(context.terminal())?;
         }
     } else if git::is_repo_dirty()? && !args.allow_dirty {
         context
@@ -135,7 +135,7 @@ pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<
             .terminal()
             .confirm("Commit changes before packaging?", "commit", true)?
         {
-            commit_sequence(context.terminal(), false)?;
+            commit_all(context.terminal())?;
         }
     }
 

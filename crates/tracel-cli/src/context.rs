@@ -87,10 +87,9 @@ impl CliContext {
         })
     }
 
-    pub fn get_frontend_endpoint(&self) -> url::Url {
-        // We can't know easily the url depending on the environment, so let's just serve
-        // production url
-        Url::parse("https://console.tracel.ai/").expect("Frontend endpoint should be valid")
+    /// The web Console of the environment.
+    pub fn get_frontend_endpoint(&self) -> Url {
+        web_console(&self.environment)
     }
 
     pub fn terminal(&self) -> &Terminal {
@@ -117,6 +116,17 @@ impl CliContext {
     pub fn get_api_endpoint(&self) -> String {
         self.environment.get_url().to_string()
     }
+}
+
+/// The web Console of an environment: production and staging serve it beside their
+/// API, and a development server serves it on port 9000.
+fn web_console(environment: &Env) -> Url {
+    let url = match environment {
+        Env::Production => "https://console.tracel.ai/".to_string(),
+        Env::Staging(version) => format!("https://s{version}-console.tracel.ai/"),
+        Env::Development => "http://localhost:9000/".to_string(),
+    };
+    Url::parse(&url).expect("a web Console URL is valid")
 }
 
 /// The name of an environment, as `TRACEL_ENV` and JSON data write it.

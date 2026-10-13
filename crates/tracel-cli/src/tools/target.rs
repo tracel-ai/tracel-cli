@@ -8,7 +8,7 @@ use colored::Colorize;
 use tracel_client::console::project::request::{Arch, Os};
 
 use crate::error::{CliError, ErrorKind};
-use crate::ui::Terminal;
+use crate::ui::{Declined, Terminal};
 
 /// Every (os, arch) target we offer to build for, in canonical display order.
 /// The host is surfaced separately and pulled to the front by `prompt_targets`.
@@ -221,14 +221,7 @@ pub fn install_missing_target(
                 add_target(triple)?;
             }
         } else {
-            let cmds = missing
-                .iter()
-                .map(|triple| format!("rustup target add {triple}"))
-                .collect::<Vec<_>>()
-                .join("\n  ");
-            anyhow::bail!(
-                "Cannot build without the selected targets installed. Install them with:\n  {cmds}"
-            );
+            return Err(Declined::new("Nothing was packaged.").into());
         }
     }
     Ok(())

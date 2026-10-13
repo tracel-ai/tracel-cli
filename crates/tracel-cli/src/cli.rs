@@ -8,7 +8,9 @@ use crate::context::{CliContext, environment_name};
 use crate::error::{CliError, ErrorKind, ErrorReport};
 use crate::helpers::project::{parse_project, resolve_project};
 use crate::tools::tracel_config::TracelProject;
-use crate::ui::{self, Format, FormatArg, Layout, Outcome, Output, Place, StdoutClosed, Terminal};
+use crate::ui::{
+    self, Declined, Format, FormatArg, Layout, Outcome, Output, Place, StdoutClosed, Terminal,
+};
 
 #[derive(Parser, Debug)]
 #[clap(name = "tracel", author, version, about, long_about = None)]
@@ -240,9 +242,17 @@ fn resolve_environment(
 }
 
 /// Reports a failed command on both channels and exits with its code. A reader that
-/// closed stdout got all it wanted, so that ends the command quietly.
+/// closed stdout got all it wanted, so that ends the command quietly, and a declined
+/// prompt ends it on what it didn't do.
 fn fail(error: &anyhow::Error, output: &Output, terminal: &Terminal) -> ! {
     if error.chain().any(|cause| cause.is::<StdoutClosed>()) {
+        std::process::exit(0);
+    }
+    if let Some(declined) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<Declined>())
+    {
+        terminal.outro(declined.outcome());
         std::process::exit(0);
     }
     let report = ErrorReport::new(error);

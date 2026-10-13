@@ -8,6 +8,22 @@ use super::Format;
 use super::screen::{Ending, Screen};
 use crate::error::{CliError, ErrorKind, ErrorReport};
 
+/// A prompt the user answered no. The command stops there and ends on what it didn't
+/// do, such as "Nothing was linked.", as a normal outcome.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct Declined(String);
+
+impl Declined {
+    pub fn new(outcome: impl Into<String>) -> Self {
+        Self(outcome.into())
+    }
+
+    pub fn outcome(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Stderr, for the person running a command: what it is doing, its progress, and
 /// questions for them. With JSON output it carries only errors and the instructions
 /// a person must follow, as plain lines.
@@ -268,15 +284,6 @@ impl Terminal {
             for step in steps {
                 self.line(format_args!("  {step}"));
             }
-        }
-    }
-
-    /// Ends a flow's session on an outcome that stops short of what it set out to do.
-    pub fn outro_cancel(&self, message: &str) {
-        if self.screen.session_open() {
-            self.screen.close_short(message);
-        } else {
-            self.print_err(message);
         }
     }
 
