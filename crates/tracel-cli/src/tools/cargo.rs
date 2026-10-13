@@ -68,14 +68,14 @@ pub fn build_quietly(
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("Can't run `{label}`"))?;
-    let mut stdout = child.stdout.take().context("cargo's stdout is not piped")?;
+    let mut stdout = child.stdout.take().context("Can't read cargo's output")?;
     let messages = std::thread::spawn(move || {
         let mut messages = Vec::new();
         stdout.read_to_end(&mut messages).map(|_| messages)
     });
 
     let mut output = Vec::new();
-    let mut stderr = BufReader::new(child.stderr.take().context("cargo's stderr is not piped")?);
+    let mut stderr = BufReader::new(child.stderr.take().context("Can't read cargo's output")?);
     let mut line = Vec::new();
     while stderr.read_until(b'\n', &mut line)? > 0 {
         if let Some(line) = status_line(&String::from_utf8_lossy(&line)) {

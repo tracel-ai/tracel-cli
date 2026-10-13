@@ -126,7 +126,7 @@ pub fn cross_preflight(
         BuildDriver::Cargo => {
             // Across operating systems without a driver, plain cargo won't link.
             terminal.warning(&format!(
-                "No cross-build tool for {triple}, so the build will likely fail.\n{}",
+                "No cross-build tool for {triple}, so it may not build.\n{}",
                 install_hint(target)
             ));
             Ok(None)

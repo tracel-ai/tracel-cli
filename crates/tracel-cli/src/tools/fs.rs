@@ -10,7 +10,7 @@ pub fn collect_files(directory: &Path) -> anyhow::Result<BTreeMap<String, PathBu
         .with_context(|| format!("Can't find directory '{}'", directory.display()))?;
 
     if !base_dir.is_dir() {
-        anyhow::bail!("'{}' is not a directory.", base_dir.display());
+        anyhow::bail!("'{}' isn't a directory.", base_dir.display());
     }
 
     let mut files = BTreeMap::new();
@@ -34,7 +34,7 @@ pub fn collect_files(directory: &Path) -> anyhow::Result<BTreeMap<String, PathBu
     }
 
     if files.is_empty() {
-        anyhow::bail!("No files found in '{}'.", base_dir.display());
+        anyhow::bail!("No files in '{}'.", base_dir.display());
     }
 
     Ok(files)

@@ -23,7 +23,7 @@ fn validate_part_sequence(
         let expected = index as u32 + 1;
         if part.part != expected {
             anyhow::bail!(
-                "Upload response for '{rel_path}' has non-contiguous or duplicate part numbers (expected part {expected}, got {}).",
+                "The Tracel Console numbered the parts of '{rel_path}' wrongly: expected part {expected}, got {}.",
                 part.part
             );
         }
@@ -39,7 +39,7 @@ fn validate_part_total_size(
     let total: u64 = parts.iter().map(|part| part.size_bytes).sum();
     if total != expected_size {
         anyhow::bail!(
-            "Upload response for '{rel_path}' parts sum to {total} bytes but local file is {expected_size} bytes."
+            "The Tracel Console's parts of '{rel_path}' sum to {total} bytes, not {expected_size}."
         );
     }
     Ok(())
@@ -57,20 +57,20 @@ pub fn build_part_tasks(
     for upload_file in upload_files {
         let absolute_path = files.get(&upload_file.rel_path).ok_or_else(|| {
             anyhow::anyhow!(
-                "Upload response referenced unknown file path '{}'.",
+                "The Tracel Console sent parts of an unknown file '{}'.",
                 upload_file.rel_path
             )
         })?;
         let expected_size = *file_sizes.get(&upload_file.rel_path).ok_or_else(|| {
             anyhow::anyhow!(
-                "Upload response referenced file '{}' with no known local size.",
+                "The Tracel Console sent parts of '{}', whose size is unknown.",
                 upload_file.rel_path
             )
         })?;
 
         if upload_file.urls.parts.is_empty() {
             anyhow::bail!(
-                "Upload response for '{}' does not contain any part.",
+                "The Tracel Console sent no parts of '{}'.",
                 upload_file.rel_path
             );
         }
