@@ -12,7 +12,7 @@ use url::Url;
 use self::pending::{PendingLogin, PendingLoginStore};
 use crate::context::{CliContext, ClientCreationError};
 use crate::error::{CliError, ErrorKind, classify};
-use crate::ui::{Outcome, Render, Timestamp};
+use crate::ui::{Outcome, Render, Terminal, Timestamp};
 
 #[derive(Args, Debug)]
 pub struct LoginArgs {
@@ -104,12 +104,14 @@ fn log_in(context: &CliContext) -> anyhow::Result<()> {
     let device_auth = context.device_auth();
 
     let authorization = device_auth.start()?;
+    let approval_page = Url::parse(&authorization.verification_uri_complete)?;
     let instructions = format!(
         "Open {} and check that it shows the code {}.",
-        terminal.format_url(&Url::parse(&authorization.verification_uri_complete)?),
+        terminal.format_url(&approval_page),
         console::style(&authorization.user_code).bold()
     );
     terminal.instruct(&instructions);
+    offer_browser(terminal, &approval_page)?;
 
     let spinner = terminal.spinner();
     spinner.start("Waiting for approval... Press Ctrl+C to cancel.");
@@ -120,6 +122,19 @@ fn log_in(context: &CliContext) -> anyhow::Result<()> {
 
     context.app_session()?.sign_in(issued)?;
 
+    Ok(())
+}
+
+/// Offers to open the approval page in a browser, when one can open it and someone can answer.
+fn offer_browser(terminal: &Terminal, approval_page: &Url) -> anyhow::Result<()> {
+    if !webbrowser::Browser::is_available() || !terminal.offer("Open it in your browser?")? {
+        return Ok(());
+    }
+    if let Err(error) = webbrowser::open(approval_page.as_str()) {
+        terminal.print_warning(&format!(
+            "Could not open a browser ({error}). Open the link above instead."
+        ));
+    }
     Ok(())
 }
 

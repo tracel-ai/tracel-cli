@@ -147,7 +147,10 @@ commit hash. JSON data contains `namespace`, `project`, `digest`, `version_id`,
 ### `tracel login`
 
 Authenticate with the Console platform. The CLI prints a link and a code to
-approve in your browser, and the login then lasts seven days.
+approve in your browser, and the login then lasts seven days. On a terminal it
+offers to open the link in your browser (`$BROWSER` names which one, when set),
+and in terminals that render hyperlinks the link also opens with a click, like
+the other links in the CLI's messages.
 
 ```bash
 tracel login

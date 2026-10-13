@@ -137,12 +137,17 @@ impl Terminal {
         }
     }
 
-    /// A URL styled for stderr, plain when stderr is not a terminal or `NO_COLOR` is set.
+    /// A URL as cliclack shows it: styled unless `NO_COLOR` is set and, in terminals that
+    /// render hyperlinks, one, so a click opens it. Plain when stderr is not a terminal.
     pub fn format_url(&self, url: &url::Url) -> String {
-        if self.is_styled() {
-            console::style(url).for_stderr().blue().bold().to_string()
+        if !self.is_styled() {
+            return url.to_string();
+        }
+        let text = console::style(url).for_stderr().blue().bold().to_string();
+        if supports_hyperlinks::on(supports_hyperlinks::Stream::Stderr) {
+            hyperlink(url, &text)
         } else {
-            url.to_string()
+            text
         }
     }
 
@@ -175,6 +180,19 @@ impl Terminal {
         self.require_answer(ErrorKind::ConfirmationRequired, message, flag, &[])?;
         cliclack::confirm(message)
             .initial_value(initial)
+            .interact()
+            .map_err(anyhow::Error::from)
+    }
+
+    /// Offers a shortcut with a question answered yes by default. When nobody can answer, the
+    /// question is not asked and the answer is no.
+    pub fn offer(&self, message: &str) -> anyhow::Result<bool> {
+        if !self.is_interactive() {
+            return Ok(false);
+        }
+        self.screen.settle(Ending::Done);
+        cliclack::confirm(message)
+            .initial_value(true)
             .interact()
             .map_err(anyhow::Error::from)
     }
@@ -281,6 +299,12 @@ fn one_line(message: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// `text` as a terminal hyperlink to `url` (OSC 8): terminals that render hyperlinks open
+/// `url` on a click on `text`.
+fn hyperlink(url: &url::Url, text: &str) -> String {
+    format!("\u{1b}]8;;{url}\u{1b}\\{text}\u{1b}]8;;\u{1b}\\")
 }
 
 /// A spinner for one step. It is drawn when started, and stops early when something
@@ -392,5 +416,15 @@ mod tests {
         for ci in ["1", "true", "yes", "FALSE", " "] {
             assert!(!allows_input(true, true, Format::Human, Some(ci), false));
         }
+    }
+
+    #[test]
+    fn a_hyperlink_shows_its_text_and_opens_its_url() {
+        let url = url::Url::parse("http://localhost:9001/verify?code=BCDF-GHJK").unwrap();
+
+        assert_eq!(
+            hyperlink(&url, "the approval page"),
+            "\u{1b}]8;;http://localhost:9001/verify?code=BCDF-GHJK\u{1b}\\the approval page\u{1b}]8;;\u{1b}\\"
+        );
     }
 }
