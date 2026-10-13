@@ -19,15 +19,6 @@ pub struct ProjectArgs {
     pub command: Option<ProjectCommands>,
 }
 
-impl ProjectArgs {
-    pub fn title(&self) -> &'static str {
-        match self.command {
-            None => "Project",
-            Some(ProjectCommands::List(_)) => "Projects",
-        }
-    }
-}
-
 #[derive(Subcommand, Debug)]
 pub enum ProjectCommands {
     /// List your projects and your organizations' projects.

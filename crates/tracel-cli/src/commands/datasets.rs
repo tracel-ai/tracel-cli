@@ -17,16 +17,6 @@ pub struct DatasetsArgs {
     pub command: DatasetsCommands,
 }
 
-impl DatasetsArgs {
-    pub fn title(&self) -> &'static str {
-        match self.command {
-            DatasetsCommands::List(_) => "Datasets",
-            DatasetsCommands::Get(_) => "Dataset",
-            DatasetsCommands::Versions(_) => "Dataset versions",
-        }
-    }
-}
-
 #[derive(Subcommand, Debug)]
 pub enum DatasetsCommands {
     /// List datasets in the selected project.

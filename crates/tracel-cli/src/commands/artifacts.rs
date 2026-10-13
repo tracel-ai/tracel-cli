@@ -13,7 +13,7 @@ use crate::helpers::{
     DownloadFile, DownloadResult, Resource, download_files, map_resource_error,
     resolve_namespace_project, select_artifact, validate_rel_path,
 };
-use crate::ui::{Human, Outcome, Render, Table, counted, when};
+use crate::ui::{Human, Layout, Outcome, Render, Table, counted, when};
 
 #[derive(Args, Debug)]
 pub struct ArtifactsArgs {
@@ -22,10 +22,16 @@ pub struct ArtifactsArgs {
 }
 
 impl ArtifactsArgs {
-    pub fn title(&self) -> &'static str {
-        match self.command {
-            ArtifactsCommands::List(_) => "Artifacts",
-            ArtifactsCommands::Download(_) => "Artifact download",
+    pub fn layout(&self) -> Layout {
+        match &self.command {
+            ArtifactsCommands::List(_) => Layout::Read,
+            ArtifactsCommands::Download(args) => Layout::flow(
+                format!(
+                    "Download artifact '{}' of experiment {}",
+                    args.artifact, args.experiment
+                ),
+                format!("Artifact '{}' was not downloaded.", args.artifact),
+            ),
         }
     }
 }

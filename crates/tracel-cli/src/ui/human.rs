@@ -4,125 +4,38 @@ use std::io::{self, Write};
 use serde::Serialize;
 use serde_json::Value;
 
-use super::screen::GUTTER_WIDTH;
-
 /// The narrowest a shrinkable table column gets, ellipsis included.
 const MIN_COLUMN_WIDTH: usize = 4;
 
-/// A result for a person: lines cliclack draws in the command's frame on a terminal,
-/// plain text everywhere else. Cards, headings and tables are written through
-/// `Details`, `heading` and `Table`; other text with `write!`.
+/// A box's text is dim, and a styled span ends with a reset, so each span turns dim
+/// back on after it.
+const BOX_TEXT: &str = "\u{1b}[2m";
+
+/// A result as text for a person: plain, as stdout carries it, or styled for the box a
+/// terminal shows it in. Cards, headings and tables are written through `Details`,
+/// `heading` and `Table`; other text with `write!`.
 pub struct Human<'a> {
-    sink: Sink<'a>,
+    out: &'a mut dyn Write,
     width: Option<usize>,
-    color: bool,
-}
-
-enum Sink<'a> {
-    Plain(&'a mut dyn Write),
-    Cliclack(Drawing),
-}
-
-/// One cliclack log line of a result.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Draw {
-    /// A field of a card.
-    Info(String),
-    /// A heading, with the lines under it.
-    Step(String),
-    /// A table, or other text.
-    Remark(String),
-}
-
-impl Draw {
-    /// Draws the line with cliclack, on stderr. A remark's lines that are wider than
-    /// the frame wrap inside its gutter.
-    pub fn show(&self) -> io::Result<()> {
-        match self {
-            Self::Info(text) => cliclack::log::info(text),
-            Self::Step(text) => cliclack::log::step(text),
-            Self::Remark(text) => cliclack::log::remark(in_gutter(text)),
-        }
-    }
-}
-
-/// `text` with each line wider than the frame wrapped to fit after cliclack's bar. The
-/// width skips escape sequences, so styled text wraps where it shows.
-fn in_gutter(text: &str) -> String {
-    cliclack::termwrap(text, GUTTER_WIDTH)
-}
-
-/// The lines drawn so far, and the one that text written now goes to.
-#[derive(Default)]
-struct Drawing {
-    draws: Vec<Draw>,
-    open: Option<Open>,
-}
-
-/// The line being written: a heading and the lines under it, or text of its own.
-struct Open {
-    heading: bool,
-    text: Vec<u8>,
-}
-
-impl Drawing {
-    fn open(&mut self, heading: bool, text: impl Into<Vec<u8>>) {
-        self.close();
-        self.open = Some(Open {
-            heading,
-            text: text.into(),
-        });
-    }
-
-    /// Adds `text` to the open line, or to a new one.
-    fn write(&mut self, text: &[u8]) {
-        match &mut self.open {
-            Some(open) => open.text.extend_from_slice(text),
-            None => self.open(false, text),
-        }
-    }
-
-    /// Adds `text` to the heading above it, or starts a line for it.
-    fn block(&mut self, text: &[u8]) {
-        if !self.open.as_ref().is_some_and(|open| open.heading) {
-            self.close();
-        }
-        self.write(text);
-    }
-
-    /// Ends the open line. One that is only blank lines draws nothing: cliclack
-    /// leaves one after each of its lines already.
-    fn close(&mut self) {
-        let Some(Open { heading, text }) = self.open.take() else {
-            return;
-        };
-        let text = String::from_utf8_lossy(&text);
-        let text = text.trim_start_matches('\n').trim_end();
-        if !text.is_empty() {
-            let draw = if heading { Draw::Step } else { Draw::Remark };
-            self.draws.push(draw(text.into()));
-        }
-    }
+    styled: bool,
 }
 
 impl<'a> Human<'a> {
     /// Plain text on `out`. Tables fit in `width` columns, when there is one.
     pub fn plain(out: &'a mut dyn Write, width: Option<usize>) -> Self {
         Self {
-            sink: Sink::Plain(out),
+            out,
             width,
-            color: false,
+            styled: false,
         }
     }
-}
 
-impl Human<'static> {
-    /// cliclack's lines, drawn by `Draw::show`. `width` is what fits after its bar.
-    pub fn cliclack(width: Option<usize>) -> Self {
+    /// Text for a box on the terminal, styled unless stderr shows no colors.
+    pub fn boxed(out: &'a mut dyn Write, width: Option<usize>) -> Self {
         Self {
-            sink: Sink::Cliclack(Drawing::default()),
+            out,
             width,
-            color: console::colors_enabled_stderr(),
+            styled: console::colors_enabled_stderr(),
         }
     }
 }
@@ -132,22 +45,9 @@ impl Human<'_> {
         self.width
     }
 
-    /// The cliclack lines of what was written, in order: none for plain text, which
-    /// is already out.
-    pub fn into_draws(self) -> Vec<Draw> {
-        match self.sink {
-            Sink::Plain(_) => Vec::new(),
-            Sink::Cliclack(mut drawing) => {
-                drawing.close();
-                drawing.draws
-            }
-        }
-    }
-
-    /// `text` in `style` on cliclack, when stderr shows colors.
     fn styled(&self, text: impl Display, style: console::Style) -> String {
-        if self.color {
-            style.force_styling(true).apply_to(text).to_string()
+        if self.styled {
+            format!("{}{BOX_TEXT}", style.force_styling(true).apply_to(text))
         } else {
             text.to_string()
         }
@@ -161,75 +61,36 @@ impl Human<'_> {
         self.styled(text, console::Style::new().dim())
     }
 
-    /// Names what follows, up to the next heading or card: a step with the lines
-    /// under it on cliclack, a title ending in a colon in plain text.
+    /// Names what follows: a title ending in a colon.
     pub fn heading(&mut self, text: impl Display) -> io::Result<()> {
-        match &mut self.sink {
-            Sink::Plain(out) => writeln!(out, "{text}:"),
-            Sink::Cliclack(drawing) => {
-                drawing.open(true, format!("{text}\n"));
-                Ok(())
-            }
-        }
+        writeln!(self, "{text}:")
     }
 
-    /// One field of a card: a line of its own on cliclack, its value aligned after
-    /// labels `width` wide in plain text.
+    /// One field of a card, its value aligned after labels `width` wide.
     fn field(&mut self, label: &str, value: &str, width: usize) -> io::Result<()> {
-        match &mut self.sink {
-            Sink::Plain(out) => {
-                let padding = " ".repeat(width - label.len());
-                writeln!(out, "{label}:{padding}  {value}")
-            }
-            Sink::Cliclack(drawing) => {
-                drawing.close();
-                drawing.draws.push(Draw::Info(format!("{label}: {value}")));
-                Ok(())
-            }
-        }
+        let padding = " ".repeat(width - label.len());
+        writeln!(self, "{label}:{padding}  {value}")
     }
 
-    /// Lines under a heading, indented in plain text.
+    /// Lines under a heading, indented.
     fn section(&mut self, title: &str, lines: &[String]) -> io::Result<()> {
         self.heading(title)?;
-        let indent = match self.sink {
-            Sink::Plain(_) => "  ",
-            Sink::Cliclack(_) => "",
-        };
-        lines
-            .iter()
-            .try_for_each(|line| writeln!(self, "{indent}{line}"))
+        lines.iter().try_for_each(|line| writeln!(self, "  {line}"))
     }
 
-    /// Lines that belong together, such as a table: a cliclack line of their own,
-    /// unless they sit under a heading.
+    /// Lines that belong together, such as a table.
     fn block(&mut self, text: &str) -> io::Result<()> {
-        match &mut self.sink {
-            Sink::Plain(out) => out.write_all(text.as_bytes()),
-            Sink::Cliclack(drawing) => {
-                drawing.block(text.as_bytes());
-                Ok(())
-            }
-        }
+        self.write_all(text.as_bytes())
     }
 }
 
 impl Write for Human<'_> {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        match &mut self.sink {
-            Sink::Plain(out) => out.write(buffer),
-            Sink::Cliclack(drawing) => {
-                drawing.write(buffer);
-                Ok(buffer.len())
-            }
-        }
+        self.out.write(buffer)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        match &mut self.sink {
-            Sink::Plain(out) => out.flush(),
-            Sink::Cliclack(_) => Ok(()),
-        }
+        self.out.flush()
     }
 }
 
@@ -346,8 +207,8 @@ fn line<const N: usize>(cells: &[String; N], widths: &[usize; N]) -> String {
     line
 }
 
-/// Labelled values: a card of fields. Sections list the fields of a JSON value
-/// under a heading.
+/// Labelled values, aligned. Sections list the fields of a JSON value under a
+/// heading.
 #[derive(Default)]
 pub struct Details {
     entries: Vec<Entry>,
@@ -480,6 +341,7 @@ fn cell_text(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::screen::BOX_PADDING;
 
     fn text(width: Option<usize>, write: impl FnOnce(&mut Human<'_>) -> io::Result<()>) -> String {
         let mut out = Vec::new();
@@ -491,12 +353,13 @@ mod tests {
         text(None, write)
     }
 
-    /// The cliclack lines `write` makes, unstyled.
-    fn drawn(write: impl FnOnce(&mut Human<'_>) -> io::Result<()>) -> Vec<Draw> {
-        let mut out = Human::cliclack(None);
-        out.color = false;
-        write(&mut out).unwrap();
-        out.into_draws()
+    /// Text for a box, styled.
+    fn boxed(width: Option<usize>, write: impl FnOnce(&mut Human<'_>) -> io::Result<()>) -> String {
+        let mut out = Vec::new();
+        let mut human = Human::boxed(&mut out, width);
+        human.styled = true;
+        write(&mut human).unwrap();
+        String::from_utf8(out).unwrap()
     }
 
     fn table() -> Table<3> {
@@ -506,13 +369,14 @@ mod tests {
         ])
     }
 
-    const TABLE: &str = "NAME     DESCRIPTION  ID\n\
-                         weights  two lines    1\n\
-                         w        -            22";
-
     #[test]
     fn table_aligns_columns_and_keeps_cells_on_one_line() {
-        assert_eq!(plain(|out| table().write(out)), format!("{TABLE}\n"));
+        assert_eq!(
+            plain(|out| table().write(out)),
+            "NAME     DESCRIPTION  ID\n\
+             weights  two lines    1\n\
+             w        -            22\n"
+        );
     }
 
     #[test]
@@ -555,17 +419,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn plain_text_is_never_styled() {
-        let text = plain(|out| {
-            details().write(out)?;
-            table().write(out)?;
-            let (bold, dim) = (out.bold("bold"), out.dim("dim"));
-            writeln!(out, "{bold} {dim}")
-        });
-        assert!(!text.contains('\u{1b}'));
-    }
-
     fn details() -> Details {
         Details::new()
             .field("Name", "weights")
@@ -591,118 +444,54 @@ mod tests {
     }
 
     #[test]
-    fn on_cliclack_details_are_a_line_per_field_and_a_step_per_section() {
-        assert_eq!(
-            drawn(|out| details().write(out)),
-            [
-                Draw::Info("Name: weights".into()),
-                Draw::Info("Description: -".into()),
-                Draw::Step(
-                    "Config\n\
-                     lr               0.1\n\
-                     schedule.warmup  2\n\
-                     tags             [\"a\"]"
-                        .into()
-                ),
-            ]
-        );
+    fn plain_text_is_never_styled_and_a_box_is_the_same_text_styled() {
+        let write = |out: &mut Human<'_>| {
+            details().write(out)?;
+            table().write(out)
+        };
+        let plain = plain(write);
+        let boxed = boxed(None, write);
+        assert!(!plain.contains('\u{1b}'));
+        assert!(boxed.contains('\u{1b}'));
+        assert_eq!(console::strip_ansi_codes(&boxed), plain);
     }
 
     #[test]
-    fn on_cliclack_a_heading_takes_the_table_under_it() {
-        let draws = drawn(|out| {
-            out.heading("Files")?;
-            table().write(out)?;
-            Details::new()
-                .section("Metadata", &serde_json::json!({"seed": 7}))
+    fn a_styled_span_turns_the_box_dim_back_on() {
+        assert_eq!(
+            boxed(None, |out| {
+                let (bold, dim) = (out.bold("NAME"), out.dim("-"));
+                writeln!(out, "{bold} {dim} x")
+            }),
+            "\u{1b}[1mNAME\u{1b}[0m\u{1b}[2m \u{1b}[2m-\u{1b}[0m\u{1b}[2m x\n"
+        );
+    }
+
+    /// The columns inside a box, as cliclack measures them to wrap its text.
+    fn box_width() -> usize {
+        usize::from(console::Term::stderr().size().1.saturating_sub(BOX_PADDING))
+    }
+
+    #[test]
+    fn a_table_fitted_to_the_box_is_not_wrapped_again() {
+        let width = box_width();
+        let fitted = boxed(Some(width), |out| {
+            Table::new(["NAME", "DESCRIPTION", "ID"])
+                .shrink("DESCRIPTION")
+                .rows([[
+                    "weights".into(),
+                    "a rather long description ".repeat(width / 8),
+                    String::new(),
+                ]])
                 .write(out)
         });
-        assert_eq!(
-            draws,
-            [
-                Draw::Step(format!("Files\n{TABLE}")),
-                Draw::Step("Metadata\nseed  7".into()),
-            ]
-        );
-    }
-
-    #[test]
-    fn on_cliclack_a_table_is_a_line_of_its_own() {
-        let draws = drawn(|out| {
-            writeln!(out, "Before.")?;
-            table().write(out)?;
-            writeln!(out)?;
-            Table::new(["GROUP"]).empty("No groups.").write(out)
-        });
-        assert_eq!(
-            draws,
-            [
-                Draw::Remark("Before.".into()),
-                Draw::Remark(TABLE.into()),
-                Draw::Remark("No groups.".into()),
-            ]
-        );
-    }
-
-    #[test]
-    fn on_cliclack_text_collects_until_the_next_field() {
-        let draws = drawn(|out| {
-            write!(out, "par")?;
-            writeln!(out, "tial")?;
-            writeln!(out, "next")?;
-            Details::new().field("Name", "weights").write(out)?;
-            writeln!(out)
-        });
-        assert_eq!(
-            draws,
-            [
-                Draw::Remark("partial\nnext".into()),
-                Draw::Info("Name: weights".into()),
-            ]
-        );
-    }
-
-    /// The columns `in_gutter` wraps to, measured as `cliclack::termwrap` measures them.
-    fn gutter_width() -> usize {
-        usize::from(
-            console::Term::stderr()
-                .size()
-                .1
-                .saturating_sub(GUTTER_WIDTH),
-        )
-    }
-
-    #[test]
-    fn wrapping_in_the_gutter_keeps_a_styled_table_fitted_to_the_frame() {
-        let width = gutter_width();
-        let mut out = Human::cliclack(Some(width));
-        out.color = true;
-        Table::new(["NAME", "DESCRIPTION", "ID"])
-            .shrink("DESCRIPTION")
-            .rows([[
-                "weights".into(),
-                "a rather long description ".repeat(width / 8),
-                String::new(),
-            ]])
-            .write(&mut out)
-            .unwrap();
-        let [Draw::Remark(table)] = <[Draw; 1]>::try_from(out.into_draws()).unwrap() else {
-            panic!("expected one remark");
-        };
-        assert!(table.contains('\u{1b}'));
-        assert_eq!(in_gutter(&table), table);
-    }
-
-    #[test]
-    fn text_wider_than_the_frame_wraps_in_the_gutter() {
-        let width = gutter_width();
-        let wrapped = in_gutter("word ".repeat(width).trim_end());
-        assert!(wrapped.lines().count() > 1);
+        let fitted = fitted.trim_end();
         assert!(
-            wrapped
+            fitted
                 .lines()
-                .all(|line| console::measure_text_width(line) <= width)
+                .any(|line| console::measure_text_width(line) == width)
         );
+        assert_eq!(cliclack::termwrap(fitted, BOX_PADDING), fitted);
     }
 
     #[test]

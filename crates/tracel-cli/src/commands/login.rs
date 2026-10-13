@@ -12,7 +12,7 @@ use url::Url;
 use self::pending::{PendingLogin, PendingLoginStore};
 use crate::context::{CliContext, ClientCreationError};
 use crate::error::{CliError, ErrorKind, classify};
-use crate::ui::{Outcome, Render, Terminal, Timestamp};
+use crate::ui::{Layout, Outcome, Render, Terminal, Timestamp};
 
 #[derive(Args, Debug)]
 pub struct LoginArgs {
@@ -25,6 +25,24 @@ pub struct LoginArgs {
     /// Wait at most this many seconds, keeping the pending login on timeout.
     #[arg(long, requires = "complete", value_name = "SECONDS")]
     pub timeout: Option<u64>,
+}
+
+impl LoginArgs {
+    pub fn layout(&self) -> Layout {
+        if self.no_wait {
+            Layout::flow(
+                "Start a login to the Tracel Console",
+                "No login was started.",
+            )
+        } else if self.complete {
+            Layout::flow(
+                "Finish the pending login to the Tracel Console",
+                "Login failed.",
+            )
+        } else {
+            Layout::flow("Log in to the Tracel Console", "Login failed.")
+        }
+    }
 }
 
 pub fn get_client_and_login_if_needed(context: &CliContext) -> anyhow::Result<Client> {
@@ -171,7 +189,10 @@ fn start_pending_login(context: &CliContext) -> anyhow::Result<LoginPending> {
         )?),
         console::style(&pending.authorization.user_code).bold()
     ));
-    terminal.outro("Then run 'tracel login --complete'.");
+    terminal.next_steps(
+        "The login waits for your approval.",
+        &["tracel login --complete".to_string()],
+    );
 
     Ok(LoginPending {
         verification_uri_complete: pending.authorization.verification_uri_complete,

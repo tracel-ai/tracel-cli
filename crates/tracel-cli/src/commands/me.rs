@@ -3,7 +3,7 @@ use std::io;
 use anyhow::Context;
 use serde::Serialize;
 
-use crate::commands::login::{environment_suffix, get_client_and_login_if_needed};
+use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::ui::{Details, Human, Outcome, Render};
 
@@ -14,9 +14,6 @@ struct CurrentUser {
     namespace: String,
     environment: String,
     api_url: String,
-    /// " (development environment)" and the like, empty for production.
-    #[serde(skip)]
-    environment_suffix: String,
 }
 
 impl Render for CurrentUser {
@@ -31,10 +28,7 @@ impl Render for CurrentUser {
     }
 
     fn summary(&self) -> Option<String> {
-        Some(format!(
-            "Signed in as {}{}.",
-            self.username, self.environment_suffix
-        ))
+        Some(format!("Signed in as {}.", self.username))
     }
 }
 
@@ -50,7 +44,6 @@ pub fn handle_command(context: CliContext) -> anyhow::Result<Outcome> {
         namespace: user.namespace,
         environment: context.environment_name(),
         api_url: context.get_api_endpoint(),
-        environment_suffix: environment_suffix(&context.environment()),
     }
     .into())
 }

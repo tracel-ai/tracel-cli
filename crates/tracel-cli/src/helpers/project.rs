@@ -132,8 +132,13 @@ fn project_not_found() -> CliError {
 
 /// Resolve project identity from flags, environment variables, or tracel.toml.
 pub fn resolve_namespace_project(context: &CliContext) -> anyhow::Result<ResolvedProject> {
-    resolve_project(
-        context.project(),
+    resolve_project(context.project())
+}
+
+/// The project `flag` names, or else the one the environment or `tracel.toml` names.
+pub fn resolve_project(flag: Option<&TracelProject>) -> anyhow::Result<ResolvedProject> {
+    resolve_project_from(
+        flag,
         std::env::var("TRACEL_NAMESPACE").ok(),
         std::env::var("TRACEL_PROJECT").ok(),
         || {
@@ -164,7 +169,7 @@ pub fn resolve_namespace_project(context: &CliContext) -> anyhow::Result<Resolve
     )
 }
 
-fn resolve_project(
+fn resolve_project_from(
     flag: Option<&TracelProject>,
     namespace: Option<String>,
     project: Option<String>,
@@ -261,7 +266,7 @@ mod tests {
     #[test]
     fn complete_overrides_skip_file_discovery() {
         let flag = parse_project("alice/demo").unwrap();
-        let resolved = resolve_project(
+        let resolved = resolve_project_from(
             Some(&flag),
             Some("other".into()),
             Some("project".into()),
@@ -272,10 +277,11 @@ mod tests {
         assert_eq!(resolved.project.name, "demo");
         assert_eq!(resolved.source, ProjectSource::Flag);
 
-        let resolved = resolve_project(None, Some("alice".into()), Some("demo".into()), || {
-            panic!("File discovery must be skipped")
-        })
-        .unwrap();
+        let resolved =
+            resolve_project_from(None, Some("alice".into()), Some("demo".into()), || {
+                panic!("File discovery must be skipped")
+            })
+            .unwrap();
         assert_eq!(resolved.project.owner, "alice");
         assert_eq!(resolved.project.name, "demo");
         assert_eq!(resolved.source, ProjectSource::Env);
@@ -300,7 +306,7 @@ mod tests {
             ),
             (None, Some("demo"), "file-owner", "demo", ProjectSource::Env),
         ] {
-            let resolved = resolve_project(
+            let resolved = resolve_project_from(
                 None,
                 namespace.map(str::to_owned),
                 project.map(str::to_owned),
@@ -325,7 +331,7 @@ mod tests {
             ("namespace = 'alice'", None, Some("demo")),
             ("owner = 'alice'\nname = 'demo'", None, None),
         ] {
-            let resolved = resolve_project(
+            let resolved = resolve_project_from(
                 None,
                 namespace.map(str::to_owned),
                 project.map(str::to_owned),
@@ -340,7 +346,7 @@ mod tests {
     #[test]
     fn incomplete_identity_reports_not_found_and_hint() {
         for (namespace, project) in [(None, None), (Some("alice"), None), (None, Some("demo"))] {
-            let error = resolve_project(
+            let error = resolve_project_from(
                 None,
                 namespace.map(str::to_owned),
                 project.map(str::to_owned),

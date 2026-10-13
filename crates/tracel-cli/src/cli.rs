@@ -4,11 +4,11 @@ use clap::{CommandFactory, Parser, Subcommand};
 use tracel_client::console::Env;
 
 use crate::commands;
-use crate::context::CliContext;
+use crate::context::{CliContext, environment_name};
 use crate::error::{CliError, ErrorKind, ErrorReport};
-use crate::helpers::project::parse_project;
+use crate::helpers::project::{parse_project, resolve_project};
 use crate::tools::tracel_config::TracelProject;
-use crate::ui::{self, Format, FormatArg, Outcome, Output, StdoutClosed, Terminal};
+use crate::ui::{self, Format, FormatArg, Layout, Outcome, Output, Place, StdoutClosed, Terminal};
 
 #[derive(Parser, Debug)]
 #[clap(name = "tracel", author, version, about, long_about = None)]
@@ -84,24 +84,42 @@ pub enum Commands {
 }
 
 impl Commands {
-    /// The title of the frame a terminal shows the command in. None where stdout is
-    /// a bare value or another program's output.
-    fn title(&self) -> Option<&'static str> {
-        Some(match self {
-            Self::Train(_) => return None,
-            Self::Auth(args) => return args.title(),
-            Self::Package(_) => "Package project",
-            Self::Login(_) => "Login",
-            Self::Logout => "Logout",
-            Self::Experiments(args) => args.title(),
-            Self::Init(_) => "Project initialization",
-            Self::Unlink(_) => "Unlink",
-            Self::Me => "User information",
-            Self::Project(args) => args.title(),
-            Self::Models(args) => args.title(),
-            Self::Artifacts(args) => args.title(),
-            Self::Datasets(args) => args.title(),
-        })
+    /// How the command shows on a terminal: a read as a box, a flow as a session, and
+    /// nothing where stdout is a bare value or another program's output.
+    fn layout(&self) -> Layout {
+        match self {
+            Self::Train(_) => Layout::Bare,
+            Self::Auth(args) => args.layout(),
+            Self::Package(_) => {
+                Layout::flow("Package the project", "The project was not packaged.")
+            }
+            Self::Login(args) => args.layout(),
+            Self::Logout => Layout::flow("Log out of the Tracel Console", "Logout failed."),
+            Self::Experiments(args) => args.layout(),
+            Self::Init(_) => Layout::flow(
+                "Link this workspace to a Tracel Console project",
+                "The workspace was not linked.",
+            ),
+            Self::Unlink(_) => Layout::flow(
+                "Unlink this workspace from its Tracel Console project",
+                "The workspace is still linked.",
+            ),
+            Self::Me | Self::Project(_) | Self::Datasets(_) => Layout::Read,
+            Self::Models(args) => args.layout(),
+            Self::Artifacts(args) => args.layout(),
+        }
+    }
+
+    /// Whether the command works in a project, which a terminal then names with it.
+    fn in_project(&self) -> bool {
+        matches!(
+            self,
+            Self::Package(_)
+                | Self::Experiments(_)
+                | Self::Models(_)
+                | Self::Artifacts(_)
+                | Self::Datasets(_)
+        )
     }
 
     /// What `auto` output means: human on a terminal and JSON otherwise, except where
@@ -168,16 +186,22 @@ pub fn cli_main() {
     };
 
     let format = format.unwrap_or_else(|error| fail_early(&error.into(), auto));
-    let (output, terminal) = ui::channels(format, args.no_input, command.title());
     let environment_value =
         std::env::var_os("TRACEL_ENV").map(|value| value.to_string_lossy().into_owned());
     let environment = resolve_environment(args.dev, args.staging, environment_value.as_deref())
-        .unwrap_or_else(|error| fail(&error.into(), &output, &terminal));
-
-    if args.dev {
-        terminal
-            .print_warning("Running in development mode - using local server and dev credentials");
-    }
+        .unwrap_or_else(|error| fail_early(&error.into(), format));
+    let place = Place {
+        project: command
+            .in_project()
+            .then(|| resolve_project(args.project.as_ref()).ok())
+            .flatten()
+            .map(|resolved| format!("{}/{}", resolved.project.owner, resolved.project.name)),
+        environment: match environment {
+            Env::Production => None,
+            _ => Some(environment_name(&environment)),
+        },
+    };
+    let (output, terminal) = ui::channels(format, args.no_input, command.layout(), place);
 
     let context = CliContext::new(terminal.clone(), output.clone(), environment, args.project);
     if let Err(error) = handle_command(command, context).and_then(|outcome| output.finish(outcome))
@@ -229,7 +253,7 @@ fn fail(error: &anyhow::Error, output: &Output, terminal: &Terminal) -> ! {
 
 /// Fails before the command's channels exist.
 fn fail_early(error: &anyhow::Error, format: Format) -> ! {
-    let (output, terminal) = ui::channels(format, true, None);
+    let (output, terminal) = ui::channels(format, true, Layout::Bare, Place::default());
     fail(error, &output, &terminal)
 }
 

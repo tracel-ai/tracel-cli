@@ -9,7 +9,7 @@ use tracel_client::console::TracelCredentials;
 use crate::commands::login::environment_suffix;
 use crate::context::{CliContext, ClientCreationError};
 use crate::error::{CliError, ErrorKind};
-use crate::ui::{Details, Human, Outcome, Render, Timestamp};
+use crate::ui::{Details, Human, Layout, Outcome, Render, Timestamp};
 
 #[derive(Args, Debug)]
 pub struct AuthArgs {
@@ -27,11 +27,11 @@ pub enum AuthCommands {
 }
 
 impl AuthArgs {
-    /// None for `token`, whose bare value is read by other programs.
-    pub fn title(&self) -> Option<&'static str> {
+    /// `token` draws nothing: its bare value is read by other programs.
+    pub fn layout(&self) -> Layout {
         match self.command {
-            AuthCommands::Token => None,
-            AuthCommands::Status => Some("Authentication status"),
+            AuthCommands::Token => Layout::Bare,
+            AuthCommands::Status => Layout::Read,
         }
     }
 }
@@ -69,9 +69,6 @@ struct AuthStatus {
     login_ends_at: Option<Timestamp>,
     user: User,
     environment: String,
-    /// " (development environment)" and the like, empty for production.
-    #[serde(skip)]
-    environment_suffix: String,
 }
 
 #[derive(Serialize)]
@@ -103,10 +100,7 @@ impl Render for AuthStatus {
     }
 
     fn summary(&self) -> Option<String> {
-        Some(format!(
-            "Commands act as {}{}.",
-            self.user.username, self.environment_suffix
-        ))
+        Some(format!("Commands act as {}.", self.user.username))
     }
 }
 
@@ -152,7 +146,6 @@ fn status(context: &CliContext) -> anyhow::Result<AuthStatus> {
                 namespace: client.user().namespace.clone(),
             },
             environment: context.environment_name(),
-            environment_suffix: environment_suffix(&context.environment()),
         }),
         Err(ClientCreationError::NoCredentials | ClientCreationError::InvalidCredentials) => {
             Err(CliError::new(

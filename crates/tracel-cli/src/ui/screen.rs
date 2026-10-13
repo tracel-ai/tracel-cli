@@ -5,19 +5,23 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use cliclack::{MultiProgress, ProgressBar};
 
 use super::Format;
+use super::layout::{Layout, Place};
 
-/// The columns cliclack's bar and the space after it take at the start of a line.
-pub const GUTTER_WIDTH: u16 = 3;
+/// The columns a cliclack box takes around its text: its bar and two spaces on the
+/// left, two spaces and its bar on the right.
+pub const BOX_PADDING: u16 = 6;
 
 /// The terminal a command draws on. With human output on a styled stderr, cliclack
-/// draws a frame and widgets there, and the result too when stdout is the same
-/// terminal. Only one thing draws at a time: anything new settles the live widget
+/// draws there: a flow's session and widgets, and a read's result when stdout is the
+/// same terminal. Only one thing draws at a time: anything new settles the live widget
 /// first.
 pub struct Screen {
     format: Format,
     styled: bool,
     stdout_is_terminal: bool,
-    frame: AtomicBool,
+    layout: Layout,
+    place: Place,
+    session: AtomicBool,
     live: Mutex<Option<Live>>,
     next_id: AtomicU64,
 }
@@ -36,19 +40,24 @@ pub enum Ending {
     Failed,
 }
 
-/// How a frame ends: a green badge, a bare corner, or a red badge.
-pub enum Outro<'a> {
-    Done(Option<&'a str>),
-    Cancelled(&'a str),
+/// How a result reaches the person.
+pub enum Delivery {
+    /// In one box on the terminal, its text fitted to the columns inside the box.
+    Box(Option<usize>),
+    /// On stdout, which carries nothing else: an envelope, or plain text ending with
+    /// its summary.
+    Stdout,
 }
 
 impl Screen {
-    pub fn new(format: Format) -> Self {
+    pub fn new(format: Format, layout: Layout, place: Place) -> Self {
         Self {
             format,
             styled: format == Format::Human && io::stderr().is_terminal(),
             stdout_is_terminal: io::stdout().is_terminal(),
-            frame: AtomicBool::new(false),
+            layout,
+            place,
+            session: AtomicBool::new(false),
             live: Mutex::new(None),
             next_id: AtomicU64::new(0),
         }
@@ -68,19 +77,18 @@ impl Screen {
         self.styled && self.stdout_is_terminal
     }
 
-    pub fn frame_open(&self) -> bool {
-        self.frame.load(Ordering::Relaxed)
+    pub fn session_open(&self) -> bool {
+        self.session.load(Ordering::Relaxed)
     }
 
-    /// Whether cliclack draws the result in the frame, which stdout shares.
-    pub fn frames_results(&self) -> bool {
-        self.shares_stdout() && self.frame_open()
-    }
-
-    /// The columns inside the frame, after cliclack's bar.
-    pub fn frame_width(&self) -> Option<usize> {
-        columns(&console::Term::stderr())
-            .map(|columns| columns.saturating_sub(usize::from(GUTTER_WIDTH)))
+    pub fn delivery(&self) -> Delivery {
+        match self.layout {
+            Layout::Read if self.shares_stdout() => Delivery::Box(
+                columns(&console::Term::stderr())
+                    .map(|columns| columns.saturating_sub(usize::from(BOX_PADDING))),
+            ),
+            _ => Delivery::Stdout,
+        }
     }
 
     /// The columns of the terminal stdout is, if it is one.
@@ -92,33 +100,91 @@ impl Screen {
         }
     }
 
-    /// Opens the frame a command draws in, under a green title badge.
-    pub fn intro(&self, title: &str) {
+    /// Opens a flow's session: the tracel badge, then what the flow does and where.
+    pub fn begin(&self) {
+        let Layout::Flow(flow) = &self.layout else {
+            return;
+        };
         if !self.styled {
             return;
         }
-        self.settle(Ending::Done);
-        let badge = console::style(format!(" ▶ {title} ")).black().on_green();
+        let mut what = flow.what.clone();
+        if let Some(project) = &self.place.project {
+            what.push_str(&format!(
+                " in {}",
+                console::style(project).for_stderr().bold()
+            ));
+        }
+        if let Some(environment) = &self.place.environment {
+            let environment = format!(" · {environment}");
+            what.push_str(&console::style(environment).for_stderr().dim().to_string());
+        }
+        let badge = console::style(" tracel ").for_stderr().black().on_green();
         let _ = cliclack::intro(badge);
-        self.frame.store(true, Ordering::Relaxed);
+        let _ = cliclack::log::remark(what);
+        self.session.store(true, Ordering::Relaxed);
     }
 
-    /// Ends the frame, open or not, so a command always finishes on its badge.
-    pub fn outro(&self, outro: Outro<'_>) {
-        if !self.styled {
-            return;
+    /// Shows a read's result: `body` in one box under `summary` and the place, or the
+    /// summary alone when there is no body.
+    pub fn show_result(&self, summary: Option<&str>, body: &str) {
+        let place = self.place.to_string();
+        let dim = |text: &str| console::style(text).for_stderr().dim().to_string();
+        let summary = summary.unwrap_or_default();
+        self.draw(|| {
+            if body.trim().is_empty() {
+                let line = [summary, place.as_str()]
+                    .into_iter()
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("  ");
+                return cliclack::outro(dim(&line));
+            }
+            let summary = summary.strip_suffix('.').unwrap_or(summary);
+            let title = match (summary.is_empty(), place.is_empty()) {
+                (false, false) => format!(
+                    "{}  {}",
+                    console::style(summary).for_stderr().bold(),
+                    dim(&place)
+                ),
+                (false, true) => console::style(summary).for_stderr().bold().to_string(),
+                (true, _) => dim(&place),
+            };
+            cliclack::outro_note(title, body.trim_end())
+        });
+    }
+
+    /// Ends a flow's session with its outcome.
+    pub fn close(&self, outcome: &str) {
+        if self.session.swap(false, Ordering::Relaxed) {
+            self.draw(|| cliclack::outro(outcome));
         }
-        self.settle(Ending::Done);
-        let _ = match outro {
-            Outro::Done(Some(message)) => {
-                cliclack::outro(console::style(format!(" {message} ")).black().on_green())
+    }
+
+    /// Ends a flow's session on an outcome that stops short of what it set out to do.
+    pub fn close_short(&self, outcome: &str) {
+        if self.session.swap(false, Ordering::Relaxed) {
+            self.draw(|| cliclack::outro_cancel(outcome));
+        }
+    }
+
+    /// Ends a flow's session with the commands to run next, one per line.
+    pub fn close_with_next_steps(&self, steps: &str) {
+        if self.session.swap(false, Ordering::Relaxed) {
+            self.draw(|| cliclack::outro_note("Next steps", steps));
+        }
+    }
+
+    /// Closes what a failure was just reported in: a flow's session with its failure, or
+    /// a bare corner.
+    pub fn close_failed(&self) {
+        let outcome = match &self.layout {
+            Layout::Flow(flow) if self.session.swap(false, Ordering::Relaxed) => {
+                flow.failure.as_str()
             }
-            Outro::Done(None) => cliclack::outro(""),
-            Outro::Cancelled(message) => {
-                cliclack::outro_cancel(console::style(format!(" {message} ")).black().on_red())
-            }
+            _ => "",
         };
-        self.frame.store(false, Ordering::Relaxed);
+        self.draw(|| cliclack::outro_cancel(outcome));
     }
 
     pub fn next_id(&self) -> u64 {

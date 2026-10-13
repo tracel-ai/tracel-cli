@@ -157,7 +157,7 @@ pub fn upload_parts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::{Format, channels};
+    use crate::ui::{Format, Layout, Place, channels};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::Mutex as StdMutex;
@@ -222,7 +222,11 @@ mod tests {
         ];
         let uploader = FakeUploader::new(None);
 
-        let result = upload_parts(&uploader, tasks, &channels(Format::Json, true, None).1);
+        let result = upload_parts(
+            &uploader,
+            tasks,
+            &channels(Format::Json, true, Layout::Bare, Place::default()).1,
+        );
 
         assert!(result.is_ok());
         assert_eq!(uploader.calls.lock().unwrap().len(), 2);
@@ -239,7 +243,11 @@ mod tests {
         ];
         let uploader = FakeUploader::new(Some("https://example.com/b"));
 
-        let result = upload_parts(&uploader, tasks, &channels(Format::Json, true, None).1);
+        let result = upload_parts(
+            &uploader,
+            tasks,
+            &channels(Format::Json, true, Layout::Bare, Place::default()).1,
+        );
 
         assert!(result.is_err());
 

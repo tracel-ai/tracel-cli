@@ -5,7 +5,7 @@ use std::sync::Arc;
 use cliclack::ProgressBar;
 
 use super::Format;
-use super::screen::{Ending, Outro, Screen};
+use super::screen::{Ending, Screen};
 use crate::error::{CliError, ErrorKind, ErrorReport};
 
 /// Stderr, for the person running a command: what it is doing, its progress, and
@@ -90,20 +90,19 @@ impl Terminal {
     }
 
     /// Reports a failed command: the message and hint here, the envelope on stdout
-    /// with JSON output. On a terminal the frame ends on a red badge: the hint after
-    /// the error, or the error itself.
+    /// with JSON output. On a terminal both are one error, then a flow's session ends
+    /// on its failure, and anything else on a bare corner.
     pub fn error(&self, report: &ErrorReport<'_>) {
         self.screen.settle(Ending::Failed);
         if !self.is_human() {
             self.line(format_args!("error: {}", one_line(&report.message)));
         } else if self.is_styled() {
-            match report.hint {
-                Some(hint) => {
-                    self.screen.draw(|| cliclack::log::error(&report.message));
-                    self.screen.outro(Outro::Cancelled(hint));
-                }
-                None => self.screen.outro(Outro::Cancelled(&report.message)),
-            }
+            let text = match report.hint {
+                Some(hint) => format!("{}\n{hint}", report.message),
+                None => report.message.clone(),
+            };
+            self.screen.draw(|| cliclack::log::error(text));
+            self.screen.close_failed();
         } else {
             self.line(format_args!("error: {}", report.message));
             if let Some(hint) = report.hint {
@@ -249,19 +248,33 @@ impl Terminal {
             .map_err(anyhow::Error::from)
     }
 
-    /// Ends the command's frame on a green badge, for an action that did its work.
+    /// Ends a flow's session with what it did.
     pub fn outro(&self, message: &str) {
-        if self.is_styled() && self.screen.frame_open() {
-            self.screen.outro(Outro::Done(Some(message)));
+        if self.screen.session_open() {
+            self.screen.close(message);
         } else {
             self.print_success(message);
         }
     }
 
-    /// Ends the command's frame on a red badge, for an action that stopped short.
+    /// Ends a flow's session with what it did, then the commands to run next.
+    pub fn next_steps(&self, message: &str, steps: &[String]) {
+        if self.screen.session_open() {
+            self.print_success(message);
+            self.screen.close_with_next_steps(&steps.join("\n"));
+        } else if self.is_human() {
+            self.print_success(message);
+            self.line("Next steps:");
+            for step in steps {
+                self.line(format_args!("  {step}"));
+            }
+        }
+    }
+
+    /// Ends a flow's session on an outcome that stops short of what it set out to do.
     pub fn outro_cancel(&self, message: &str) {
-        if self.is_styled() && self.screen.frame_open() {
-            self.screen.outro(Outro::Cancelled(message));
+        if self.screen.session_open() {
+            self.screen.close_short(message);
         } else {
             self.print_err(message);
         }

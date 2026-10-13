@@ -111,14 +111,19 @@ impl CliContext {
     }
 
     pub fn environment_name(&self) -> String {
-        match self.environment {
-            Env::Production => "production".to_string(),
-            Env::Development => "development".to_string(),
-            Env::Staging(version) => format!("staging-{version}"),
-        }
+        environment_name(&self.environment)
     }
 
     pub fn get_api_endpoint(&self) -> String {
         self.environment.get_url().to_string()
+    }
+}
+
+/// The name of an environment, as `TRACEL_ENV` and JSON data write it.
+pub fn environment_name(environment: &Env) -> String {
+    match environment {
+        Env::Production => "production".to_string(),
+        Env::Development => "development".to_string(),
+        Env::Staging(version) => format!("staging-{version}"),
     }
 }

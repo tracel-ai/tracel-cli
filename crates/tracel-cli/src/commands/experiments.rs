@@ -19,7 +19,7 @@ use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
 use crate::helpers::project::resolve_namespace_project;
 use crate::tools::tracel_config::TracelProject;
-use crate::ui::{Details, Human, Outcome, Output, Render, Table, counted, when};
+use crate::ui::{Details, Human, Layout, Outcome, Output, Render, Table, counted, when};
 
 #[derive(Args, Debug)]
 pub struct ExperimentsArgs {
@@ -28,12 +28,13 @@ pub struct ExperimentsArgs {
 }
 
 impl ExperimentsArgs {
-    pub fn title(&self) -> &'static str {
-        match self.command {
-            ExperimentsCommands::List(_) => "Experiments",
-            ExperimentsCommands::Get(_) => "Experiment",
-            ExperimentsCommands::Metrics(_) => "Experiment metrics",
-            ExperimentsCommands::Logs(_) => "Experiment logs",
+    pub fn layout(&self) -> Layout {
+        match &self.command {
+            ExperimentsCommands::Logs(args) if args.follow => Layout::flow(
+                format!("Follow the logs of experiment {}", args.num),
+                format!("Stopped following experiment {}.", args.num),
+            ),
+            _ => Layout::Read,
         }
     }
 }

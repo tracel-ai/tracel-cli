@@ -4,8 +4,8 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use super::Format;
-use super::human::{Draw, Human};
-use super::screen::{Outro, Screen};
+use super::human::Human;
+use super::screen::{Delivery, Screen};
 use crate::error::ErrorReport;
 
 /// A command result: serialized for JSON output, written for people.
@@ -17,8 +17,8 @@ pub trait Render: Serialize {
         Ok(())
     }
 
-    /// One line that sums the result up: the badge that closes the frame on a
-    /// terminal, and the last line of plain text.
+    /// One line that sums the result up: the title of its box on a terminal, the
+    /// outcome that ends a session, and the last line of plain text.
     fn summary(&self) -> Option<String> {
         None
     }
@@ -83,8 +83,8 @@ struct Failure<'a> {
 #[error("stdout was closed")]
 pub struct StdoutClosed;
 
-/// Where command results go, in the format the user chose: drawn in the command's
-/// frame on a terminal, and otherwise on stdout, which carries nothing else.
+/// Where command results go, in the format the user chose: a read's in one box on a
+/// terminal, and otherwise on stdout, which carries nothing else.
 #[derive(Clone)]
 pub struct Output {
     screen: Arc<Screen>,
@@ -95,24 +95,23 @@ impl Output {
         Self { screen }
     }
 
-    /// Writes the result of a finished command, and closes the frame it was drawn in
-    /// with its summary.
+    /// Writes the result of a finished command, and ends the session it ran in with
+    /// its summary.
     pub fn finish(&self, outcome: Outcome) -> anyhow::Result<()> {
         let summary = outcome.0.as_ref().and_then(|report| report.summary());
         if let Some(report) = outcome.0 {
-            if self.screen.frames_results() {
-                let draws = drawn(report.as_ref(), self.screen.frame_width())?;
-                self.screen.draw(|| draws.iter().try_for_each(Draw::show));
-            } else {
-                let (format, width) = (self.screen.format(), self.screen.stdout_width());
-                self.write_stdout(|out| {
+            let (format, width) = (self.screen.format(), self.screen.stdout_width());
+            match self.screen.delivery() {
+                Delivery::Box(width) => {
+                    let body = boxed(report.as_ref(), width)?;
+                    self.screen.show_result(summary.as_deref(), &body);
+                }
+                Delivery::Stdout => self.write_stdout(|out| {
                     write_result(format, report.as_ref(), summary.as_deref(), width, out)
-                })?;
+                })?,
             }
         }
-        if self.screen.frame_open() {
-            self.screen.outro(Outro::Done(summary.as_deref()));
-        }
+        self.screen.close(summary.as_deref().unwrap_or_default());
         Ok(())
     }
 
@@ -144,11 +143,11 @@ impl Output {
     }
 }
 
-/// The cliclack lines of a result, fitted to `width`.
-fn drawn(report: &dyn Report, width: Option<usize>) -> io::Result<Vec<Draw>> {
-    let mut out = Human::cliclack(width);
-    report.write_text(&mut out)?;
-    Ok(out.into_draws())
+/// The text of a result for its box, fitted to `width`.
+fn boxed(report: &dyn Report, width: Option<usize>) -> io::Result<String> {
+    let mut text = Vec::new();
+    report.write_text(&mut Human::boxed(&mut text, width))?;
+    Ok(String::from_utf8_lossy(&text).into_owned())
 }
 
 /// A result on stdout: its envelope, or its plain text ending with `summary`.
@@ -261,12 +260,12 @@ mod tests {
     }
 
     #[test]
-    fn in_a_frame_a_result_is_cliclack_lines() {
+    fn a_box_holds_the_text_of_a_result() {
         assert_eq!(
-            drawn(&Greeting { name: "Ada" }, None).unwrap(),
-            [Draw::Remark("Hello, Ada.".into())]
+            boxed(&Greeting { name: "Ada" }, None).unwrap(),
+            "Hello, Ada.\n"
         );
-        assert_eq!(drawn(&Done {}, None).unwrap(), []);
+        assert_eq!(boxed(&Done {}, None).unwrap(), "");
     }
 
     #[test]

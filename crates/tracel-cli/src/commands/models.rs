@@ -25,7 +25,7 @@ use crate::helpers::{
 };
 use crate::tools::fs::{build_file_specs, collect_files};
 use crate::tools::tracel_config::TracelProject;
-use crate::ui::{Details, Human, Outcome, Render, Table, counted, when};
+use crate::ui::{Details, Human, Layout, Outcome, Render, Table, counted, when};
 
 #[derive(Args, Debug)]
 pub struct ModelsArgs {
@@ -34,18 +34,39 @@ pub struct ModelsArgs {
 }
 
 impl ModelsArgs {
-    pub fn title(&self) -> &'static str {
+    pub fn layout(&self) -> Layout {
         match &self.command {
-            ModelsCommands::List => "Models",
-            ModelsCommands::Get(_) => "Model",
-            ModelsCommands::Versions(_) => "Model versions",
-            ModelsCommands::Pull(_) => "Model download",
-            ModelsCommands::Push(_) => "Model upload",
-            ModelsCommands::Promote(_) => "Model promotion",
+            ModelsCommands::Pull(args) => Layout::flow(
+                format!("Download model '{}' {}", args.model, args.version),
+                format!("Model '{}' was not downloaded.", args.model),
+            ),
+            ModelsCommands::Push(args) => Layout::flow(
+                format!("Upload a version of model '{}'", args.model_name),
+                format!("No version of model '{}' was uploaded.", args.model_name),
+            ),
+            ModelsCommands::Promote(args) => Layout::flow(
+                format!(
+                    "Promote artifact '{}' of experiment {} to model '{}'",
+                    args.artifact, args.experiment, args.model
+                ),
+                format!("Artifact '{}' was not promoted.", args.artifact),
+            ),
             ModelsCommands::Alias(AliasArgs {
-                command: AliasCommands::List(_),
-            }) => "Model aliases",
-            ModelsCommands::Alias(_) => "Model alias",
+                command: AliasCommands::Set(args),
+            }) => Layout::flow(
+                format!(
+                    "Point alias '{}' of model '{}' at v{}",
+                    args.alias, args.model, args.version
+                ),
+                format!("Alias '{}' was not changed.", args.alias),
+            ),
+            ModelsCommands::Alias(AliasArgs {
+                command: AliasCommands::Remove(args),
+            }) => Layout::flow(
+                format!("Remove alias '{}' of model '{}'", args.alias, args.model),
+                format!("Alias '{}' was not removed.", args.alias),
+            ),
+            _ => Layout::Read,
         }
     }
 }

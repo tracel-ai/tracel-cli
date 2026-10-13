@@ -83,13 +83,18 @@ and errors go to stderr. Commands that change something, such as `init`,
 nothing on stdout. `auth token` prints the bare token unless JSON is requested,
 even when stdout is redirected.
 
-On a terminal, each command draws everything in one frame: a title, its progress
-and result, and a closing line that sums it up. Tables shorten long descriptions to
-fit the width and show times in your time zone; a line of a table or of text that
-is still too long wraps inside the frame. What a command streams, such as
-`experiments logs --follow`, is written as it arrives, without the frame's border.
-Redirected output is plain text without colors or symbols, is never shortened or
-wrapped, and ends with that summary line.
+On a terminal, a read is a box and a flow is a session. A command that reads, such
+as `me`, `project list`, or `experiments get`, shows its result in one box, titled
+with a line that sums it up, the project, and the environment when it is not
+production; a result with nothing in it is just that line. A command that does
+work, such as `login`, `init`, `package`, or `models push`, runs as a session: it
+says what it does and where, shows its progress and prompts as it goes, and ends on
+its outcome, or on the commands to run next. An error shows its message and hint
+together, and a session that fails ends on what it did not do. Tables shorten long
+descriptions to fit the box and show times in your time zone. What a command
+streams, such as `experiments logs --follow`, is written as it arrives. Redirected
+output is plain text without colors or symbols, is never shortened, and ends with
+the line that sums it up.
 
 | Error code | Exit code |
 | --- | --- |
