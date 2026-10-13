@@ -214,13 +214,6 @@ pub struct AliasRemoveArgs {
     pub alias: String,
 }
 
-/// A version made by `push` or `promote`.
-#[derive(Serialize)]
-#[serde(transparent)]
-struct NewVersion(ModelVersionResponse);
-
-impl Render for NewVersion {}
-
 #[derive(Serialize)]
 struct ModelPulled {
     model: String,
@@ -230,22 +223,12 @@ struct ModelPulled {
     bytes: u64,
 }
 
-impl Render for ModelPulled {}
-
-#[derive(Serialize)]
-#[serde(transparent)]
-struct AliasSet(ModelAliasResponse);
-
-impl Render for AliasSet {}
-
 #[derive(Serialize)]
 struct AliasRemoved {
     model: String,
     alias: String,
     removed: bool,
 }
-
-impl Render for AliasRemoved {}
 
 impl Render for ModelListResponse {
     fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
@@ -459,7 +442,7 @@ fn validate_download_directory(directory: Option<&Path>, model: &str) -> anyhow:
 
 pub fn handle_command(args: ModelsArgs, context: CliContext) -> anyhow::Result<Outcome> {
     let project = resolve_namespace_project(&context)?.project;
-    let (namespace, name) = (&project.owner, &project.name);
+    let (namespace, name) = (&project.namespace, &project.name);
     let client = || get_client_and_login_if_needed(&context);
     match args.command {
         ModelsCommands::List => Ok(client()?.list_models(namespace, name)?.into()),
@@ -505,9 +488,9 @@ pub fn handle_command(args: ModelsArgs, context: CliContext) -> anyhow::Result<O
             })?
             .into())
         }
-        ModelsCommands::Pull(args) => Ok(pull(args, &context, &project)?.into()),
-        ModelsCommands::Push(args) => Ok(push(args, &context, &project)?.into()),
-        ModelsCommands::Promote(args) => Ok(promote(args, &context, &project)?.into()),
+        ModelsCommands::Pull(args) => Ok(Outcome::data(pull(args, &context, &project)?)),
+        ModelsCommands::Push(args) => Ok(Outcome::data(push(args, &context, &project)?)),
+        ModelsCommands::Promote(args) => Ok(Outcome::data(promote(args, &context, &project)?)),
         ModelsCommands::Alias(args) => alias(args.command, &context, &project),
     }
 }
@@ -517,7 +500,7 @@ fn pull(
     context: &CliContext,
     project: &TracelProject,
 ) -> anyhow::Result<ModelPulled> {
-    let (namespace, name) = (&project.owner, &project.name);
+    let (namespace, name) = (&project.namespace, &project.name);
     validate_download_directory(args.directory.as_deref(), &args.model)?;
     let client = get_client_and_login_if_needed(context)?;
     let map_error = |error| {
@@ -572,8 +555,8 @@ fn push(
     args: PushArgs,
     context: &CliContext,
     project: &TracelProject,
-) -> anyhow::Result<NewVersion> {
-    let (namespace, name) = (&project.owner, &project.name);
+) -> anyhow::Result<ModelVersionResponse> {
+    let (namespace, name) = (&project.namespace, &project.name);
     validate_auto_create(args.auto_create, args.description.as_deref())?;
     let files = collect_push_files(&args.directory, context)?;
     let client = get_client_and_login_if_needed(context)?;
@@ -636,7 +619,7 @@ fn push(
         upload.version,
         size(version.size)
     ));
-    Ok(NewVersion(version))
+    Ok(version)
 }
 
 fn collect_push_files(
@@ -654,8 +637,8 @@ fn promote(
     args: PromoteArgs,
     context: &CliContext,
     project: &TracelProject,
-) -> anyhow::Result<NewVersion> {
-    let (namespace, name) = (&project.owner, &project.name);
+) -> anyhow::Result<ModelVersionResponse> {
+    let (namespace, name) = (&project.namespace, &project.name);
     validate_auto_create(args.auto_create, args.description.as_deref())?;
     let client = get_client_and_login_if_needed(context)?;
     let artifacts = client
@@ -723,7 +706,7 @@ fn promote(
         "Promoted artifact '{}' to '{}' v{}.",
         artifact.name, args.model, version.version
     ));
-    Ok(NewVersion(version))
+    Ok(version)
 }
 
 fn alias(
@@ -731,7 +714,7 @@ fn alias(
     context: &CliContext,
     project: &TracelProject,
 ) -> anyhow::Result<Outcome> {
-    let (namespace, name) = (&project.owner, &project.name);
+    let (namespace, name) = (&project.namespace, &project.name);
     match command {
         AliasCommands::List(args) => Ok(get_client_and_login_if_needed(context)?
             .list_model_aliases(namespace, name, &args.model)
@@ -766,7 +749,7 @@ fn alias(
                 "Alias '{}' of '{}' points to v{}.",
                 alias.alias, args.model, alias.version
             ));
-            Ok(AliasSet(alias).into())
+            Ok(Outcome::data(alias))
         }
         AliasCommands::Remove(args) => {
             get_client_and_login_if_needed(context)?
@@ -786,12 +769,11 @@ fn alias(
                 "Removed alias '{}' from '{}'.",
                 args.alias, args.model
             ));
-            Ok(AliasRemoved {
+            Ok(Outcome::data(AliasRemoved {
                 model: args.model,
                 alias: args.alias,
                 removed: true,
-            }
-            .into())
+            }))
         }
     }
 }

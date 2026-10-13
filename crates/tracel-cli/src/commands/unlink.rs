@@ -5,7 +5,7 @@ use crate::{
     context::CliContext,
     helpers::require_linked_project,
     tools::project_context::ProjectContext,
-    ui::{Declined, Outcome, Render, Unanswered},
+    ui::{Declined, Outcome, Unanswered},
 };
 
 #[derive(Args, Debug)]
@@ -23,12 +23,10 @@ struct Unlinked {
     name: String,
 }
 
-impl Render for Unlinked {}
-
 pub fn handle_command(args: UnlinkArgs, context: CliContext) -> anyhow::Result<Outcome> {
     let project = require_linked_project()?;
     let linked = project.get_project();
-    let name = format!("{}/{}", linked.owner, linked.name);
+    let name = format!("{}/{}", linked.namespace, linked.name);
 
     if !args.yes {
         let confirmed = context.terminal().confirm(
@@ -47,10 +45,9 @@ pub fn handle_command(args: UnlinkArgs, context: CliContext) -> anyhow::Result<O
     ProjectContext::unlink(&project.get_manifest_path())?;
     context.terminal().outro(&format!("Unlinked {name}."));
 
-    Ok(Unlinked {
+    Ok(Outcome::data(Unlinked {
         unlinked: true,
-        namespace: linked.owner.clone(),
+        namespace: linked.namespace.clone(),
         name: linked.name.clone(),
-    }
-    .into())
+    }))
 }

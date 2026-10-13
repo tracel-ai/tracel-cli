@@ -12,7 +12,7 @@ use url::Url;
 use self::pending::{PendingLogin, PendingLoginStore};
 use crate::context::{CliContext, ClientCreationError};
 use crate::error::{CliError, ErrorKind, classify};
-use crate::ui::{Layout, Outcome, Render, Terminal, Timestamp};
+use crate::ui::{Layout, Outcome, Terminal, Timestamp};
 
 #[derive(Args, Debug)]
 pub struct LoginArgs {
@@ -46,6 +46,8 @@ const RETRY_DELAYS: [Duration; 3] = [
     Duration::from_secs(1),
 ];
 
+/// Connect to the Tracel Console, logging in first when there is no login and the user
+/// can answer.
 pub fn get_client_and_login_if_needed(context: &CliContext) -> anyhow::Result<Client> {
     let mut delays = RETRY_DELAYS.into_iter();
     let mut logged_in = false;
@@ -57,13 +59,9 @@ pub fn get_client_and_login_if_needed(context: &CliContext) -> anyhow::Result<Cl
                 | ClientCreationError::NoCredentials),
             ) if !logged_in => {
                 if !context.terminal().is_interactive() {
-                    return Err(
-                        CliError::new(ErrorKind::NotAuthenticated, error.to_string())
-                            .with_hint(LOG_IN)
-                            .into(),
-                    );
+                    return Err(login_needed(&error).into());
                 }
-                context.terminal().print_warning(&error.to_string());
+                context.terminal().warning(&error.to_string());
                 log_in(context)?;
                 logged_in = true;
             }
@@ -76,8 +74,11 @@ pub fn get_client_and_login_if_needed(context: &CliContext) -> anyhow::Result<Cl
     }
 }
 
-/// The hint for a command that needs a login.
-pub const LOG_IN: &str = "Run `tracel login`, or set TRACEL_API_KEY.";
+/// Build the error for a command that needs a login and has none.
+pub fn login_needed(error: &ClientCreationError) -> CliError {
+    CliError::new(ErrorKind::NotAuthenticated, error.to_string())
+        .with_hint("Run `tracel login`, or set TRACEL_API_KEY.")
+}
 
 fn log_in(context: &CliContext) -> anyhow::Result<()> {
     let terminal = context.terminal();
@@ -85,12 +86,11 @@ fn log_in(context: &CliContext) -> anyhow::Result<()> {
 
     let authorization = device_auth.start()?;
     let approval_page = Url::parse(&authorization.verification_uri_complete)?;
-    let instructions = format!(
-        "Open {} and check that it shows the code {}.",
-        terminal.format_url(&approval_page),
-        console::style(&authorization.user_code).bold()
-    );
-    terminal.instruct(&instructions);
+    terminal.instruct(&approval_instructions(
+        terminal,
+        &approval_page,
+        &authorization.user_code,
+    ));
     offer_browser(terminal, &approval_page)?;
 
     let spinner = terminal.spinner("Waiting for approval");
@@ -102,13 +102,23 @@ fn log_in(context: &CliContext) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Offers to open the approval page in a browser, when one can open it and someone can answer.
+/// Ask the user to open `page` and check that it shows `code`.
+fn approval_instructions(terminal: &Terminal, page: &Url, code: &str) -> String {
+    format!(
+        "Open {} and check that it shows the code {}.",
+        terminal.format_url(page),
+        console::style(code).for_stderr().bold()
+    )
+}
+
+/// Offer to open the approval page in a browser, when there is one and the user can
+/// answer.
 fn offer_browser(terminal: &Terminal, approval_page: &Url) -> anyhow::Result<()> {
     if !webbrowser::Browser::is_available() || !terminal.offer("Open it in your browser?")? {
         return Ok(());
     }
     if let Err(error) = webbrowser::open(approval_page.as_str()) {
-        terminal.print_warning(&format!(
+        terminal.warning(&format!(
             "Can't open a browser ({error}), so open the link yourself."
         ));
     }
@@ -121,8 +131,6 @@ struct LoggedIn {
     environment: String,
 }
 
-impl Render for LoggedIn {}
-
 /// Serialized with `"status": "pending"`.
 #[derive(Serialize)]
 #[serde(tag = "status", rename = "pending")]
@@ -132,8 +140,6 @@ struct LoginPending {
     expires_at: Timestamp,
 }
 
-impl Render for LoginPending {}
-
 fn start_pending_login(context: &CliContext) -> anyhow::Result<LoginPending> {
     let authorization = context.device_auth().start()?;
     let pending = PendingLogin::new(authorization, SystemTime::now())?;
@@ -141,12 +147,11 @@ fn start_pending_login(context: &CliContext) -> anyhow::Result<LoginPending> {
     store.save(&pending)?;
 
     let terminal = context.terminal();
-    terminal.print(&format!(
-        "Open {} and check that it shows the code {}.",
-        terminal.format_url(&Url::parse(
-            &pending.authorization.verification_uri_complete
-        )?),
-        console::style(&pending.authorization.user_code).bold()
+    let approval_page = Url::parse(&pending.authorization.verification_uri_complete)?;
+    terminal.info(&approval_instructions(
+        terminal,
+        &approval_page,
+        &pending.authorization.user_code,
     ));
     terminal.outro("Once you approve it, run `tracel login --complete`.");
 
@@ -236,49 +241,39 @@ fn complete_pending_login(context: &CliContext, timeout: Option<u64>) -> anyhow:
     })?;
     let timeout = timeout.map(Duration::from_secs);
     let expires_at = pending.expires_at;
-    let window = || poll_window(expires_at, SystemTime::now(), timeout, started.elapsed());
+    // The time left before the earlier deadline, or that deadline's error once it passed.
+    let time_left = || match poll_window(expires_at, SystemTime::now(), timeout, started.elapsed())
+    {
+        (remaining, deadline) if remaining.is_zero() => Err(anyhow::Error::from(deadline.error())),
+        window => Ok(window),
+    };
 
     let result = (|| {
-        let (remaining, deadline) = window();
-        if remaining.is_zero() {
-            return Err(deadline.error().into());
-        }
         let device_auth = context.device_auth();
         let mut interval = pending.authorization.interval().max(Duration::from_secs(1));
+        let (mut remaining, _) = time_left()?;
         loop {
-            let (remaining, deadline) = window();
-            if remaining.is_zero() {
-                return Err(deadline.error().into());
-            }
             std::thread::sleep(interval.min(remaining));
-            let (remaining, deadline) = window();
-            if remaining.is_zero() {
-                return Err(deadline.error().into());
-            }
-
-            let outcome = poll_with_deadline(
+            let (left, deadline) = time_left()?;
+            match poll_with_deadline(
                 &device_auth,
                 &pending.authorization.device_code,
-                remaining,
+                left,
                 deadline,
-            )?;
-            let (remaining, deadline) = window();
-            if remaining.is_zero() {
-                return Err(deadline.error().into());
-            }
-            match outcome {
-                DevicePollOutcome::Pending => {}
+            )? {
+                DevicePollOutcome::Approved(issued) => {
+                    context.app_session()?.sign_in(issued)?;
+                    return Ok(());
+                }
                 DevicePollOutcome::SlowDown => {
                     interval = poll_backoff(interval);
                     pending.authorization.interval =
                         interval.as_secs().try_into().unwrap_or(i64::MAX);
                     store.save(&pending)?;
                 }
-                DevicePollOutcome::Approved(issued) => {
-                    context.app_session()?.sign_in(issued)?;
-                    return Ok(());
-                }
+                DevicePollOutcome::Pending => {}
             }
+            remaining = time_left()?.0;
         }
     })();
 
@@ -295,7 +290,7 @@ fn complete_pending_login(context: &CliContext, timeout: Option<u64>) -> anyhow:
 
 pub fn handle_command(args: LoginArgs, context: CliContext) -> anyhow::Result<Outcome> {
     if args.no_wait {
-        return Ok(start_pending_login(&context)?.into());
+        return Ok(Outcome::data(start_pending_login(&context)?));
     }
     if args.complete {
         complete_pending_login(&context, args.timeout)?;
@@ -307,19 +302,18 @@ pub fn handle_command(args: LoginArgs, context: CliContext) -> anyhow::Result<Ou
     let client = Client::connect(context.environment(), &credentials)?;
 
     if TracelCredentials::from_env().is_ok() {
-        context.terminal().print_warning(
-            "TRACEL_API_KEY is set, so other commands use it instead of this login.",
-        );
+        context
+            .terminal()
+            .warning("TRACEL_API_KEY is set, so other commands use it instead of this login.");
     }
     context
         .terminal()
         .outro(&format!("Logged in as {}.", client.user().username));
 
-    Ok(LoggedIn {
+    Ok(Outcome::data(LoggedIn {
         username: client.user().username.clone(),
         environment: context.environment_name(),
-    }
-    .into())
+    }))
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@ use crate::helpers::{can_initialize_project, require_cargo_workspace, require_li
 use crate::tools::git;
 use crate::tools::project_context::ProjectContext;
 use crate::tools::tracel_config::TracelProject;
-use crate::ui::{Declined, Outcome, Render, Terminal, Unanswered};
+use crate::ui::{Declined, Outcome, Terminal, Unanswered};
 use anyhow::Context;
 use clap::Args;
 use serde::Serialize;
@@ -46,8 +46,6 @@ struct ProjectLinked {
     url: Option<String>,
 }
 
-impl Render for ProjectLinked {}
-
 const NOTHING_LINKED: &str = "Nothing was linked.";
 
 pub fn handle_command(args: InitArgs, context: CliContext) -> anyhow::Result<Outcome> {
@@ -55,166 +53,171 @@ pub fn handle_command(args: InitArgs, context: CliContext) -> anyhow::Result<Out
         validate_project_name(name).map_err(|message| CliError::new(ErrorKind::Usage, message))?;
     }
     if !can_initialize_project(args.force)? {
-        let project = require_linked_project()?;
-        let linked = project.get_project();
-        let other_owner = args.owner.as_deref().is_some_and(|o| o != linked.owner);
-        let other_name = args.name.as_deref().is_some_and(|n| n != linked.name);
-        if other_owner || other_name {
-            return Err(CliError::new(
-                ErrorKind::Conflict,
-                format!(
-                    "This workspace is already linked to {}/{}.",
-                    linked.owner, linked.name
-                ),
-            )
-            .with_hint("Pass --force to link another project.")
-            .into());
-        }
-        context
-            .terminal()
-            .print("Pass --force to link another project.");
-        context.terminal().outro(&format!(
-            "Already linked to {}/{}.",
-            linked.owner, linked.name
-        ));
-        return Ok(ProjectLinked {
-            namespace: linked.owner.clone(),
-            name: linked.name.clone(),
-            created: false,
-            url: None,
-        }
-        .into());
+        return already_linked(&args, &context);
     }
-
     let client = super::login::get_client_and_login_if_needed(&context)?;
-    Ok(prompt_init(args, &context, &client)?.into())
+    Ok(Outcome::data(link(args, &context, &client)?))
 }
 
-fn prompt_init(
-    args: InitArgs,
-    context: &CliContext,
-    client: &Client,
-) -> anyhow::Result<ProjectLinked> {
+/// End on the project the workspace is linked to, unless the flags ask for another.
+fn already_linked(args: &InitArgs, context: &CliContext) -> anyhow::Result<Outcome> {
+    let project = require_linked_project()?;
+    let linked = project.get_project();
+    let other_namespace = args.owner.as_deref().is_some_and(|o| o != linked.namespace);
+    let other_name = args.name.as_deref().is_some_and(|n| n != linked.name);
+    let name = format!("{}/{}", linked.namespace, linked.name);
+    if other_namespace || other_name {
+        return Err(CliError::new(
+            ErrorKind::Conflict,
+            format!("This workspace is already linked to {name}."),
+        )
+        .with_hint("Pass --force to link another project.")
+        .into());
+    }
+    context
+        .terminal()
+        .info("Pass --force to link another project.");
+    context
+        .terminal()
+        .outro(&format!("Already linked to {name}."));
+    Ok(Outcome::data(ProjectLinked {
+        namespace: linked.namespace.clone(),
+        name: linked.name.clone(),
+        created: false,
+        url: None,
+    }))
+}
+
+/// Link the workspace to the project the flags or prompts choose, creating it when the
+/// Tracel Console has none by that name.
+fn link(args: InitArgs, context: &CliContext, client: &Client) -> anyhow::Result<ProjectLinked> {
     let user = client.get_current_user()?;
     let workspace_info = require_cargo_workspace()?;
-
     let terminal = context.terminal();
 
     ensure_git_repo_initialized(&workspace_info.get_ws_root(), terminal)?;
     ensure_git_repo_clean(terminal, args.commit, args.allow_dirty)?;
-
     git::get_first_commit_hash().context("Can't read the first commit")?;
 
-    let project_owner = prompt_owner_name(
+    let namespace = choose_namespace(
         &user.username,
         &user.namespace,
         args.owner.as_deref(),
         client,
         terminal,
     )?;
-    let project_name = match args.name {
+    let name = match args.name {
         Some(name) => name,
         None => prompt_project_name(&workspace_info.workspace_name, terminal)?,
     };
 
-    let owner_name = match &project_owner {
-        ProjectKind::User => user.namespace.as_str(),
-        ProjectKind::Organization(org_name) => org_name.as_str(),
-    };
-    let (project_info, created) = match client.get_project(owner_name, &project_name) {
+    let (project, created) = match client.get_project(namespace.name(), &name) {
         Ok(project) => (
-            handle_existing_project(&project, terminal, args.yes)?,
+            confirm_existing_project(&project, terminal, args.yes)?,
             false,
         ),
         Err(e) if e.is_not_found() => (
-            create_new_project(
-                client,
-                project_owner.clone(),
-                owner_name,
-                &project_name,
-                args.description,
-                terminal,
-            )?,
+            create_project(client, &namespace, &name, args.description, terminal)?,
             true,
         ),
         Err(e) => {
-            return Err(e).with_context(|| format!("Can't look up {owner_name}/{project_name}"));
+            return Err(e).with_context(|| format!("Can't look up {}/{name}", namespace.name()));
         }
     };
 
-    ProjectContext::init(project_info.clone(), &workspace_info.get_manifest_path())?;
+    ProjectContext::init(project.clone(), &workspace_info.get_manifest_path())?;
 
-    let frontend_url = project_url(context, &project_owner, owner_name, &project_name)?;
-    let project = format!("{}/{}", project_info.owner, project_info.name);
-    let url = terminal.format_url(&frontend_url);
+    let url = context.web_console().join(&namespace.project_path(&name))?;
+    let shown = format!("{}/{}", project.namespace, project.name);
+    let link = terminal.format_url(&url);
     terminal.outro(&if created {
-        format!("Created and linked {project} at {url}.")
+        format!("Created and linked {shown} at {link}.")
     } else {
-        format!("Linked to {project} at {url}.")
+        format!("Linked to {shown} at {link}.")
     });
 
     Ok(ProjectLinked {
-        namespace: project_info.owner,
-        name: project_info.name,
+        namespace: project.namespace,
+        name: project.name,
         created,
-        url: Some(frontend_url.to_string()),
+        url: Some(url.to_string()),
     })
 }
 
-fn prompt_owner_name(
-    user_name: &str,
+/// A namespace that can own a project: the user's own or one of their organizations'.
+#[derive(Clone, PartialEq, Eq)]
+enum Namespace {
+    User(String),
+    Organization(String),
+}
+
+impl Namespace {
+    fn name(&self) -> &str {
+        match self {
+            Self::User(name) | Self::Organization(name) => name,
+        }
+    }
+
+    /// Build the web Console path of project `name`.
+    fn project_path(&self, name: &str) -> String {
+        match self {
+            Self::User(namespace) => format!("/users/{namespace}/projects/{name}"),
+            Self::Organization(namespace) => format!("/orgs/{namespace}/projects/{name}"),
+        }
+    }
+}
+
+/// Choose the namespace `--owner` names, else ask the user.
+fn choose_namespace(
+    username: &str,
     user_namespace: &str,
     owner: Option<&str>,
     client: &Client,
     terminal: &Terminal,
-) -> anyhow::Result<ProjectKind> {
-    let organizations = client.get_user_organizations()?;
-    let mut valid_values = vec![user_namespace];
-    valid_values.extend(
-        organizations
-            .organizations
-            .iter()
-            .map(|org| org.namespace.as_str()),
-    );
-    if let Some(owner) = owner {
-        validate_owner(owner, &valid_values)?;
-        return Ok(if owner == user_namespace {
-            ProjectKind::User
-        } else {
-            ProjectKind::Organization(owner.to_string())
-        });
-    }
-    let mut namespaces = vec![(ProjectKind::User, format!("{user_name} (you)"), "")];
-    namespaces.extend(organizations.organizations.iter().map(|org| {
+) -> anyhow::Result<Namespace> {
+    let organizations = client.get_user_organizations()?.organizations;
+    let mut namespaces = vec![(
+        Namespace::User(user_namespace.to_string()),
+        format!("{username} (you)"),
+        "",
+    )];
+    namespaces.extend(organizations.iter().map(|organization| {
         (
-            ProjectKind::Organization(org.namespace.clone()),
-            org.name.clone(),
+            Namespace::Organization(organization.namespace.clone()),
+            organization.name.clone(),
             "",
         )
     }));
+    let names: Vec<&str> = namespaces
+        .iter()
+        .map(|(namespace, _, _)| namespace.name())
+        .collect();
+    if let Some(owner) = owner {
+        return namespaces
+            .iter()
+            .find(|(namespace, _, _)| namespace.name() == owner)
+            .map(|(namespace, _, _)| namespace.clone())
+            .ok_or_else(|| unknown_owner(owner, &names).into());
+    }
     terminal.select(
         "Owner",
         &namespaces,
-        Some(ProjectKind::User),
+        None,
         Unanswered::new(
             "Linking needs an owner.",
-            format!("Pass --owner with {}.", valid_values.join(" or ")),
+            format!("Pass --owner with {}.", names.join(" or ")),
         ),
     )
 }
 
-fn validate_owner(owner: &str, valid_values: &[&str]) -> Result<(), CliError> {
-    if valid_values.contains(&owner) {
-        Ok(())
-    } else {
-        Err(CliError::new(
-            ErrorKind::Usage,
-            format!(
-                "Unknown owner '{owner}'. Owners: {}.",
-                valid_values.join(", ")
-            ),
-        ))
-    }
+fn unknown_owner(owner: &str, namespaces: &[&str]) -> CliError {
+    CliError::new(
+        ErrorKind::Usage,
+        format!(
+            "Unknown owner '{owner}'. Owners: {}.",
+            namespaces.join(", ")
+        ),
+    )
 }
 
 fn validate_project_name(name: &str) -> Result<(), String> {
@@ -230,7 +233,8 @@ fn validate_project_name(name: &str) -> Result<(), String> {
     }
 }
 
-pub fn prompt_project_name(workspace_name: &str, terminal: &Terminal) -> anyhow::Result<String> {
+/// Ask for a project name, `workspace_name` by default.
+fn prompt_project_name(workspace_name: &str, terminal: &Terminal) -> anyhow::Result<String> {
     let input = terminal.input_validated(
         "Project name",
         workspace_name,
@@ -243,18 +247,17 @@ pub fn prompt_project_name(workspace_name: &str, terminal: &Terminal) -> anyhow:
             }
         },
     )?;
-
-    let input = if input.is_empty() {
+    let name = if input.is_empty() {
         workspace_name.to_string()
     } else {
         input
     };
-
-    validate_project_name(&input).map_err(|message| CliError::new(ErrorKind::Usage, message))?;
-    Ok(input)
+    validate_project_name(&name).map_err(|message| CliError::new(ErrorKind::Usage, message))?;
+    Ok(name)
 }
 
-fn handle_existing_project(
+/// Link `project`, which already exists, once the user agrees or `yes` says so.
+fn confirm_existing_project(
     project: &ProjectResponse,
     terminal: &Terminal,
     yes: bool,
@@ -269,40 +272,18 @@ fn handle_existing_project(
                 "Pass --yes to link it without asking.",
             ),
         )?;
-
-    if confirmed {
-        Ok(TracelProject {
-            owner: project.namespace_name.clone(),
-            name: project.project_name.clone(),
-        })
-    } else {
-        Err(Declined::new(NOTHING_LINKED).into())
+    if !confirmed {
+        return Err(Declined::new(NOTHING_LINKED).into());
     }
+    Ok(TracelProject {
+        namespace: project.namespace_name.clone(),
+        name: project.project_name.clone(),
+    })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ProjectKind {
-    User,
-    Organization(String),
-}
-
-fn project_url(
-    context: &CliContext,
-    owner: &ProjectKind,
-    namespace: &str,
-    name: &str,
-) -> anyhow::Result<url::Url> {
-    let path = match owner {
-        ProjectKind::User => format!("/users/{namespace}/projects/{name}"),
-        ProjectKind::Organization(_) => format!("/orgs/{namespace}/projects/{name}"),
-    };
-    Ok(context.get_frontend_endpoint().join(&path)?)
-}
-
-fn create_new_project(
+fn create_project(
     client: &Client,
-    project_kind: ProjectKind,
-    namespace: &str,
+    namespace: &Namespace,
     name: &str,
     description: Option<String>,
     terminal: &Terminal,
@@ -312,37 +293,34 @@ fn create_new_project(
         None if terminal.is_interactive() => terminal.input(
             "Description (optional)",
             Unanswered::new(
-                format!("Creating {namespace}/{name} needs a description."),
+                format!("Creating {}/{name} needs a description.", namespace.name()),
                 "Pass --description <text>.",
             ),
         )?,
         None => String::new(),
     };
-    let desc = if description.is_empty() {
-        None
-    } else {
-        Some(description)
-    };
+    let description = (!description.is_empty()).then_some(description);
 
-    let created_project_path = match project_kind {
-        ProjectKind::User => client.create_user_project(name, desc.as_deref(), Visibility::Private),
-        ProjectKind::Organization(org_name) => client.create_organization_project(
-            &org_name,
+    let created = match namespace {
+        Namespace::User(_) => {
+            client.create_user_project(name, description.as_deref(), Visibility::Private)
+        }
+        Namespace::Organization(organization) => client.create_organization_project(
+            organization,
             name,
-            desc.as_deref(),
+            description.as_deref(),
             Visibility::Private,
         ),
     };
-
     let project =
-        created_project_path.with_context(|| format!("Can't create project {namespace}/{name}"))?;
+        created.with_context(|| format!("Can't create project {}/{name}", namespace.name()))?;
     Ok(TracelProject {
-        owner: project.namespace_name,
+        namespace: project.namespace_name,
         name: project.project_name,
     })
 }
 
-pub fn ensure_git_repo_initialized(
+fn ensure_git_repo_initialized(
     ws_root: &std::path::Path,
     terminal: &Terminal,
 ) -> anyhow::Result<()> {
@@ -353,7 +331,9 @@ pub fn ensure_git_repo_initialized(
     Ok(())
 }
 
-pub fn ensure_git_repo_clean(
+/// Make sure the workspace has a commit and no uncommitted changes, committing when
+/// `commit` says so or the user agrees, unless `allow_dirty`.
+fn ensure_git_repo_clean(
     terminal: &Terminal,
     commit: bool,
     allow_dirty: bool,
@@ -381,7 +361,7 @@ pub fn ensure_git_repo_clean(
     if !terminal.is_interactive() {
         return Err(commit_required().into());
     }
-    terminal.print_warning(if has_commit {
+    terminal.warning(if has_commit {
         "The workspace has uncommitted changes."
     } else {
         "The workspace has no commit yet."
@@ -439,17 +419,6 @@ pub fn commit_all(terminal: &Terminal) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn owner_must_match_a_namespace() {
-        let valid = ["user-namespace", "org-namespace"];
-        for owner in valid {
-            assert!(validate_owner(owner, &valid).is_ok());
-        }
-        let error = validate_owner("display-name", &valid).unwrap_err();
-        assert_eq!(error.kind, ErrorKind::Usage);
-        assert!(error.to_string().contains("user-namespace, org-namespace"));
-    }
 
     #[test]
     fn project_name_allows_alphanumeric_underscores_and_hyphens() {

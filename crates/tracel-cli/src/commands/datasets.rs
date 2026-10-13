@@ -63,7 +63,7 @@ pub fn handle_command(args: DatasetsArgs, context: CliContext) -> anyhow::Result
     match args.command {
         DatasetsCommands::List(args) => Ok(client
             .query_datasets(
-                &project.owner,
+                &project.namespace,
                 &project.name,
                 QueryDatasetsRequest {
                     page: args.page,
@@ -72,11 +72,11 @@ pub fn handle_command(args: DatasetsArgs, context: CliContext) -> anyhow::Result
             )?
             .into()),
         DatasetsCommands::Get(args) => Ok(client
-            .get_dataset(&project.owner, &project.name, &args.dataset)
+            .get_dataset(&project.namespace, &project.name, &args.dataset)
             .map_err(|error| {
                 map_resource_error(
                     error,
-                    &project.owner,
+                    &project.namespace,
                     &project.name,
                     Resource::Dataset(&args.dataset),
                 )
@@ -84,7 +84,7 @@ pub fn handle_command(args: DatasetsArgs, context: CliContext) -> anyhow::Result
             .into()),
         DatasetsCommands::Versions(args) => Ok(client
             .query_dataset_versions(
-                &project.owner,
+                &project.namespace,
                 &project.name,
                 &args.dataset,
                 QueryDatasetVersionsRequest {
@@ -95,7 +95,7 @@ pub fn handle_command(args: DatasetsArgs, context: CliContext) -> anyhow::Result
             .map_err(|error| {
                 map_resource_error(
                     error,
-                    &project.owner,
+                    &project.namespace,
                     &project.name,
                     Resource::Dataset(&args.dataset),
                 )

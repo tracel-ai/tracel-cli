@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::tools::{tracel_config::TracelProject, workspace::WorkspaceInfo};
 
+/// What went wrong with a workspace or its link.
 #[derive(Debug)]
 pub enum ErrorKind {
     ManifestNotFound,
@@ -11,6 +12,7 @@ pub enum ErrorKind {
     Unexpected,
 }
 
+/// An error about a workspace or its link.
 #[derive(thiserror::Error, Debug)]
 pub struct ProjectContextError {
     message: String,
@@ -39,6 +41,7 @@ impl std::fmt::Display for ProjectContextError {
     }
 }
 
+/// A workspace and the project it is linked to.
 pub struct ProjectContext {
     pub workspace_info: WorkspaceInfo,
     pub project: TracelProject,

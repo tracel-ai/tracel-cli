@@ -1,6 +1,6 @@
 use std::io::{self, IsTerminal};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
 use cliclack::ProgressBar;
 
@@ -11,10 +11,36 @@ use super::layout::{Layout, Place};
 /// left, two spaces and its bar on the right.
 pub const BOX_PADDING: u16 = 6;
 
-/// The terminal a command draws on. With human output on a styled stderr, cliclack
-/// draws there: a flow's session and widgets, and a read's result when stdout is the
-/// same terminal. Only one thing draws at a time: anything new settles the live widget
-/// first.
+/// Which of stderr and stdout are terminals.
+#[derive(Clone, Copy)]
+pub struct Terminals {
+    pub stderr: bool,
+    pub stdout: bool,
+}
+
+impl Terminals {
+    pub fn detect() -> Self {
+        Self {
+            stderr: io::stderr().is_terminal(),
+            stdout: io::stdout().is_terminal(),
+        }
+    }
+}
+
+/// Where a result goes.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Delivery {
+    /// One box on the terminal, its text fitted to the columns inside the box.
+    Box(Option<usize>),
+    /// Stdout, which carries nothing else: an envelope, or plain text ending with the
+    /// summary.
+    Stdout,
+}
+
+/// The terminal a command draws on, shared by its stdout and stderr. With human output
+/// on a terminal, cliclack draws on stderr: a flow's session with its steps and
+/// prompts, and a read's box when stdout is the same terminal. One thing draws at a
+/// time, so anything new first settles the live spinner or bar.
 pub struct Screen {
     format: Format,
     styled: bool,
@@ -26,35 +52,19 @@ pub struct Screen {
     next_id: AtomicU64,
 }
 
-/// A spinner or progress bar that redraws itself until it is finished.
+/// A spinner or bar that redraws itself until it ends.
 struct Live {
     id: u64,
     bar: ProgressBar,
     message: String,
 }
 
-/// How a live widget ends: as a line with its message, or with nothing left.
-#[derive(Clone, Copy)]
-pub enum Ending {
-    Done,
-    Cleared,
-}
-
-/// How a result reaches the person.
-pub enum Delivery {
-    /// In one box on the terminal, its text fitted to the columns inside the box.
-    Box(Option<usize>),
-    /// On stdout, which carries nothing else: an envelope, or plain text ending with
-    /// its summary.
-    Stdout,
-}
-
 impl Screen {
-    pub fn new(format: Format, layout: Layout, place: Place) -> Self {
+    pub fn new(format: Format, layout: Layout, place: Place, terminals: Terminals) -> Self {
         Self {
             format,
-            styled: format == Format::Human && io::stderr().is_terminal(),
-            stdout_is_terminal: io::stdout().is_terminal(),
+            styled: format == Format::Human && terminals.stderr,
+            stdout_is_terminal: terminals.stdout,
             layout,
             place,
             session: AtomicBool::new(false),
@@ -67,7 +77,7 @@ impl Screen {
         self.format
     }
 
-    /// Whether stderr draws with cliclack.
+    /// Whether cliclack draws on stderr.
     pub fn is_styled(&self) -> bool {
         self.styled
     }
@@ -91,7 +101,7 @@ impl Screen {
         }
     }
 
-    /// The columns of the terminal stdout is, if it is one.
+    /// Measure stdout's width, when it is a terminal.
     pub fn stdout_width(&self) -> Option<usize> {
         if self.stdout_is_terminal {
             columns(&console::Term::stdout())
@@ -100,32 +110,38 @@ impl Screen {
         }
     }
 
-    /// Opens a flow's session: the tracel badge, then what the flow does and where.
-    pub fn begin(&self) {
+    /// Build the line under the tracel badge that opens a flow's session: what the flow
+    /// does and where. None when no session opens.
+    fn header(&self) -> Option<String> {
         let Layout::Flow(what) = &self.layout else {
-            return;
+            return None;
         };
         if !self.styled {
-            return;
+            return None;
         }
-        let mut what = what.clone();
+        let mut header = what.clone();
         if let Some(project) = &self.place.project {
-            what.push_str(&format!(
-                " in {}",
-                console::style(project).for_stderr().bold()
-            ));
+            let project = console::style(project).for_stderr().bold();
+            header.push_str(&format!(" in {project}"));
         }
         if let Some(environment) = &self.place.environment {
             let environment = format!(" · {environment}");
-            what.push_str(&console::style(environment).for_stderr().dim().to_string());
+            header.push_str(&console::style(environment).for_stderr().dim().to_string());
         }
-        let badge = console::style(" tracel ").for_stderr().black().on_green();
-        let _ = cliclack::intro(badge);
-        let _ = cliclack::log::remark(what);
-        self.session.store(true, Ordering::Relaxed);
+        Some(header)
     }
 
-    /// Shows a read's result: `body` in one box under `summary` and the place, or the
+    /// Open a flow's session: the tracel badge, then what the flow does and where.
+    pub fn intro(&self) {
+        if let Some(header) = self.header() {
+            let badge = console::style(" tracel ").for_stderr().black().on_green();
+            let _ = cliclack::intro(badge);
+            let _ = cliclack::log::remark(header);
+            self.session.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Show a read's result: `body` in one box under `summary` and the place, or the
     /// summary alone when there is no body.
     pub fn show_result(&self, summary: Option<&str>, body: &str) {
         let place = self.place.to_string();
@@ -157,105 +173,106 @@ impl Screen {
         });
     }
 
-    /// Ends a flow's session with its outcome.
-    pub fn close(&self, outcome: &str) {
+    /// End a flow's session on its outcome. Nothing when no session is open.
+    pub fn outro(&self, outcome: &str) {
         if self.session.swap(false, Ordering::Relaxed) {
             self.draw(|| cliclack::outro(outcome));
         }
     }
 
-    /// Closes the frame a failure was just reported in with a bare corner.
-    pub fn close_failed(&self) {
+    /// Close the frame an error was just drawn in with a bare corner.
+    pub fn close_frame(&self) {
         self.session.store(false, Ordering::Relaxed);
-        self.draw(|| cliclack::outro_cancel(""));
+        self.draw(|| cliclack::outro(""));
     }
 
-    pub fn next_id(&self) -> u64 {
-        self.next_id.fetch_add(1, Ordering::Relaxed)
-    }
-
-    /// Settles the live widget, then draws with cliclack.
+    /// Settle the live widget, then draw with cliclack.
     pub fn draw(&self, draw: impl FnOnce() -> io::Result<()>) {
-        self.settle(Ending::Done);
+        self.settle();
         let _ = draw();
     }
 
-    /// Settles the live widget, then starts `bar` as live widget `id`.
-    pub fn show(&self, id: u64, bar: ProgressBar, message: String) {
+    /// Settle the live widget, then start `bar` as the live one. Returns its id.
+    pub fn start(&self, bar: ProgressBar, message: String) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let mut live = self.lock();
         if let Some(previous) = live.take() {
-            previous.end(Ending::Done, None);
+            previous.stop();
         }
         bar.start(&message);
         *live = Some(Live { id, bar, message });
+        id
     }
 
-    /// Changes the message of live widget `id`; nothing when it was settled.
-    pub fn update(&self, id: u64, message: String) {
+    /// Change the message of live widget `id`, unless it has ended.
+    pub fn set_message(&self, id: u64, message: String) {
         if let Some(live) = self.lock().as_mut().filter(|live| live.id == id) {
             live.bar.set_message(&message);
             live.message = message;
         }
     }
 
-    /// Moves the bar of live widget `id` to `position`; nothing when it was settled.
-    pub fn update_position(&self, id: u64, position: u64) {
+    /// Move the bar of live widget `id` to `position`, unless it has ended.
+    pub fn set_position(&self, id: u64, position: u64) {
         if let Some(live) = self.lock().as_ref().filter(|live| live.id == id) {
             live.bar.set_position(position);
         }
     }
 
-    /// Clears live widget `id`, leaving no line.
+    /// End live widget `id` without leaving a line, unless it has ended.
     pub fn clear(&self, id: u64) {
-        self.end(id, Ending::Cleared, None);
-    }
-
-    fn end(&self, id: u64, ending: Ending, message: Option<&str>) -> bool {
         let mut live = self.lock();
-        match live.take() {
-            Some(widget) if widget.id == id => {
-                widget.end(ending, message);
-                true
-            }
-            other => {
-                *live = other;
-                false
+        if live.as_ref().is_some_and(|live| live.id == id) {
+            if let Some(widget) = live.take() {
+                widget.bar.clear();
             }
         }
     }
 
-    /// Finishes the live widget, if any, with its last message.
-    pub fn settle(&self, ending: Ending) {
+    /// End the live widget, if any, with its last message as a line.
+    pub fn settle(&self) {
         if let Some(widget) = self.lock().take() {
-            widget.end(ending, None);
+            widget.stop();
+        }
+    }
+
+    /// End the live widget, if any, without leaving a line.
+    pub fn clear_live(&self) {
+        if let Some(widget) = self.lock().take() {
+            widget.bar.clear();
         }
     }
 
     /// Stdout, once nothing else draws where it lands.
     pub fn stdout(&self) -> io::StdoutLock<'static> {
         if self.shares_stdout() {
-            self.settle(Ending::Done);
+            self.settle();
         }
         io::stdout().lock()
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Option<Live>> {
+    fn lock(&self) -> MutexGuard<'_, Option<Live>> {
         self.live
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
-/// cliclack's theme while a result's box is drawn. cliclack dims the text of a box, as
-/// it dims a prompt's answer; a result keeps its own styles instead. tracel sets no
-/// other theme, so drawing the box goes back to cliclack's own after it.
+impl Live {
+    fn stop(self) {
+        self.bar.stop(&self.message);
+    }
+}
+
+/// cliclack's theme while a result's box is drawn. cliclack dims a box's text as it
+/// dims a prompt's answer, and a result keeps its own styles instead. tracel sets no
+/// other theme, so the box goes back to cliclack's own after it.
 struct ResultTheme;
 
 impl cliclack::Theme for ResultTheme {
     fn input_style(&self, state: &cliclack::ThemeState) -> console::Style {
         match state {
             cliclack::ThemeState::Cancel => console::Style::new().dim().strikethrough(),
-            cliclack::ThemeState::Submit => console::Style::new(),
             _ => console::Style::new(),
         }
     }
@@ -265,13 +282,4 @@ fn columns(terminal: &console::Term) -> Option<usize> {
     terminal
         .size_checked()
         .map(|(_, columns)| usize::from(columns))
-}
-
-impl Live {
-    fn end(self, ending: Ending, message: Option<&str>) {
-        match ending {
-            Ending::Done => self.bar.stop(message.unwrap_or(&self.message)),
-            Ending::Cleared => self.bar.clear(),
-        }
-    }
 }

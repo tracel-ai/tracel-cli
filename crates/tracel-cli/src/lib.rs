@@ -1,6 +1,7 @@
 mod cli;
 mod commands;
 mod context;
+mod environment;
 mod error;
 mod helpers;
 mod tools;

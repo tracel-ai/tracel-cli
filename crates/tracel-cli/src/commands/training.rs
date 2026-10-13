@@ -1,9 +1,7 @@
 use anyhow::Context;
 use clap::Parser;
 
-use tracel_client::console::Env;
-
-use crate::{context::CliContext, tools::cargo, ui::Outcome};
+use crate::{context::CliContext, environment, tools::cargo, ui::Outcome};
 
 #[derive(Parser, Debug, Default)]
 pub struct TrainingArgs {
@@ -21,17 +19,15 @@ pub fn handle_command(args: TrainingArgs, context: CliContext) -> anyhow::Result
     Ok(Outcome::streamed())
 }
 
-/// Run `cargo run` in the current directory, forwarding `forwarded` after `--`.
-///
-/// `tracel train -- entrypoint` is equivalent to `cargo run -- entrypoint`: stdio is
-/// inherited and the program's exit code is the command's.
-pub fn run_cargo(forwarded: &[String], context: CliContext) -> anyhow::Result<()> {
+/// Run `cargo run` in this directory with `forwarded` after `--`. The program gets
+/// tracel's stdio, and its exit code is tracel's.
+fn run_cargo(forwarded: &[String], context: CliContext) -> anyhow::Result<()> {
     let mut cmd = cargo::command();
     cmd.arg("run");
 
-    cmd.env("TRACEL_ENV", tracel_env_value(&context.environment()));
+    cmd.env("TRACEL_ENV", environment::sdk_value(&context.environment()));
     if let Some(project) = context.project() {
-        cmd.env("TRACEL_NAMESPACE", &project.owner);
+        cmd.env("TRACEL_NAMESPACE", &project.namespace);
         cmd.env("TRACEL_PROJECT", &project.name);
     }
 
@@ -61,16 +57,4 @@ fn hand_over(mut cmd: std::process::Command) -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-/// The value the SDK expects in the `TRACEL_ENV` environment variable.
-///
-/// The SDK parses this string with an explicit match (see `discover_env` in the
-/// `tracel-core` cloud backend). This needs to match.
-fn tracel_env_value(env: &Env) -> String {
-    match env {
-        Env::Production => "Production".to_string(),
-        Env::Development => "Development".to_string(),
-        Env::Staging(version) => format!("Staging({version})"),
-    }
 }

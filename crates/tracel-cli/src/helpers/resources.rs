@@ -3,6 +3,7 @@ use tracel_client::{ApiErrorCode, ClientError};
 
 use crate::error::{CliError, ErrorKind};
 
+/// What a command looked for on the Tracel Console, to name it when it is missing.
 #[derive(Clone, Copy)]
 pub enum Resource<'a> {
     Model(&'a str),
@@ -13,6 +14,8 @@ pub enum Resource<'a> {
     Dataset(&'a str),
 }
 
+/// Turn the Tracel Console's "not found" for `resource` into an error that names it and
+/// how to list what exists. Other errors stay as they are.
 pub fn map_resource_error(
     error: ClientError,
     namespace: &str,
@@ -26,11 +29,8 @@ pub fn map_resource_error(
             | Resource::ModelVersionRef { model, .. }
             | Resource::ModelVersion { model, .. }
             | Resource::ModelAlias { model, .. },
-        ) => (
-            format!("No model '{model}' in {namespace}/{project}."),
-            "List models with `tracel models list`.".to_string(),
-        ),
-        (
+        )
+        | (
             ClientError::NotFound | ClientError::NotFoundWithCode(ApiErrorCode::Unknown),
             Resource::Model(model),
         ) => (
@@ -78,6 +78,7 @@ pub fn map_resource_error(
         .into()
 }
 
+/// Read `--metadata`, which must be a JSON object.
 pub fn parse_metadata(value: &str) -> Result<Value, CliError> {
     let metadata: Value = serde_json::from_str(value).map_err(|error| {
         CliError::new(ErrorKind::Usage, format!("--metadata isn't JSON: {error}"))
@@ -91,6 +92,7 @@ pub fn parse_metadata(value: &str) -> Result<Value, CliError> {
     Ok(metadata)
 }
 
+/// Fail when `--description` comes without `--auto-create true`.
 pub fn validate_auto_create(
     auto_create: Option<bool>,
     description: Option<&str>,
@@ -104,6 +106,8 @@ pub fn validate_auto_create(
     Ok(())
 }
 
+/// Find the artifact `value` names among `(id, name)` pairs: by id first, else by a
+/// name only one artifact has.
 pub fn select_artifact<'a>(
     items: impl IntoIterator<Item = (&'a str, &'a str)>,
     value: &str,

@@ -13,6 +13,7 @@ use super::parts::PartUploadTask;
 
 const UPLOAD_WORKER_COUNT: usize = 8;
 
+/// Uploads one part's bytes to its presigned URL.
 pub trait PartUploader: Send + Sync {
     fn upload(&self, url: &str, bytes: Vec<u8>) -> Result<(), ClientError>;
 }
@@ -35,7 +36,7 @@ fn read_part_bytes(path: &Path, offset: u64, size: u64) -> anyhow::Result<Vec<u8
     Ok(buffer)
 }
 
-/// Splits `tasks` into up to `worker_count` contiguous chunks, one per worker thread.
+/// Split `tasks` into up to `worker_count` contiguous chunks, one per worker.
 fn chunk_tasks(tasks: Vec<PartUploadTask>, worker_count: usize) -> Vec<Vec<PartUploadTask>> {
     if tasks.is_empty() {
         return Vec::new();
@@ -56,9 +57,8 @@ fn chunk_tasks(tasks: Vec<PartUploadTask>, worker_count: usize) -> Vec<Vec<PartU
     chunks
 }
 
-/// Uploads a worker's chunk of parts in order, stopping early if `cancelled` is set by
-/// another worker's failure. Bumps `completed` after each successful part so the caller
-/// can poll progress without every worker touching the progress bar directly.
+/// Upload a worker's parts in order, counting each in `completed`, until one fails or
+/// another worker's failure sets `cancelled`.
 fn upload_chunk(
     chunk: Vec<PartUploadTask>,
     uploader: &impl PartUploader,
@@ -94,6 +94,8 @@ fn upload_chunk(
     Ok(())
 }
 
+/// Upload `tasks` with up to 8 workers under one progress bar, stopping at the first
+/// failure.
 pub fn upload_parts(
     uploader: &impl PartUploader,
     tasks: Vec<PartUploadTask>,
@@ -134,9 +136,7 @@ pub fn upload_parts(
             std::thread::sleep(Duration::from_millis(50));
         }
 
-        // Each worker thread's Result is joined explicitly here (rather than relying on
-        // thread::scope's implicit join-on-exit), so a worker panic is turned into a clean
-        // anyhow::Error instead of unwinding past the error-reporting below.
+        // Join each worker here, so a panic becomes an error instead of unwinding.
         handles
             .into_iter()
             .filter_map(|handle| match handle.join() {

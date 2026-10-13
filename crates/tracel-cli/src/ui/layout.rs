@@ -1,13 +1,14 @@
 use std::fmt::{self, Display};
 
-/// How a command shows on a terminal: a read is a box, a flow is a session.
+/// How a command shows on a terminal: a read in a box, a flow in a session.
 pub enum Layout {
-    /// A command that reads: its result in one box, under its summary.
+    /// A command that reads, its result in one box under its summary.
     Read,
-    /// A command that does work: a session that first says what it does, such as
-    /// "Run job 'train'", and where.
+    /// A command that does work, in a session that first says what it does, such as
+    /// "Upload a version of model 'weights'", and where.
     Flow(String),
-    /// Nothing drawn: the output is a bare value, or another program's.
+    /// A command whose output is a bare value or another program's, with nothing
+    /// drawn.
     Bare,
 }
 
@@ -17,8 +18,7 @@ impl Layout {
     }
 }
 
-/// Where a command works: the project it uses, and its environment unless that is
-/// production.
+/// Where a command works: its project, and its environment unless that is production.
 #[derive(Default)]
 pub struct Place {
     pub project: Option<String>,

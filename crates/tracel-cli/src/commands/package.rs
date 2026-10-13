@@ -22,7 +22,7 @@ use crate::tools::build_driver::{self, BuildDriver};
 use crate::tools::packager::{PackageEvent, package_workspace};
 use crate::tools::project_context::ProjectContext;
 use crate::tools::{cargo, git, target};
-use crate::ui::{Outcome, Render, Unanswered, short_digest};
+use crate::ui::{Outcome, Unanswered, short_digest};
 
 #[derive(Args, Debug)]
 pub struct PackageArgs {
@@ -53,16 +53,15 @@ pub enum Mode {
     Source,
 }
 
-/// An artifact prepared for upload: the publish request describing it, plus the
-/// `(upload-url key, file path)` pairs whose bytes must be PUT to the presigned
-/// URLs the server returns.
-struct PreparedArtifact {
+/// A code version ready to upload: its publish request, each file by the key of its
+/// upload URL, and the targets it was built for.
+struct PreparedCodeVersion {
     request: PublishArtifactRequest,
     uploads: Vec<(String, PathBuf)>,
     targets: Vec<String>,
 }
 
-/// A code version of the project. `uploaded` is false when it was already packaged.
+/// The code version `package` made. `uploaded` is false when it already existed.
 #[derive(Serialize)]
 struct Packaged {
     namespace: String,
@@ -73,8 +72,6 @@ struct Packaged {
     targets: Vec<String>,
     uploaded: bool,
 }
-
-impl Render for Packaged {}
 
 pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<Outcome> {
     if args.mode.is_none() && !context.terminal().is_interactive() {
@@ -121,7 +118,7 @@ pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<
                 .with_hint("Commit them, or pass --commit or --allow-dirty.")
                 .into());
         }
-        context.terminal().print_warning(dirty);
+        context.terminal().warning(dirty);
         if context.terminal().confirm(
             "Commit them first?",
             true,
@@ -136,7 +133,7 @@ pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<
 
     let digest = git::get_last_commit_hash().context("Can't read the current commit")?;
     if git::is_repo_dirty()? {
-        context.terminal().print_warning(&format!(
+        context.terminal().warning(&format!(
             "Uncommitted changes are not part of code version {}.",
             short_digest(&digest)
         ));
@@ -170,18 +167,25 @@ pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<
         .into());
     }
 
-    let artifact = match mode {
-        Mode::Source => build_source_artifact(&context, &project)?,
-        Mode::Binary => build_binary_artifact(&context, &project, &args)?,
+    let code_version = match mode {
+        Mode::Source => prepare_source(&context, &project)?,
+        Mode::Binary => prepare_binaries(&context, &project, &args)?,
     };
 
-    Ok(upload(&context, &client, &project, &digest, mode, artifact)?.into())
+    Ok(Outcome::data(upload(
+        &context,
+        &client,
+        &project,
+        &digest,
+        mode,
+        code_version,
+    )?))
 }
 
-fn build_source_artifact(
+fn prepare_source(
     context: &CliContext,
     project: &ProjectContext,
-) -> anyhow::Result<PreparedArtifact> {
+) -> anyhow::Result<PreparedCodeVersion> {
     let spinner = context.terminal().spinner("Packaging the workspace");
     let reporter = spinner.clone();
     let result = package_workspace(
@@ -191,7 +195,7 @@ fn build_source_artifact(
     .context("Can't package the workspace")?;
     spinner.clear();
 
-    Ok(PreparedArtifact {
+    Ok(PreparedCodeVersion {
         request: PublishArtifactRequest::Source {
             source: PublishSourceRequest {
                 checksum: result.checksum,
@@ -203,17 +207,17 @@ fn build_source_artifact(
     })
 }
 
-fn build_binary_artifact(
+fn prepare_binaries(
     context: &CliContext,
     project: &ProjectContext,
     args: &PackageArgs,
-) -> anyhow::Result<PreparedArtifact> {
+) -> anyhow::Result<PreparedCodeVersion> {
     let host = target::host_target()?;
     let installed = target::installed_targets();
 
     let selected = target::select_targets(context.terminal(), &args.targets, host, &installed)?;
 
-    // rustup preflight: offer to install any selected cross target whose std is missing.
+    // Offer to install the chosen cross targets whose standard library is missing.
     let missing: Vec<&str> = selected
         .iter()
         .filter(|&&(os, arch)| (os, arch) != host)
@@ -237,7 +241,7 @@ fn build_binary_artifact(
         };
 
         let linker = if is_host {
-            context.terminal().print_warning(&format!(
+            context.terminal().warning(&format!(
                 "The binary runs only on {} compute providers.",
                 target::pretty_name(os, arch)
             ));
@@ -263,7 +267,7 @@ fn build_binary_artifact(
         uploads.push((triple.to_string(), path));
     }
 
-    Ok(PreparedArtifact {
+    Ok(PreparedCodeVersion {
         request: PublishArtifactRequest::Binaries { binaries },
         uploads,
         targets: selected
@@ -273,8 +277,8 @@ fn build_binary_artifact(
     })
 }
 
-/// Run the release build with `driver` (optionally for a cross `--target`) and return
-/// the path to the produced executable (prompting if the build produced more than one).
+/// Build the release binary with `driver`, for `target` when cross-building, and return
+/// its path, asking which one when the build makes several.
 fn build_release_binary(
     context: &CliContext,
     target: Option<&str>,
@@ -372,14 +376,14 @@ fn upload(
     project: &ProjectContext,
     digest: &str,
     mode: Mode,
-    prepared: PreparedArtifact,
+    prepared: PreparedCodeVersion,
 ) -> anyhow::Result<Packaged> {
-    let bc_project = project.get_project();
+    let linked = project.get_project();
 
     let response = client
         .publish_project_version_urls(
-            &bc_project.owner,
-            &bc_project.name,
+            &linked.namespace,
+            &linked.name,
             PublishProjectVersionRequest {
                 digest: digest.to_string(),
                 artifact: prepared.request,
@@ -388,13 +392,13 @@ fn upload(
         .with_context(|| {
             format!(
                 "Can't start the upload to {}/{}",
-                bc_project.owner, bc_project.name
+                linked.namespace, linked.name
             )
         })?;
 
     let packaged = |uploaded| Packaged {
-        namespace: bc_project.owner.clone(),
-        project: bc_project.name.clone(),
+        namespace: linked.namespace.clone(),
+        project: linked.name.clone(),
         digest: digest.to_string(),
         version_id: response.id.clone(),
         mode,
@@ -423,11 +427,11 @@ fn upload(
     spinner.clear();
 
     client
-        .complete_project_version_upload(&bc_project.owner, &bc_project.name, &response.id)
+        .complete_project_version_upload(&linked.namespace, &linked.name, &response.id)
         .with_context(|| {
             format!(
                 "Can't finish the upload to {}/{}",
-                bc_project.owner, bc_project.name
+                linked.namespace, linked.name
             )
         })?;
 

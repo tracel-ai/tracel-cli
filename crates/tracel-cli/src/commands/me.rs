@@ -39,7 +39,7 @@ pub fn handle_command(context: CliContext) -> anyhow::Result<Outcome> {
         email: user.email,
         namespace: user.namespace,
         environment: context.environment_name(),
-        api_url: context.get_api_endpoint(),
+        api_url: context.api_url().to_string(),
     }
     .into())
 }

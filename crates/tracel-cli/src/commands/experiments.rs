@@ -17,7 +17,7 @@ use tracel_client::console::experiment::response::{
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
-use crate::helpers::project::resolve_namespace_project;
+use crate::helpers::resolve_namespace_project;
 use crate::helpers::{Resource, map_resource_error};
 use crate::tools::tracel_config::TracelProject;
 use crate::ui::{
@@ -330,7 +330,7 @@ impl Render for Option<MetricSummaryResponse> {
 }
 
 impl Render for ExperimentLogQueryResponse {
-    /// Oldest first, as `--follow` writes them.
+    /// Write the entries oldest first, as `--follow` does.
     fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         let mut items: Vec<_> = self.items.iter().collect();
         items.sort_by_key(|item| item.seq);
@@ -347,7 +347,7 @@ impl Render for ExperimentLogQueryResponse {
     }
 }
 
-/// An experiment status as a word: the server's `cancel_requested` reads "stopping".
+/// Name an experiment status in a word: "stopping" for the server's `cancel_requested`.
 fn status_name(status: &str) -> &str {
     match status {
         "cancel_requested" => "stopping",
@@ -393,11 +393,11 @@ fn follow_logs(
 ) -> anyhow::Result<()> {
     loop {
         let response = client
-            .query_experiment_logs(&project.owner, &project.name, num, request.clone())
+            .query_experiment_logs(&project.namespace, &project.name, num, request.clone())
             .map_err(|error| {
                 map_resource_error(
                     error,
-                    &project.owner,
+                    &project.namespace,
                     &project.name,
                     Resource::Experiment(num),
                 )
@@ -430,13 +430,13 @@ fn follow_logs(
 pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Result<Outcome> {
     let client = get_client_and_login_if_needed(&context)?;
     let project = resolve_namespace_project(&context)?.project;
-    let (owner, name) = (&project.owner, &project.name);
+    let (namespace, name) = (&project.namespace, &project.name);
     let missing =
-        |num| move |error| map_resource_error(error, owner, name, Resource::Experiment(num));
+        |num| move |error| map_resource_error(error, namespace, name, Resource::Experiment(num));
     match args.command {
         ExperimentsCommands::List(args) => Ok(client
             .get_project_experiments(
-                owner,
+                namespace,
                 name,
                 ListExperimentsQuery {
                     page: args.page,
@@ -448,10 +448,10 @@ pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Res
         ExperimentsCommands::Get(args) => {
             let experiment = match args.experiment {
                 ExperimentSelector::Number(num) => client
-                    .get_experiment(owner, name, num)
+                    .get_experiment(namespace, name, num)
                     .map_err(missing(num))?,
                 ExperimentSelector::Latest => client
-                    .get_project_latest_experiment(owner, name)?
+                    .get_project_latest_experiment(namespace, name)?
                     .ok_or_else(|| {
                         CliError::new(ErrorKind::NotFound, "No experiments in this project yet.")
                     })?,
@@ -461,19 +461,19 @@ pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Res
         ExperimentsCommands::Metrics(args) => {
             let Some(metric) = args.metric else {
                 return Ok(client
-                    .get_metric_metadata(owner, name, args.num)
+                    .get_metric_metadata(namespace, name, args.num)
                     .map_err(missing(args.num))?
                     .into());
             };
             if args.summary {
                 Ok(client
-                    .get_metric_summary(owner, name, args.num, MetricSummaryQuery { metric })
+                    .get_metric_summary(namespace, name, args.num, MetricSummaryQuery { metric })
                     .map_err(missing(args.num))?
                     .into())
             } else {
                 Ok(client
                     .get_metrics(
-                        owner,
+                        namespace,
                         name,
                         args.num,
                         MetricAggregatedQuery {
@@ -498,7 +498,7 @@ pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Res
                 return Ok(Outcome::streamed());
             }
             Ok(client
-                .query_experiment_logs(owner, name, num, request)
+                .query_experiment_logs(namespace, name, num, request)
                 .map_err(missing(num))?
                 .into())
         }

@@ -34,7 +34,6 @@ impl WorkspaceInfo {
 
         let workspace_root = metadata.workspace_root.clone().into_std_path_buf();
 
-        // Determine workspace name from workspace Cargo.toml
         let workspace_toml_path = workspace_root.join("Cargo.toml");
         if !workspace_toml_path.exists() {
             return Err(ProjectContextError::new(
@@ -76,10 +75,7 @@ impl WorkspaceInfo {
     }
 }
 
-/// Extract workspace name from TOML content
-/// Returns None if:
-/// - TOML content cannot be parsed
-/// - Neither workspace.package.name nor package.name exists
+/// Read the name in `[workspace.package]`, else in `[package]`.
 fn extract_workspace_name_from_toml(toml_content: &str) -> Option<String> {
     let workspace_document = toml_content.parse::<toml::Value>().ok()?;
 

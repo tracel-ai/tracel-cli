@@ -9,7 +9,7 @@ pub fn is_repo_dirty() -> anyhow::Result<bool> {
     Ok(repo.is_dirty()?)
 }
 
-/// The hash of the current HEAD commit. Used as the code-version digest.
+/// Read the hash of the HEAD commit, which identifies a code version.
 pub fn get_last_commit_hash() -> anyhow::Result<String> {
     let repo = gix::discover(".")?;
     let last_commit = repo.head()?.peel_to_commit()?.id();

@@ -4,9 +4,10 @@ use clap::{CommandFactory, Parser, Subcommand};
 use tracel_client::console::Env;
 
 use crate::commands;
-use crate::context::{CliContext, environment_name};
+use crate::context::CliContext;
+use crate::environment;
 use crate::error::{CliError, ErrorKind, ErrorReport};
-use crate::helpers::project::{parse_project, resolve_project};
+use crate::helpers::{parse_project, resolve_project};
 use crate::tools::tracel_config::TracelProject;
 use crate::ui::{
     self, Declined, Format, FormatArg, Layout, Outcome, Output, Place, StdoutClosed, Terminal,
@@ -91,8 +92,7 @@ pub enum Commands {
 }
 
 impl Commands {
-    /// How the command shows on a terminal: a read as a box, a flow as a session, and
-    /// nothing where stdout is a bare value or another program's output.
+    /// How the command draws on a terminal.
     fn layout(&self) -> Layout {
         match self {
             Self::Train(_) => Layout::Bare,
@@ -109,7 +109,7 @@ impl Commands {
         }
     }
 
-    /// Whether the command works in a project, which a terminal then names with it.
+    /// Whether the command works in a project, which its header then names.
     fn in_project(&self) -> bool {
         matches!(
             self,
@@ -121,9 +121,8 @@ impl Commands {
         )
     }
 
-    /// What `auto` output means: human on a terminal and JSON otherwise, except where
-    /// stdout carries plain text: the bare token for `$(tracel auth token)`, or the
-    /// output of the program `train` runs.
+    /// Choose what `auto` means: human on a terminal and JSON otherwise, except for
+    /// `auth token` and `train`, whose stdout is plain text for another program.
     fn auto_format(&self, stdout_is_terminal: bool) -> Format {
         match self {
             Self::Train(_)
@@ -187,17 +186,17 @@ pub fn cli_main() {
     let format = format.unwrap_or_else(|error| fail_early(&error.into(), auto));
     let environment_value =
         std::env::var_os("TRACEL_ENV").map(|value| value.to_string_lossy().into_owned());
-    let environment = resolve_environment(args.dev, args.staging, environment_value.as_deref())
+    let environment = environment::resolve(args.dev, args.staging, environment_value.as_deref())
         .unwrap_or_else(|error| fail_early(&error.into(), format));
     let place = Place {
         project: command
             .in_project()
             .then(|| resolve_project(args.project.as_ref()).ok())
             .flatten()
-            .map(|resolved| format!("{}/{}", resolved.project.owner, resolved.project.name)),
+            .map(|resolved| format!("{}/{}", resolved.project.namespace, resolved.project.name)),
         environment: match environment {
             Env::Production => None,
-            _ => Some(environment_name(&environment)),
+            _ => Some(environment::name(&environment)),
         },
     };
     let (output, terminal) = ui::channels(format, args.no_input, command.layout(), place);
@@ -209,40 +208,8 @@ pub fn cli_main() {
     }
 }
 
-fn resolve_environment(
-    dev: bool,
-    version: Option<u8>,
-    value: Option<&str>,
-) -> Result<Env, CliError> {
-    if dev {
-        return Ok(Env::Development);
-    }
-    if let Some(version) = version {
-        return Ok(Env::Staging(version));
-    }
-    match value {
-        None | Some("Production" | "production") => Ok(Env::Production),
-        Some("Development" | "development") => Ok(Env::Development),
-        Some(value) => value
-            .strip_prefix("Staging(")
-            .and_then(|number| number.strip_suffix(')'))
-            .or_else(|| value.strip_prefix("staging-"))
-            .and_then(|number| number.parse::<u8>().ok())
-            .map(Env::Staging)
-            .ok_or_else(|| {
-                CliError::new(
-                    ErrorKind::Usage,
-                    format!(
-                        "Unknown TRACEL_ENV '{value}'. Environments: production, development, staging-<N>."
-                    ),
-                )
-            }),
-    }
-}
-
-/// Reports a failed command on both channels and exits with its code. A reader that
-/// closed stdout got all it wanted, so that ends the command quietly, and a declined
-/// prompt ends it on what it didn't do.
+/// Report a command that stopped on `error` and exit with its code. A closed stdout
+/// and a declined prompt aren't failures, so they exit 0.
 fn fail(error: &anyhow::Error, output: &Output, terminal: &Terminal) -> ! {
     if error.chain().any(|cause| cause.is::<StdoutClosed>()) {
         std::process::exit(0);
@@ -260,13 +227,13 @@ fn fail(error: &anyhow::Error, output: &Output, terminal: &Terminal) -> ! {
     std::process::exit(report.exit_code)
 }
 
-/// Fails before the command's channels exist.
+/// Fail before the command's channels exist.
 fn fail_early(error: &anyhow::Error, format: Format) -> ! {
     let (output, terminal) = ui::channels(format, true, Layout::Bare, Place::default());
     fail(error, &output, &terminal)
 }
 
-/// The format for an error in arguments that did not parse.
+/// Choose the format for an error in arguments that did not parse.
 fn usage_format(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> Format {
     let mut arguments = arguments.into_iter();
     let mut flag = None;
@@ -348,7 +315,7 @@ mod tests {
         ] {
             let args = CliArgs::try_parse_from(arguments).unwrap();
             let project = args.project.unwrap();
-            assert_eq!(project.owner, "alice");
+            assert_eq!(project.namespace, "alice");
             assert_eq!(project.name, "demo");
             assert_eq!(
                 args.working_directory.unwrap(),
@@ -410,56 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn environment_values_match_sdk_and_lowercase_forms() {
-        for value in [None, Some("Production"), Some("production")] {
-            assert!(matches!(
-                resolve_environment(false, None, value),
-                Ok(Env::Production)
-            ));
-        }
-        for value in ["Development", "development"] {
-            assert!(matches!(
-                resolve_environment(false, None, Some(value)),
-                Ok(Env::Development)
-            ));
-        }
-        for version in [0, 1, 255] {
-            for value in [format!("Staging({version})"), format!("staging-{version}")] {
-                assert!(matches!(
-                    resolve_environment(false, None, Some(&value)),
-                    Ok(Env::Staging(number)) if number == version
-                ));
-            }
-        }
-        for value in [
-            "bogus",
-            "",
-            "Staging()",
-            "Staging(1",
-            "staging-",
-            "staging--1",
-            "Staging(256)",
-            "staging-256",
-            "Production ",
-        ] {
-            let error = resolve_environment(false, None, Some(value)).unwrap_err();
-            assert_eq!(error.kind, ErrorKind::Usage);
-            assert!(error.to_string().contains("TRACEL_ENV"));
-        }
-    }
-
-    #[test]
-    fn environment_flags_override_variable() {
-        for value in [None, Some("Production"), Some("Development"), Some("bogus")] {
-            assert!(matches!(
-                resolve_environment(true, None, value),
-                Ok(Env::Development)
-            ));
-            assert!(matches!(
-                resolve_environment(false, Some(2), value),
-                Ok(Env::Staging(2))
-            ));
-        }
+    fn environment_flags_conflict() {
         assert_eq!(
             CliArgs::try_parse_from(["tracel", "--dev", "--staging", "1", "me"])
                 .unwrap_err()

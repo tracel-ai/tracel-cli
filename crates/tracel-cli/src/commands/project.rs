@@ -9,8 +9,8 @@ use tracel_client::console::project::response::ProjectResponse;
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
-use crate::helpers::project::{ProjectSource, missing_project};
 use crate::helpers::resolve_namespace_project;
+use crate::helpers::{ProjectSource, missing_project};
 use crate::ui::{Details, Human, Outcome, Render, Table, list_summary, when};
 
 #[derive(Args, Debug)]
@@ -149,17 +149,17 @@ fn show_project(context: CliContext) -> anyhow::Result<ProjectInfo> {
     let resolved = resolve_namespace_project(&context)?;
     let client = get_client_and_login_if_needed(&context)?;
 
-    let bc_project = &resolved.project;
-    let project = match client.get_project(&bc_project.owner, &bc_project.name) {
+    let selected = &resolved.project;
+    let project = match client.get_project(&selected.namespace, &selected.name) {
         Ok(project) => project,
         Err(e) if e.is_not_found() => {
-            return Err(missing_project(bc_project, &resolved.source).into());
+            return Err(missing_project(selected, &resolved.source).into());
         }
         Err(e) => {
             return Err(e).with_context(|| {
                 format!(
                     "Can't read project {}/{}",
-                    bc_project.owner, bc_project.name
+                    selected.namespace, selected.name
                 )
             });
         }

@@ -108,8 +108,6 @@ struct ArtifactDownloaded {
     bytes: u64,
 }
 
-impl Render for ArtifactDownloaded {}
-
 impl Render for ArtifactListResponse {
     fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         Table::new(["NAME", "KIND", "FILES", "CREATED AT"])
@@ -150,7 +148,7 @@ pub fn handle_command(args: ArtifactsArgs, context: CliContext) -> anyhow::Resul
         }
     }
     let client = get_client_and_login_if_needed(&context)?;
-    let namespace = &project.owner;
+    let namespace = &project.namespace;
     let name = &project.name;
     match args.command {
         ArtifactsCommands::List(args) => Ok(match args.name {
@@ -218,14 +216,13 @@ pub fn handle_command(args: ArtifactsArgs, context: CliContext) -> anyhow::Resul
                 size(bytes),
                 directory.display()
             ));
-            Ok(ArtifactDownloaded {
+            Ok(Outcome::data(ArtifactDownloaded {
                 experiment: args.experiment,
                 bytes,
                 artifact,
                 directory,
                 files,
-            }
-            .into())
+            }))
         }
     }
 }

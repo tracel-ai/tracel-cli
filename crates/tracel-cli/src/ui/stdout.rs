@@ -8,14 +8,10 @@ use super::human::Human;
 use super::screen::{Delivery, Screen};
 use crate::error::ErrorReport;
 
-/// A command result: serialized for JSON output, written for people.
+/// A command's result: serialized for JSON output, written as text otherwise.
 pub trait Render: Serialize {
-    /// What a person reads. The default writes nothing, for actions that report
-    /// what they did on stderr as they go.
-    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
-        let _ = out;
-        Ok(())
-    }
+    /// Write the result as text for the user.
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()>;
 
     /// One line that sums the result up: the title of its box on a terminal, the
     /// outcome that ends a session, and the last line of plain text.
@@ -28,15 +24,31 @@ pub trait Render: Serialize {
 pub struct Outcome(Option<Box<dyn Report>>);
 
 impl Outcome {
-    /// The command wrote to stdout while it ran: streamed events, or a program it ran.
+    /// Nothing more: the command wrote to stdout as it ran, such as streamed events or
+    /// the output of a program it ran.
     pub fn streamed() -> Self {
         Self(None)
+    }
+
+    /// A result for JSON output only, from a command that says what it did on stderr.
+    pub fn data(value: impl Serialize + 'static) -> Self {
+        Self(Some(Box::new(Data(value))))
     }
 }
 
 impl<T: Render + 'static> From<T> for Outcome {
     fn from(result: T) -> Self {
         Self(Some(Box::new(result)))
+    }
+}
+
+#[derive(Serialize)]
+#[serde(transparent)]
+struct Data<T>(T);
+
+impl<T: Serialize> Render for Data<T> {
+    fn render(&self, _: &mut Human<'_>) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -83,8 +95,8 @@ struct Failure<'a> {
 #[error("stdout was closed")]
 pub struct StdoutClosed;
 
-/// Where command results go, in the format the user chose: a read's in one box on a
-/// terminal, and otherwise on stdout, which carries nothing else.
+/// Stdout, where results go in the format the user chose. On a terminal a read's
+/// result goes in one box on stderr instead.
 #[derive(Clone)]
 pub struct Output {
     screen: Arc<Screen>,
@@ -95,28 +107,29 @@ impl Output {
         Self { screen }
     }
 
-    /// Writes the result of a finished command, and ends the session it ran in with
-    /// its summary.
+    /// Write the result of a finished command, then end its session on the summary.
     pub fn finish(&self, outcome: Outcome) -> anyhow::Result<()> {
         let summary = outcome.0.as_ref().and_then(|report| report.summary());
         if let Some(report) = outcome.0 {
-            let (format, width) = (self.screen.format(), self.screen.stdout_width());
             match self.screen.delivery() {
                 Delivery::Box(width) => {
-                    let body = boxed(report.as_ref(), width)?;
+                    let body = box_text(report.as_ref(), width)?;
                     self.screen.show_result(summary.as_deref(), &body);
                 }
-                Delivery::Stdout => self.write_stdout(|out| {
-                    write_result(format, report.as_ref(), summary.as_deref(), width, out)
-                })?,
+                Delivery::Stdout => {
+                    let (format, width) = (self.screen.format(), self.screen.stdout_width());
+                    self.write_stdout(|out| {
+                        write_result(format, report.as_ref(), summary.as_deref(), width, out)
+                    })?
+                }
             }
         }
-        self.screen.close(summary.as_deref().unwrap_or_default());
+        self.screen.outro(summary.as_deref().unwrap_or_default());
         Ok(())
     }
 
-    /// Writes one event of a stream as it happens: an NDJSON line, or its plain text,
-    /// which stays the program's own output on a terminal too.
+    /// Write one event of a stream as it happens: an NDJSON line, or its plain text,
+    /// which a terminal shows as it is.
     pub fn event(&self, event: &impl Render) -> anyhow::Result<()> {
         let (format, width) = (self.screen.format(), self.screen.stdout_width());
         self.write_stdout(|out| {
@@ -125,7 +138,8 @@ impl Output {
         })
     }
 
-    /// Writes the error envelope of a failed command; text errors go to stderr.
+    /// Write the error envelope of a failed command with JSON output. Text errors go
+    /// to stderr.
     pub fn error(&self, report: &ErrorReport<'_>) {
         if self.screen.format() == Format::Json {
             let _ = self.write_stdout(|out| write_failure(report, out));
@@ -143,14 +157,14 @@ impl Output {
     }
 }
 
-/// The text of a result for its box, fitted to `width`.
-fn boxed(report: &dyn Report, width: Option<usize>) -> io::Result<String> {
+/// Write a result's text for its box, fitted to `width`.
+fn box_text(report: &dyn Report, width: Option<usize>) -> io::Result<String> {
     let mut text = Vec::new();
-    report.write_text(&mut Human::boxed(&mut text, width))?;
+    report.write_text(&mut Human::for_box(&mut text, width))?;
     Ok(String::from_utf8_lossy(&text).into_owned())
 }
 
-/// A result on stdout: its envelope, or its plain text ending with `summary`.
+/// Write a result on stdout: its envelope, or its plain text ending with `summary`.
 fn write_result(
     format: Format,
     report: &dyn Report,
@@ -223,7 +237,11 @@ mod tests {
     #[derive(Serialize)]
     struct Done {}
 
-    impl Render for Done {}
+    impl Render for Done {
+        fn render(&self, _: &mut Human<'_>) -> io::Result<()> {
+            Ok(())
+        }
+    }
 
     fn written(write: impl FnOnce(&mut dyn Write) -> io::Result<()>) -> String {
         let mut out = Vec::new();
@@ -262,10 +280,10 @@ mod tests {
     #[test]
     fn a_box_holds_the_text_of_a_result() {
         assert_eq!(
-            boxed(&Greeting { name: "Ada" }, None).unwrap(),
+            box_text(&Greeting { name: "Ada" }, None).unwrap(),
             "Hello, Ada.\n"
         );
-        assert_eq!(boxed(&Done {}, None).unwrap(), "");
+        assert_eq!(box_text(&Done {}, None).unwrap(), "");
     }
 
     #[test]

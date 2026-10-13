@@ -5,7 +5,7 @@ use std::sync::Arc;
 use cliclack::ProgressBar;
 
 use super::Format;
-use super::screen::{Ending, Screen};
+use super::screen::Screen;
 use crate::error::{CliError, ErrorKind, ErrorReport};
 
 /// A prompt the user answered no. The command stops there and ends on what it didn't
@@ -24,7 +24,7 @@ impl Declined {
     }
 }
 
-/// What a prompt says when nobody can answer it: a message such as "Unlinking
+/// What a prompt says when the user can't answer it: a message such as "Unlinking
 /// test/demo needs confirmation." and a hint naming the flag that answers it, such as
 /// "Pass --yes to unlink without asking."
 pub struct Unanswered {
@@ -45,9 +45,9 @@ impl Unanswered {
     }
 }
 
-/// Stderr, for the person running a command: what it is doing, its progress, and
-/// questions for them. With JSON output it carries only errors and the instructions
-/// a person must follow, as plain lines.
+/// Stderr, where a command tells the user what it does, shows its progress and asks
+/// its questions. With JSON output it carries only errors and the instructions the
+/// user must follow, as plain lines.
 #[derive(Clone)]
 pub struct Terminal {
     screen: Arc<Screen>,
@@ -67,7 +67,7 @@ impl Terminal {
         self.screen.is_styled()
     }
 
-    /// A plain line, for stderr that is not a styled terminal.
+    /// Write a plain line, for stderr that cliclack doesn't draw on.
     fn line(&self, text: impl Display) {
         let _ = writeln!(
             io::stderr(),
@@ -76,15 +76,8 @@ impl Terminal {
         );
     }
 
-    pub fn print_warning(&self, message: &str) {
-        if self.is_styled() {
-            self.screen.draw(|| cliclack::log::warning(message));
-        } else if self.is_human() {
-            self.line(format_args!("warning: {message}"));
-        }
-    }
-
-    pub fn print(&self, message: &str) {
+    /// Say something the user should know, as a sentence.
+    pub fn info(&self, message: &str) {
         if self.is_styled() {
             self.screen.draw(|| cliclack::log::info(message));
         } else if self.is_human() {
@@ -92,37 +85,48 @@ impl Terminal {
         }
     }
 
-    pub fn print_success(&self, message: &str) {
+    pub fn warning(&self, message: &str) {
         if self.is_styled() {
-            self.screen.draw(|| cliclack::log::success(message));
+            self.screen.draw(|| cliclack::log::warning(message));
+        } else if self.is_human() {
+            self.line(format_args!("warning: {message}"));
+        }
+    }
+
+    /// Record a step that left a fact the user needs later, such as "Created model
+    /// 'weights'".
+    pub fn step(&self, message: &str) {
+        if self.is_styled() {
+            self.screen.draw(|| cliclack::log::step(message));
         } else if self.is_human() {
             self.line(message);
         }
     }
 
-    pub fn step(&self, message: &str) {
-        if self.is_styled() {
-            self.screen.draw(|| cliclack::log::step(message));
-        } else {
-            self.print(message);
-        }
-    }
-
-    /// Instructions a person must follow before the command can go on, shown in
-    /// every format.
+    /// Show instructions the user must follow before the command can go on, in every
+    /// format.
     pub fn instruct(&self, message: &str) {
         if self.is_human() {
-            self.print(message);
+            self.info(message);
         } else {
             self.line(message);
         }
     }
 
-    /// Reports a failed command: the message and hint here, the envelope on stdout
-    /// with JSON output. On a terminal both are one error, then a bare corner closes
-    /// the frame.
+    /// End the command on its outcome: the corner of a flow's session, or a line.
+    pub fn outro(&self, outcome: &str) {
+        if self.screen.session_open() {
+            self.screen.outro(outcome);
+        } else {
+            self.step(outcome);
+        }
+    }
+
+    /// Report a failed command: its message and hint here, and its envelope on stdout
+    /// with JSON output. On a terminal both are one error, then a bare corner closes the
+    /// frame.
     pub fn error(&self, report: &ErrorReport<'_>) {
-        self.screen.settle(Ending::Cleared);
+        self.screen.clear_live();
         if !self.is_human() {
             self.line(format_args!("error: {}", one_line(&report.message)));
         } else if self.is_styled() {
@@ -131,7 +135,7 @@ impl Terminal {
                 None => report.message.clone(),
             };
             self.screen.draw(|| cliclack::log::error(text));
-            self.screen.close_failed();
+            self.screen.close_frame();
         } else {
             self.line(format_args!("error: {}", report.message));
             if let Some(hint) = report.hint {
@@ -140,31 +144,31 @@ impl Terminal {
         }
     }
 
-    /// A spinner for one step, drawn from now until it ends.
+    /// Start a spinner for one step.
     pub fn spinner(&self, message: impl Display) -> Progress {
-        self.live(message.to_string(), cliclack::spinner())
+        self.start(cliclack::spinner(), message.to_string())
     }
 
-    /// A bar that counts `total` steps of one task, drawn from now until it ends.
+    /// Start a bar that counts the `total` steps of one task.
     pub fn progress(&self, message: impl Display, total: u64) -> Progress {
-        self.live(message.to_string(), cliclack::progress_bar(total))
+        self.start(cliclack::progress_bar(total), message.to_string())
     }
 
-    fn live(&self, message: String, bar: ProgressBar) -> Progress {
-        let id = self.screen.next_id();
-        if self.is_styled() {
-            self.screen.show(id, bar, message);
+    fn start(&self, bar: ProgressBar, message: String) -> Progress {
+        let id = if self.is_styled() {
+            Some(self.screen.start(bar, message))
         } else {
-            self.print(&message);
-        }
+            self.info(&message);
+            None
+        };
         Progress {
-            terminal: self.clone(),
+            screen: Arc::clone(&self.screen),
             id,
         }
     }
 
-    /// A URL as cliclack shows it: styled unless `NO_COLOR` is set and, in terminals that
-    /// render hyperlinks, one, so a click opens it. Plain when stderr is not a terminal.
+    /// A URL as cliclack shows it: styled unless `NO_COLOR` is set, and a hyperlink a
+    /// click opens in terminals that render them. Plain when cliclack doesn't draw.
     pub fn format_url(&self, url: &url::Url) -> String {
         if !self.is_styled() {
             return url.to_string();
@@ -177,13 +181,13 @@ impl Terminal {
         }
     }
 
-    /// Fails with `kind` when nobody can answer a prompt, and otherwise clears the
-    /// screen for it.
+    /// Fail with `kind` when the user can't answer a prompt, and otherwise settle the screen
+    /// for it.
     fn require_answer(&self, kind: ErrorKind, unanswered: Unanswered) -> anyhow::Result<()> {
         if !self.is_interactive() {
             return Err(unanswered.into_error(kind).into());
         }
-        self.screen.settle(Ending::Done);
+        self.screen.settle();
         Ok(())
     }
 
@@ -200,25 +204,25 @@ impl Terminal {
             .map_err(anyhow::Error::from)
     }
 
-    /// Offers a shortcut with a question answered yes by default. When nobody can answer, the
-    /// question is not asked and the answer is no.
+    /// Offer a shortcut, yes by default. When the user can't answer, it isn't asked and the
+    /// answer is no.
     pub fn offer(&self, question: &str) -> anyhow::Result<bool> {
         if !self.is_interactive() {
             return Ok(false);
         }
-        self.screen.settle(Ending::Done);
+        self.screen.settle();
         cliclack::confirm(question)
             .initial_value(true)
             .interact()
             .map_err(anyhow::Error::from)
     }
 
-    /// Asks for optional text.
+    /// Ask for optional text.
     pub fn input(&self, question: &str, unanswered: Unanswered) -> anyhow::Result<String> {
         self.input_validated(question, "", unanswered, |_| Ok(()))
     }
 
-    /// Asks for text that `validate` accepts, `default` when the answer is empty.
+    /// Ask for text that `validate` accepts, `default` when the answer is empty.
     pub fn input_validated(
         &self,
         question: &str,
@@ -267,16 +271,7 @@ impl Terminal {
             .map_err(anyhow::Error::from)
     }
 
-    /// Ends a flow's session with what it did.
-    pub fn outro(&self, message: &str) {
-        if self.screen.session_open() {
-            self.screen.close(message);
-        } else {
-            self.print_success(message);
-        }
-    }
-
-    /// Whether a person can answer prompts: they read from stdin and draw on stderr.
+    /// Whether the user can answer prompts: they type on stdin and read stderr.
     pub fn is_interactive(&self) -> bool {
         let ci = std::env::var_os("CI");
         allows_input(
@@ -310,35 +305,42 @@ fn one_line(message: &str) -> String {
         .join(" ")
 }
 
-/// `text` as a terminal hyperlink to `url` (OSC 8): terminals that render hyperlinks open
-/// `url` on a click on `text`.
+/// `text` as a terminal hyperlink to `url` (OSC 8), which terminals that render them
+/// open on a click.
 fn hyperlink(url: &url::Url, text: &str) -> String {
     format!("\u{1b}]8;;{url}\u{1b}\\{text}\u{1b}]8;;\u{1b}\\")
 }
 
-/// A spinner or bar for one step, drawn from its start until it ends. When something
-/// else draws before it ends, it stops early with its last message.
+/// A spinner or bar for one step, drawn until it ends. When something else draws
+/// first, it ends early as a line with its last message.
 #[derive(Clone)]
 pub struct Progress {
-    terminal: Terminal,
-    id: u64,
+    screen: Arc<Screen>,
+    /// The live widget on the screen, when cliclack draws.
+    id: Option<u64>,
 }
 
 impl Progress {
-    /// A passing detail of the step, such as what cargo compiles: shown on a terminal
-    /// only, where it replaces the message.
+    /// Replace the message with a passing detail, such as what cargo compiles. Only a
+    /// terminal shows it.
     pub fn set_message(&self, message: impl Display) {
-        self.terminal.screen.update(self.id, message.to_string());
+        if let Some(id) = self.id {
+            self.screen.set_message(id, message.to_string());
+        }
     }
 
-    /// How many of a bar's steps are done.
+    /// Set how many of a bar's steps are done.
     pub fn set_position(&self, done: u64) {
-        self.terminal.screen.update_position(self.id, done);
+        if let Some(id) = self.id {
+            self.screen.set_position(id, done);
+        }
     }
 
-    /// Ends the step without a line, for a step whose outcome says what it did.
+    /// End the step without a line, for a step whose outcome says what it did.
     pub fn clear(&self) {
-        self.terminal.screen.clear(self.id);
+        if let Some(id) = self.id {
+            self.screen.clear(id);
+        }
     }
 }
 

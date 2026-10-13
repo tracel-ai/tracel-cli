@@ -1,4 +1,4 @@
-/// Trait for reporting events of type `E`.
+/// A receiver of events of type `E`.
 pub trait Reporter<E>: Send + Sync {
     fn report_event(&self, event: E);
 }

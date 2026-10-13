@@ -18,8 +18,8 @@ pub enum Format {
 }
 
 impl Format {
-    /// `--json`, then `--output`, then `TRACEL_OUTPUT`. `auto` and no choice at all
-    /// mean `auto`, which the command decides.
+    /// Choose the format from `--json`, then `--output`, then `TRACEL_OUTPUT`. `auto`, or
+    /// no choice, leaves it to the command.
     pub fn resolve(
         flag: Option<FormatArg>,
         json: bool,
@@ -50,7 +50,7 @@ impl Format {
         })
     }
 
-    /// Human output for a person at a terminal, JSON for a program reading stdout.
+    /// Choose human output for a terminal and JSON for a program reading stdout.
     pub fn for_stdout(stdout_is_terminal: bool) -> Self {
         if stdout_is_terminal {
             Self::Human

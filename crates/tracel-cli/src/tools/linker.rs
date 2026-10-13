@@ -1,11 +1,7 @@
-//! Cross-linker helpers for binary upload.
-//!
-//! `rustup target add` installs only the prebuilt std, not a linker. For the
-//! predictable Linux same-OS cross-arch case we resolve a cross-linker and inject it
-//! into the single build command via cargo's `--config target.<triple>.linker` flag,
-//! leaving the project's `.cargo/config.toml` untouched.
-//! Cross-OS targets (Windows/macOS from Linux, etc.) need a whole toolchain, not just
-//! a linker entry — those are handled by a build driver (see `tools::build_driver`).
+//! The linker of a Linux build for another architecture. `rustup target add` installs a
+//! target's standard library but no linker, so the build gets one through cargo's
+//! `--config target.<triple>.linker`, and the project's cargo config stays as it is.
+//! A build for another OS needs a whole toolchain, which a build driver supplies.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -16,12 +12,11 @@ use tracel_client::console::project::request::{Arch, Os};
 use crate::tools::target::target_triple;
 use crate::ui::Terminal;
 
-/// What (if anything) is needed to link `target` while running on `host`.
-pub enum LinkerNeed {
-    /// Native, a same-OS cross-arch the toolchain handles itself (macOS/Windows), or a
-    /// cross-OS target (whose toolchain is supplied by the build driver, not a linker entry).
+/// What linking `target` on `host` needs.
+enum LinkerNeed {
+    /// Nothing: the toolchain or the build driver links it.
     None,
-    /// Linux same-OS cross-arch: a `target.<triple>.linker` setting we inject per-build.
+    /// A `target.<triple>.linker` setting for the build, on Linux.
     ConfigEntry {
         linker: &'static str,
         install_hint: &'static str,
@@ -29,7 +24,7 @@ pub enum LinkerNeed {
 }
 
 /// Classify what linker setup `target` needs when building on `host`.
-pub fn linker_need(host: (Os, Arch), target: (Os, Arch)) -> LinkerNeed {
+fn linker_need(host: (Os, Arch), target: (Os, Arch)) -> LinkerNeed {
     if host == target {
         return LinkerNeed::None;
     }
@@ -55,13 +50,12 @@ pub fn linker_need(host: (Os, Arch), target: (Os, Arch)) -> LinkerNeed {
         };
     }
 
-    // Different OS: a linker entry isn't enough — a build driver (cargo-xwin /
-    // cargo-zigbuild) supplies the toolchain instead. See `tools::build_driver`.
+    // For another OS, a build driver supplies the toolchain.
     LinkerNeed::None
 }
 
-/// Read the project's cargo config, preferring `.cargo/config.toml` over the legacy
-/// `.cargo/config`. Returns the path it was read from and its contents.
+/// Read the project's cargo config, `.cargo/config.toml` before the older
+/// `.cargo/config`, as its path and contents.
 fn read_config(root: &Path) -> Option<(PathBuf, String)> {
     for name in [".cargo/config.toml", ".cargo/config"] {
         let path = root.join(name);
@@ -81,10 +75,9 @@ fn linker_env_var(triple: &str) -> String {
     )
 }
 
-/// Whether a linker for `triple` is already configured — either via a
-/// `target.<triple>.linker` entry in the project's cargo config, or the
-/// `CARGO_TARGET_<triple>_LINKER` environment variable.
-pub fn linker_configured(root: &Path, triple: &str) -> bool {
+/// Whether `triple` already has a linker, from the project's cargo config or
+/// `CARGO_TARGET_<TRIPLE>_LINKER`.
+fn linker_configured(root: &Path, triple: &str) -> bool {
     if std::env::var_os(linker_env_var(triple)).is_some() {
         return true;
     }
@@ -100,8 +93,8 @@ pub fn linker_configured(root: &Path, triple: &str) -> bool {
     false
 }
 
-/// Whether `bin` can be executed (used to decide whether to also print an install hint).
-pub fn linker_on_path(bin: &str) -> bool {
+/// Whether `bin` runs from PATH.
+fn linker_on_path(bin: &str) -> bool {
     Command::new(bin)
         .arg("--version")
         .stdout(Stdio::null())
@@ -111,9 +104,8 @@ pub fn linker_on_path(bin: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Resolve the cross-linker to inject for a same-OS cross-arch build that needs one
-/// (Linux), or `None` when the toolchain handles it natively or the user has already
-/// configured a linker for `target`.
+/// Choose the linker to give a Linux build for another architecture, unless its
+/// toolchain needs none or the user set one.
 pub fn resolve_linker(
     terminal: &Terminal,
     root: &Path,
@@ -127,13 +119,11 @@ pub fn resolve_linker(
             linker: linker_bin,
             install_hint,
         } => {
-            // The user already set a linker for this target (cargo config or env var);
-            // respect their choice and don't override it.
             if linker_configured(root, triple) {
                 return None;
             }
             if !linker_on_path(linker_bin) {
-                terminal.print_warning(&format!("No linker {linker_bin} on PATH.\n{install_hint}"));
+                terminal.warning(&format!("No linker {linker_bin} on PATH.\n{install_hint}"));
             }
             Some(linker_bin)
         }

@@ -6,7 +6,7 @@ use serde::Serialize;
 use tracel_client::ClientError;
 use tracel_client::console::TracelCredentials;
 
-use crate::commands::login::LOG_IN;
+use crate::commands::login::login_needed;
 use crate::context::{CliContext, ClientCreationError};
 use crate::error::{CliError, ErrorKind};
 use crate::ui::{Details, Human, Layout, Outcome, Render, Timestamp};
@@ -59,7 +59,6 @@ impl Render for AccessToken {
 enum Credential {
     ApiKey,
     Login,
-    None,
 }
 
 #[derive(Serialize)]
@@ -81,7 +80,6 @@ impl Render for AuthStatus {
         let credential = match self.credential {
             Credential::ApiKey => "TRACEL_API_KEY",
             Credential::Login => "login",
-            Credential::None => "none",
         };
         let now = SystemTime::now();
         let login = match self.login_ends_at {
@@ -122,34 +120,27 @@ fn access_token(context: &CliContext) -> anyhow::Result<AccessToken> {
 }
 
 fn status(context: &CliContext) -> anyhow::Result<AuthStatus> {
-    let client = context.create_client();
+    let client = context.create_client().map_err(|error| match error {
+        ClientCreationError::NoCredentials | ClientCreationError::InvalidCredentials => {
+            login_needed(&error).into()
+        }
+        error => anyhow::Error::from(error),
+    })?;
+    let credential = match context.credentials()? {
+        Some(TracelCredentials::ApiKey(_)) => Credential::ApiKey,
+        _ => Credential::Login,
+    };
     let login = context.app_session()?.stored()?;
 
-    let credential = match (TracelCredentials::from_env().is_ok(), &login) {
-        (true, _) => Credential::ApiKey,
-        (false, Some(_)) => Credential::Login,
-        (false, None) => Credential::None,
-    };
-
-    match client {
-        Ok(client) => Ok(AuthStatus {
-            credential,
-            login_ends_at: login.map(|login| Timestamp(login.refresh_token_expires_at)),
-            user: User {
-                username: client.user().username.clone(),
-                namespace: client.user().namespace.clone(),
-            },
-            environment: context.environment_name(),
-        }),
-        Err(
-            error @ (ClientCreationError::NoCredentials | ClientCreationError::InvalidCredentials),
-        ) => Err(
-            CliError::new(ErrorKind::NotAuthenticated, error.to_string())
-                .with_hint(LOG_IN)
-                .into(),
-        ),
-        Err(e) => Err(e.into()),
-    }
+    Ok(AuthStatus {
+        credential,
+        login_ends_at: login.map(|login| Timestamp(login.refresh_token_expires_at)),
+        user: User {
+            username: client.user().username.clone(),
+            namespace: client.user().namespace.clone(),
+        },
+        environment: context.environment_name(),
+    })
 }
 
 fn time_left(until: SystemTime, now: SystemTime) -> String {

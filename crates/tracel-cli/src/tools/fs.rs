@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+/// List the files under `directory` by their relative path, written with `/`.
 pub fn collect_files(directory: &Path) -> anyhow::Result<BTreeMap<String, PathBuf>> {
     let base_dir = std::fs::canonicalize(directory)
         .with_context(|| format!("Can't find directory '{}'", directory.display()))?;
@@ -39,6 +40,7 @@ pub fn collect_files(directory: &Path) -> anyhow::Result<BTreeMap<String, PathBu
     Ok(files)
 }
 
+/// A file's relative path, size and SHA-256 checksum.
 pub struct FileMeta {
     pub rel_path: String,
     pub size_bytes: u64,
@@ -67,6 +69,7 @@ fn file_sha256_and_size(path: &Path) -> anyhow::Result<(String, u64)> {
     Ok((format!("{:x}", hasher.finalize()), size))
 }
 
+/// Measure and hash each of `files`.
 pub fn build_file_specs(files: &BTreeMap<String, PathBuf>) -> anyhow::Result<Vec<FileMeta>> {
     let mut specs = Vec::with_capacity(files.len());
 

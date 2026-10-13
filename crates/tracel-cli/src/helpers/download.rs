@@ -10,6 +10,7 @@ use tracel_client::console::Client;
 use crate::error::{CliError, ErrorKind};
 use crate::ui::{Terminal, counted, short_digest};
 
+/// A file to download into a directory, with the size and checksum to check it against.
 pub struct DownloadFile {
     pub rel_path: String,
     pub url: String,
@@ -17,6 +18,7 @@ pub struct DownloadFile {
     pub checksum: Option<String>,
 }
 
+/// A downloaded file: where it went and how many bytes it has.
 #[derive(Debug, Serialize)]
 pub struct DownloadResult {
     pub rel_path: String,
@@ -24,7 +26,8 @@ pub struct DownloadResult {
     pub bytes: u64,
 }
 
-pub fn validate_rel_path(rel_path: &str) -> Result<(), CliError> {
+/// Fail unless `rel_path` is a plain relative path that stays inside its directory.
+pub fn validate_rel_path(rel_path: &str) -> anyhow::Result<()> {
     let path = Path::new(rel_path);
     let windows_prefix = rel_path.as_bytes().get(1) == Some(&b':');
     if rel_path.is_empty()
@@ -35,10 +38,7 @@ pub fn validate_rel_path(rel_path: &str) -> Result<(), CliError> {
             .components()
             .all(|part| matches!(part, Component::Normal(_)))
     {
-        return Err(CliError::new(
-            ErrorKind::Internal,
-            format!("Unsafe download path '{rel_path}'."),
-        ));
+        anyhow::bail!("Unsafe download path '{rel_path}'.");
     }
     Ok(())
 }
@@ -76,16 +76,14 @@ impl<W: Write> HashingWriter<W> {
         }
     }
 
-    fn verify(&self, file: &DownloadFile) -> Result<(), CliError> {
+    fn verify(&self, file: &DownloadFile) -> anyhow::Result<()> {
         if let Some(size) = file.size_bytes.filter(|size| *size != 0) {
             if self.bytes != size {
-                return Err(CliError::new(
-                    ErrorKind::Internal,
-                    format!(
-                        "Size mismatch for '{}': expected {size} bytes, received {}.",
-                        file.rel_path, self.bytes
-                    ),
-                ));
+                anyhow::bail!(
+                    "Size mismatch for '{}': expected {size} bytes, received {}.",
+                    file.rel_path,
+                    self.bytes
+                );
             }
         }
         if let Some(checksum) = file
@@ -95,15 +93,12 @@ impl<W: Write> HashingWriter<W> {
         {
             let actual = format!("{:x}", self.hasher.clone().finalize());
             if !actual.eq_ignore_ascii_case(checksum) {
-                return Err(CliError::new(
-                    ErrorKind::Internal,
-                    format!(
-                        "Checksum mismatch for '{}': expected {}, received {}.",
-                        file.rel_path,
-                        short_digest(checksum),
-                        short_digest(&actual)
-                    ),
-                ));
+                anyhow::bail!(
+                    "Checksum mismatch for '{}': expected {}, received {}.",
+                    file.rel_path,
+                    short_digest(checksum),
+                    short_digest(&actual)
+                );
             }
         }
         Ok(())
@@ -123,6 +118,8 @@ impl<W: Write> Write for HashingWriter<W> {
     }
 }
 
+/// Download `files` into `directory` under a spinner, after checking every path and,
+/// unless `force`, that none of them exists.
 pub fn download_files(
     client: &Client,
     terminal: &Terminal,
@@ -207,7 +204,7 @@ mod tests {
             "a\0b",
         ] {
             let error = validate_rel_path(path).unwrap_err();
-            assert_eq!(error.kind, ErrorKind::Internal);
+            assert_eq!(crate::error::classify(&error), ErrorKind::Internal);
             assert!(error.to_string().contains(path));
         }
     }
@@ -247,14 +244,11 @@ mod tests {
         assert!(writer.verify(&file(Some(0), Some(String::new()))).is_ok());
         assert!(writer.verify(&file(None, None)).is_ok());
         assert_eq!(
-            writer.verify(&file(Some(10), None)).unwrap_err().kind,
+            crate::error::classify(&writer.verify(&file(Some(10), None)).unwrap_err()),
             ErrorKind::Internal
         );
         assert_eq!(
-            writer
-                .verify(&file(None, Some("bad".into())))
-                .unwrap_err()
-                .kind,
+            crate::error::classify(&writer.verify(&file(None, Some("bad".into()))).unwrap_err()),
             ErrorKind::Internal
         );
     }

@@ -1,14 +1,17 @@
 use std::sync::Arc;
 
-use crate::tools::tracel_config::TracelProject;
-use crate::ui::{Output, Terminal};
 use tracel_client::ClientError;
 use tracel_client::console::auth::DeviceAuthClient;
 use tracel_client::console::{AppSession, Client, Env, FileSessionStore, TracelCredentials};
 use url::Url;
 
+use crate::environment;
+use crate::tools::tracel_config::TracelProject;
+use crate::ui::{Output, Terminal};
+
 const CLIENT_ID: &str = "tracel-cli";
 
+/// Why no client could be made.
 #[derive(thiserror::Error, Debug)]
 pub enum ClientCreationError {
     #[error("Not logged in.")]
@@ -20,11 +23,11 @@ pub enum ClientCreationError {
     #[error(transparent)]
     SessionStore(ClientError),
     #[error("Can't reach the Tracel Console at {0}.")]
-    ServerConnectionError(String),
+    ServerConnectionError(Url),
 }
 
-/// What a command runs with: the user's two channels, and the environment and project
-/// it targets.
+/// What a command runs with: stdout and stderr, and the environment and project it
+/// targets.
 pub struct CliContext {
     terminal: Terminal,
     output: Output,
@@ -51,23 +54,24 @@ impl CliContext {
         DeviceAuthClient::new(self.environment(), CLIENT_ID)
     }
 
+    /// Open the login stored for this environment's Tracel Console.
     pub fn app_session(&self) -> Result<AppSession, ClientError> {
         let store = FileSessionStore::for_server(&self.environment.get_url())?;
         Ok(AppSession::new(Arc::new(store), self.device_auth()))
     }
 
-    /// `TRACEL_API_KEY` if set, else the login stored for this environment's server.
-    fn credentials(&self) -> Result<Option<TracelCredentials>, ClientError> {
-        if let Ok(credentials) = TracelCredentials::from_env() {
-            return Ok(Some(credentials));
-        }
-
-        let app_session = self.app_session()?;
-        Ok(app_session
-            .stored()?
-            .map(|_| TracelCredentials::app_session(app_session)))
+    /// Find the credential commands use: `TRACEL_API_KEY` when it is set, else the
+    /// stored login.
+    pub fn credentials(&self) -> Result<Option<TracelCredentials>, ClientError> {
+        first_credentials(TracelCredentials::from_env().ok(), || {
+            let app_session = self.app_session()?;
+            Ok(app_session
+                .stored()?
+                .map(|_| TracelCredentials::app_session(app_session)))
+        })
     }
 
+    /// Connect to the Tracel Console with the credential commands use.
     pub fn create_client(&self) -> Result<Client, ClientCreationError> {
         let credentials = self
             .credentials()
@@ -83,57 +87,48 @@ impl CliContext {
             ClientError::Unauthenticated | ClientError::AppSessionEnded => {
                 ClientCreationError::InvalidCredentials
             }
-            _ => ClientCreationError::ServerConnectionError(self.get_api_endpoint()),
+            _ => ClientCreationError::ServerConnectionError(self.environment.get_url()),
         })
     }
 
-    /// The web Console of the environment.
-    pub fn get_frontend_endpoint(&self) -> Url {
-        web_console(&self.environment)
+    pub fn web_console(&self) -> Url {
+        environment::web_console(&self.environment)
     }
 
     pub fn terminal(&self) -> &Terminal {
         &self.terminal
     }
 
-    pub fn environment(&self) -> Env {
-        self.environment.clone()
-    }
-
-    /// Stdout, for commands that stream their output while they run.
+    /// Return stdout, for commands that stream their output while they run.
     pub fn output(&self) -> &Output {
         &self.output
     }
 
+    pub fn environment(&self) -> Env {
+        self.environment.clone()
+    }
+
+    pub fn environment_name(&self) -> String {
+        environment::name(&self.environment)
+    }
+
+    /// Return the project `--project` names, if any.
     pub fn project(&self) -> Option<&TracelProject> {
         self.project.as_ref()
     }
 
-    pub fn environment_name(&self) -> String {
-        environment_name(&self.environment)
-    }
-
-    pub fn get_api_endpoint(&self) -> String {
-        self.environment.get_url().to_string()
+    pub fn api_url(&self) -> Url {
+        self.environment.get_url()
     }
 }
 
-/// The web Console of an environment: production and staging serve it beside their
-/// API, and a development server serves it on port 9000.
-fn web_console(environment: &Env) -> Url {
-    let url = match environment {
-        Env::Production => "https://console.tracel.ai/".to_string(),
-        Env::Staging(version) => format!("https://s{version}-console.tracel.ai/"),
-        Env::Development => "http://localhost:9000/".to_string(),
-    };
-    Url::parse(&url).expect("a web Console URL is valid")
-}
-
-/// The name of an environment, as `TRACEL_ENV` and JSON data write it.
-pub fn environment_name(environment: &Env) -> String {
-    match environment {
-        Env::Production => "production".to_string(),
-        Env::Development => "development".to_string(),
-        Env::Staging(version) => format!("staging-{version}"),
+/// Prefer `api_key`, and read the stored login only without one.
+fn first_credentials(
+    api_key: Option<TracelCredentials>,
+    stored_login: impl FnOnce() -> Result<Option<TracelCredentials>, ClientError>,
+) -> Result<Option<TracelCredentials>, ClientError> {
+    match api_key {
+        Some(api_key) => Ok(Some(api_key)),
+        None => stored_login(),
     }
 }

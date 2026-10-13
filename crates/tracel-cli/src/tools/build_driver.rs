@@ -17,16 +17,16 @@ use crate::ui::Terminal;
 /// How to drive the build of a given target.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BuildDriver {
-    /// Plain `cargo build` — host builds and same-OS cross-arch builds.
+    /// `cargo build`, for the host and for another architecture of its OS.
     Cargo,
-    /// `cargo zigbuild` — cross-OS Linux/macOS via Zig as the C compiler/linker.
+    /// `cargo zigbuild`, for Linux and macOS from another OS, with Zig as the linker.
     Zigbuild,
-    /// `cargo xwin build` — cross-OS Windows-MSVC.
+    /// `cargo xwin build`, for Windows MSVC from another OS.
     Xwin,
 }
 
 impl BuildDriver {
-    /// Human-readable command name, used in progress and error messages.
+    /// The command the driver runs, as messages show it.
     pub fn label(self) -> &'static str {
         match self {
             BuildDriver::Cargo => "cargo build",
@@ -35,7 +35,7 @@ impl BuildDriver {
         }
     }
 
-    /// The subcommand arguments appended to `cargo` (before `--release`).
+    /// The arguments after `cargo` that start the build.
     pub fn subcommand_args(self) -> &'static [&'static str] {
         match self {
             BuildDriver::Cargo => &["build"],
@@ -59,7 +59,7 @@ pub fn detect() -> AvailableDrivers {
     }
 }
 
-/// Whether `bin --version` runs successfully (the binary exists and is executable).
+/// Whether `bin --version` runs.
 fn subcommand_installed(bin: &str) -> bool {
     Command::new(bin)
         .arg("--version")
@@ -70,12 +70,8 @@ fn subcommand_installed(bin: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Pick the build driver for `target` when building on `host`.
-///
-/// Same-OS builds (host, or cross-arch within the same OS) use plain `cargo build`.
-/// Cross-OS builds need a specialized driver: Windows-MSVC uses `cargo-xwin` only
-/// (Zig cannot target the MSVC ABI), Linux/macOS use `cargo-zigbuild`. When the
-/// needed driver is absent we fall back to `Cargo`, which will surface a clear error.
+/// Pick the driver that builds `target` on `host`: cargo within one OS, and cargo-xwin
+/// or cargo-zigbuild across, else cargo, whose build then fails to link.
 pub fn choose(host: (Os, Arch), target: (Os, Arch), avail: &AvailableDrivers) -> BuildDriver {
     if host.0 == target.0 {
         return BuildDriver::Cargo;
@@ -98,8 +94,7 @@ pub fn choose(host: (Os, Arch), target: (Os, Arch), avail: &AvailableDrivers) ->
     }
 }
 
-/// Actionable hint when no suitable cross-OS driver is installed and we fall back to
-/// plain `cargo build` (which will almost certainly fail at link).
+/// The hint to install the cross-build tool `target` needs.
 pub fn install_hint(target: (Os, Arch)) -> &'static str {
     match target.0 {
         Os::Windows => "Install it with `cargo install --locked cargo-xwin`, and LLVM.",
@@ -109,9 +104,8 @@ pub fn install_hint(target: (Os, Arch)) -> &'static str {
     }
 }
 
-/// Prepare to cross-build `target` with `driver`, returning the cross-linker the caller
-/// should inject into the build command (same-OS cargo builds only), or `None` when no
-/// per-build linker is needed. Also prints which driver/toolchain a cross-OS build relies on.
+/// Prepare to build `target` with `driver`, saying what the build relies on, and return
+/// the linker a cross build within one OS needs.
 pub fn cross_preflight(
     terminal: &Terminal,
     root: &Path,
@@ -124,27 +118,27 @@ pub fn cross_preflight(
         BuildDriver::Cargo if host.0 == target.0 => {
             // Same-OS cross-arch: a `target.<triple>.linker` setting (Linux) is enough.
             let linker = linker::resolve_linker(terminal, root, host, target);
-            terminal.print_warning(&format!(
+            terminal.warning(&format!(
                 "Building {triple} with plain cargo, which may fail to link."
             ));
             Ok(linker)
         }
         BuildDriver::Cargo => {
-            // Cross-OS with no suitable driver installed — plain cargo build won't link.
-            terminal.print_warning(&format!(
+            // Across operating systems without a driver, plain cargo won't link.
+            terminal.warning(&format!(
                 "No cross-build tool for {triple}, so the build will likely fail.\n{}",
                 install_hint(target)
             ));
             Ok(None)
         }
         BuildDriver::Zigbuild => {
-            terminal.print(&format!(
+            terminal.info(&format!(
                 "Building {triple} with cargo zigbuild, which needs Zig."
             ));
             Ok(None)
         }
         BuildDriver::Xwin => {
-            terminal.print(&format!(
+            terminal.info(&format!(
                 "Building {triple} with cargo xwin, which needs LLVM."
             ));
             Ok(None)
@@ -184,7 +178,7 @@ mod tests {
     #[test]
     fn cross_os_windows_uses_xwin_only() {
         assert_eq!(choose(LINUX_X86, WIN_X86, &both()), BuildDriver::Xwin);
-        // Zig can't target MSVC, so without xwin we fall back to cargo (not zigbuild).
+        // Zig can't target MSVC, so without xwin it falls back to cargo, not zigbuild.
         let only_zig = AvailableDrivers {
             zigbuild: true,
             xwin: false,

@@ -20,13 +20,13 @@ impl Serialize for Timestamp {
     }
 }
 
-/// A server's RFC 3339 time as a person reads it: local, to the minute. Text that is
-/// not such a time is kept as it is.
+/// Show a server's RFC 3339 time in the local zone, to the minute. Other text stays as
+/// it is.
 pub fn when(text: &str) -> String {
     local(text, &Local, "%Y-%m-%d %H:%M")
 }
 
-/// A log entry's RFC 3339 time as a person reads it: local, to the second.
+/// Show a log entry's RFC 3339 time in the local zone, to the second.
 pub fn log_time(text: &str) -> String {
     local(text, &Local, "%Y-%m-%d %H:%M:%S")
 }

@@ -7,9 +7,9 @@ use serde_json::Value;
 /// The narrowest a shrinkable table column gets, ellipsis included.
 const MIN_COLUMN_WIDTH: usize = 4;
 
-/// A result as text for a person: plain, as stdout carries it, or styled for the box a
-/// terminal shows it in. Cards, headings and tables are written through `Details`,
-/// `heading` and `Table`; other text with `write!`.
+/// A writer of a result's text: plain on stdout, or styled for its box on a terminal.
+/// Fields, headings and tables go through `Details`, `heading` and `Table`, and other
+/// text through `write!`.
 pub struct Human<'a> {
     out: &'a mut dyn Write,
     width: Option<usize>,
@@ -17,7 +17,7 @@ pub struct Human<'a> {
 }
 
 impl<'a> Human<'a> {
-    /// Plain text on `out`. Tables fit in `width` columns, when there is one.
+    /// Write plain text on `out`, with tables fitted to `width` columns when given.
     pub fn plain(out: &'a mut dyn Write, width: Option<usize>) -> Self {
         Self {
             out,
@@ -26,8 +26,8 @@ impl<'a> Human<'a> {
         }
     }
 
-    /// Text for a box on the terminal, styled unless stderr shows no colors.
-    pub fn boxed(out: &'a mut dyn Write, width: Option<usize>) -> Self {
+    /// Write text for a box on the terminal, styled unless stderr shows no colors.
+    pub fn for_box(out: &'a mut dyn Write, width: Option<usize>) -> Self {
         Self {
             out,
             width,
@@ -57,25 +57,25 @@ impl Human<'_> {
         self.styled(text, console::Style::new().dim())
     }
 
-    /// Names what follows: a title ending in a colon.
+    /// Write a title for what follows, ending in a colon.
     pub fn heading(&mut self, text: impl Display) -> io::Result<()> {
         writeln!(self, "{text}:")
     }
 
-    /// One field of a card, its value aligned after labels `width` wide.
+    /// Write one field, its value aligned after labels `width` wide.
     fn field(&mut self, label: &str, value: &str, width: usize) -> io::Result<()> {
         let padding = " ".repeat(width - label.len());
         let label = self.dim(format!("{label}:"));
         writeln!(self, "{label}{padding}  {value}")
     }
 
-    /// Lines under a heading, indented.
+    /// Write lines indented under a heading.
     fn section(&mut self, title: &str, lines: &[String]) -> io::Result<()> {
         self.heading(title)?;
         lines.iter().try_for_each(|line| writeln!(self, "  {line}"))
     }
 
-    /// Lines that belong together, such as a table.
+    /// Write lines that belong together, such as a table.
     fn block(&mut self, text: &str) -> io::Result<()> {
         self.write_all(text.as_bytes())
     }
@@ -91,10 +91,9 @@ impl Write for Human<'_> {
     }
 }
 
-/// Columns aligned under their headers, one row per line. When the width is too
-/// narrow for it, the columns marked with `shrink` are shortened to fit. Without
-/// rows it writes nothing, or its `empty` text: a list says it has none in its
-/// summary.
+/// Columns aligned under their headers, one row per line. Columns marked with `shrink`
+/// shorten to fit a narrow width. Without rows it writes its `empty` text, or nothing
+/// when a list's summary says it has none.
 pub struct Table<const N: usize> {
     headers: [&'static str; N],
     rows: Vec<[String; N]>,
@@ -112,7 +111,7 @@ impl<const N: usize> Table<N> {
         }
     }
 
-    /// Stands in for the rows when there are none, for a table inside other text.
+    /// Show `text` when there are no rows, for a table inside other text.
     pub fn empty(mut self, text: &'static str) -> Self {
         self.empty = Some(text);
         self
@@ -123,9 +122,8 @@ impl<const N: usize> Table<N> {
         self
     }
 
-    /// Lets the column with this header be shortened, for free text such as a
-    /// description. Columns holding what other commands take, such as names and
-    /// ids, stay whole.
+    /// Let the column with this header shorten, for free text such as a description.
+    /// Columns of values that other commands take, such as names, stay whole.
     pub fn shrink(mut self, header: &'static str) -> Self {
         let column = self.headers.iter().position(|&name| name == header);
         debug_assert!(column.is_some(), "no column named {header}");
@@ -162,19 +160,19 @@ impl<const N: usize> Table<N> {
         }
 
         let header =
-            std::array::from_fn(|column| out.bold(fitted(self.headers[column], widths[column])));
+            std::array::from_fn(|column| out.bold(truncate(self.headers[column], widths[column])));
         let mut text = line(&header, &widths);
         for row in &rows {
             let cells = std::array::from_fn(|column| match row[column].as_str() {
                 "-" => out.dim("-"),
-                cell => fitted(cell, widths[column]),
+                cell => truncate(cell, widths[column]),
             });
             text.push_str(&line(&cells, &widths));
         }
         out.block(&text)
     }
 
-    /// Narrows the widest shrinkable columns until the table fits in `available`
+    /// Narrow the widest shrinkable columns until the table fits in `available`
     /// columns or nothing can shrink further.
     fn fit(&self, widths: &mut [usize; N], available: usize) {
         let gaps = 2 * N.saturating_sub(1);
@@ -190,7 +188,7 @@ impl<const N: usize> Table<N> {
     }
 }
 
-/// One row of a table: each cell but the last padded to its column, then a gap.
+/// A row of a table: each cell but the last padded to its column, then a gap.
 fn line<const N: usize>(cells: &[String; N], widths: &[usize; N]) -> String {
     let mut line = String::new();
     for (column, cell) in cells.iter().enumerate() {
@@ -204,7 +202,7 @@ fn line<const N: usize>(cells: &[String; N], widths: &[usize; N]) -> String {
     line
 }
 
-/// Labelled values, aligned. Sections list the fields of a JSON value under a
+/// Labelled values, aligned, and sections that list the fields of a JSON value under a
 /// heading.
 #[derive(Default)]
 pub struct Details {
@@ -233,8 +231,8 @@ impl Details {
         }
     }
 
-    /// The fields of `value` under `title`, nested keys joined with dots. An empty or
-    /// null value adds nothing.
+    /// Add the fields of `value` under `title`, nested keys joined with dots. An empty
+    /// or null value adds nothing.
     pub fn section(mut self, title: &'static str, value: &impl Serialize) -> Self {
         let value = serde_json::to_value(value).unwrap_or(Value::Null);
         let mut fields = Vec::new();
@@ -262,7 +260,7 @@ impl Details {
         for entry in &self.entries {
             match entry {
                 Entry::Field(label, value) => {
-                    let value = shown(out, value);
+                    let value = styled_cell(out, value);
                     out.field(label, &value, width)?;
                 }
                 Entry::Section(title, fields) => {
@@ -271,7 +269,7 @@ impl Details {
                         .iter()
                         .map(|(key, value)| {
                             let padding = " ".repeat(width - key.len());
-                            format!("{}{padding}  {}", out.dim(key), shown(out, value))
+                            format!("{}{padding}  {}", out.dim(key), styled_cell(out, value))
                         })
                         .collect();
                     out.section(title, &lines)?;
@@ -282,7 +280,7 @@ impl Details {
     }
 }
 
-/// A count of things, such as "1 file" or "3 files".
+/// Count things in words: "1 file" or "3 files".
 pub fn counted(count: u64, [one, many]: [&str; 2]) -> String {
     match count {
         1 => format!("1 {one}"),
@@ -290,7 +288,7 @@ pub fn counted(count: u64, [one, many]: [&str; 2]) -> String {
     }
 }
 
-/// The summary of a list: "Showing 10 of 16 experiments." when some are left out,
+/// Sum up a list: "Showing 10 of 16 experiments." when some are left out,
 /// "16 experiments." when not, and `none` when there are none.
 pub fn list_summary(shown: usize, total: u64, forms: [&str; 2], none: &str) -> String {
     let shown = shown as u64;
@@ -301,12 +299,12 @@ pub fn list_summary(shown: usize, total: u64, forms: [&str; 2], none: &str) -> S
     }
 }
 
-/// The first 12 characters of a digest, enough to tell code and model versions apart.
+/// Shorten a digest to 12 characters, enough to tell versions apart.
 pub fn short_digest(digest: &str) -> &str {
     digest.get(..12).unwrap_or(digest)
 }
 
-/// A size in bytes, as "512 B", "6.9 KB" or "713.7 MB".
+/// Write a size in bytes as "512 B", "6.9 KB" or "713.7 MB".
 pub fn size(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["KB", "MB", "GB", "TB"];
     if bytes < 1000 {
@@ -321,8 +319,8 @@ pub fn size(bytes: u64) -> String {
     format!("{} {}", number(value), UNITS[unit])
 }
 
-/// A number to about 4 significant digits, as "0.75" for 0.7499999999999999. Large
-/// numbers keep their integer digits.
+/// Round a number to about 4 significant digits, as "0.75" for 0.7499999999999999,
+/// keeping all the integer digits of a large one.
 pub fn number(value: f64) -> String {
     if value == 0.0 || !value.is_finite() {
         return value.to_string();
@@ -358,16 +356,16 @@ fn flatten(prefix: &str, value: &Value, fields: &mut Vec<(String, String)>) {
     }
 }
 
-/// A value on one line, with a dim "-" standing in for nothing.
-fn shown(out: &Human<'_>, value: &str) -> String {
+/// Put a value on one line, with a dim "-" for nothing.
+fn styled_cell(out: &Human<'_>, value: &str) -> String {
     match cell_text(value) {
         text if text == "-" => out.dim(text),
         text => text,
     }
 }
 
-/// `text` cut to `width` columns with an ellipsis, when it is wider.
-fn fitted(text: &str, width: usize) -> String {
+/// Cut `text` to `width` columns with an ellipsis, when it is wider.
+fn truncate(text: &str, width: usize) -> String {
     if console::measure_text_width(text) <= width {
         return text.to_string();
     }
@@ -375,7 +373,7 @@ fn fitted(text: &str, width: usize) -> String {
     format!("{}…", kept.trim_end())
 }
 
-/// A value on one line, with "-" standing in for nothing.
+/// Put a value on one line, with "-" for nothing.
 fn cell_text(value: &str) -> String {
     let text = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if text.is_empty() { "-".into() } else { text }
@@ -399,7 +397,7 @@ mod tests {
     /// Text for a box, styled.
     fn boxed(width: Option<usize>, write: impl FnOnce(&mut Human<'_>) -> io::Result<()>) -> String {
         let mut out = Vec::new();
-        let mut human = Human::boxed(&mut out, width);
+        let mut human = Human::for_box(&mut out, width);
         human.styled = true;
         write(&mut human).unwrap();
         String::from_utf8(out).unwrap()

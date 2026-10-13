@@ -9,10 +9,8 @@ use tracel_client::console::project::request::{Arch, Os};
 use crate::error::{CliError, ErrorKind};
 use crate::ui::{Declined, Terminal, Unanswered};
 
-/// Every (os, arch) target we offer to build for, in canonical display order.
-/// The host is surfaced separately and pulled to the front by `prompt_targets`.
-/// macOS x86_64 (Intel) is intentionally omitted — we don't support it.
-pub const ALL_TARGETS: [(Os, Arch); 5] = [
+/// The targets packaging builds for, in display order. macOS on Intel isn't one.
+const ALL_TARGETS: [(Os, Arch); 5] = [
     (Os::Linux, Arch::X86_64),
     (Os::Linux, Arch::Arm64),
     (Os::Macos, Arch::Arm64),
@@ -33,6 +31,7 @@ pub fn target_triple(os: Os, arch: Arch) -> &'static str {
     }
 }
 
+/// Read a `--target` triple.
 pub fn parse_target(triple: &str) -> Result<(Os, Arch), CliError> {
     ALL_TARGETS
         .iter()
@@ -65,6 +64,8 @@ fn resolve_targets(host: (Os, Arch), requested: &[String]) -> Result<Vec<(Os, Ar
     Ok(targets)
 }
 
+/// Choose the targets: those `--target` names, else the host when the user can't answer,
+/// else the user's choice.
 pub fn select_targets(
     terminal: &Terminal,
     requested: &[String],
@@ -77,7 +78,7 @@ pub fn select_targets(
     prompt_targets(terminal, host, installed)
 }
 
-/// Human-friendly name for an (os, arch) pair, e.g. "Linux x86_64".
+/// Name an (os, arch) pair for people, such as "Linux x86_64".
 pub fn pretty_name(os: Os, arch: Arch) -> &'static str {
     match (os, arch) {
         (Os::Linux, Arch::X86_64) => "Linux x86_64",
@@ -108,11 +109,8 @@ pub fn host_target() -> anyhow::Result<(Os, Arch)> {
     Ok((os, arch))
 }
 
-/// Triples reported by `rustup target list --installed`.
-///
-/// Returns an empty set on any failure (rustup missing, non-zero exit, bad UTF-8),
-/// which conservatively makes every *cross* target appear "not installed". The host
-/// target never depends on this set — a host build needs no rustup target.
+/// List the targets `rustup target list --installed` reports, none when rustup fails,
+/// so that every cross target then counts as missing.
 pub fn installed_targets() -> HashSet<String> {
     let output = Command::new("rustup")
         .arg("target")
@@ -131,9 +129,9 @@ pub fn installed_targets() -> HashSet<String> {
     }
 }
 
-/// Install a target's prebuilt std with `rustup target add <triple>`, streaming
-/// output to the user's terminal.
-pub fn add_target(triple: &str) -> anyhow::Result<()> {
+/// Install a target's standard library with `rustup target add`, showing its output
+/// on stderr.
+fn add_target(triple: &str) -> anyhow::Result<()> {
     let status = Command::new("rustup")
         .arg("target")
         .arg("add")
@@ -148,10 +146,9 @@ pub fn add_target(triple: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Prompt the user to select one or more targets to build for. The host is listed
-/// first and labelled "(this machine)"; cross targets not installed via rustup are
-/// dimmed and annotated with the `rustup target add` command to install them.
-pub fn prompt_targets(
+/// Ask which targets to build, the host first. Targets rustup hasn't installed are
+/// dimmed.
+fn prompt_targets(
     terminal: &Terminal,
     host: (Os, Arch),
     installed: &HashSet<String>,
@@ -196,6 +193,8 @@ pub fn prompt_targets(
     )
 }
 
+/// Install the `missing` targets with rustup when `install_targets` says so or the user
+/// agrees.
 pub fn install_missing_target(
     terminal: &Terminal,
     missing: Vec<&str>,

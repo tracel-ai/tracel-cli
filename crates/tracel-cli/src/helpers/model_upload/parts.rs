@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use tracel_client::console::artifact::response::PresignedUploadUrlResponse;
 use tracel_client::console::model::response::PresignedModelFileUploadUrlsResponse;
 
+/// One part of a file to upload: where its bytes are in the file, and the URL to upload
+/// them to.
 #[derive(Clone, Debug)]
 pub struct PartUploadTask {
     pub rel_path: String,
@@ -43,6 +45,8 @@ fn validate_part_total_size(
     Ok(())
 }
 
+/// Split each file of an upload response into its parts, checking that they number from
+/// 1 and cover the file.
 pub fn build_part_tasks(
     files: &BTreeMap<String, PathBuf>,
     file_sizes: &BTreeMap<String, u64>,

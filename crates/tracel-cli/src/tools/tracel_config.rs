@@ -2,23 +2,21 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
-/// Project identity persisted to `tracel.toml` at the workspace root.
-///
-/// The on-disk keys are `namespace`/`project` to match the Tracel SDK's reader;
-/// `owner`/`name` are accepted as aliases for backwards compatibility. The Rust
-/// field names stay `owner`/`name` so call sites read `.owner` / `.name`.
+/// A project on the Tracel Console, as `tracel.toml` at the workspace root names it.
+/// The file's keys are `namespace` and `project`, as the SDK reads them, and the older
+/// `owner` and `name` still read.
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct TracelProject {
-    #[serde(rename = "namespace", alias = "owner")]
-    pub owner: String,
+    #[serde(alias = "owner")]
+    pub namespace: String,
     #[serde(rename = "project", alias = "name")]
     pub name: String,
 }
 
 impl TracelProject {
-    pub const FILENAME: &'static str = "tracel.toml";
+    const FILENAME: &'static str = "tracel.toml";
 
-    /// Path to the `tracel.toml` for the given workspace root.
+    /// Locate `tracel.toml` in `workspace_root`.
     pub fn path(workspace_root: &Path) -> PathBuf {
         workspace_root.join(Self::FILENAME)
     }
@@ -29,8 +27,7 @@ impl TracelProject {
         fs::write(Self::path(workspace_root), contents)
     }
 
-    /// Load the project from `workspace_root/tracel.toml`, or `None` if the file
-    /// does not exist.
+    /// Load `tracel.toml` from `workspace_root`, or `None` when there is none.
     pub fn load(workspace_root: &Path) -> io::Result<Option<Self>> {
         let path = Self::path(workspace_root);
         if !path.exists() {

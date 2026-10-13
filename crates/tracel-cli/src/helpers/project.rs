@@ -1,4 +1,4 @@
-//! Project helpers for CLI operations
+//! Finding the workspace and the project a command works on.
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -15,7 +15,7 @@ use crate::{
 };
 use tracel_client::console::Client;
 
-pub fn find_manifest() -> anyhow::Result<std::path::PathBuf> {
+fn find_manifest() -> anyhow::Result<std::path::PathBuf> {
     try_locate_manifest().ok_or_else(|| {
         CliError::new(CliErrorKind::Usage, "Not in a Cargo workspace.")
             .with_hint("Run it in your project's directory, or pass -C <DIR>.")
@@ -23,8 +23,7 @@ pub fn find_manifest() -> anyhow::Result<std::path::PathBuf> {
     })
 }
 
-/// Check if current directory has a linked Tracel Console project
-pub fn is_tracel_project_linked() -> bool {
+fn is_tracel_project_linked() -> bool {
     let manifest_path = find_manifest();
     match manifest_path {
         Err(_) => false,
@@ -32,7 +31,7 @@ pub fn is_tracel_project_linked() -> bool {
     }
 }
 
-/// One error that says what went wrong, why, and what to do next.
+/// Turn a workspace error into one that says what to do next.
 fn explain_project_context_error(e: ProjectContextError) -> anyhow::Error {
     let (kind, hint) = match e.kind() {
         ErrorKind::ManifestNotFound => (
@@ -48,7 +47,7 @@ fn explain_project_context_error(e: ProjectContextError) -> anyhow::Error {
             CliErrorKind::Internal,
             Some("Link it again with `tracel init --force`."),
         ),
-        ErrorKind::Unexpected => (CliErrorKind::Internal, None),
+        ErrorKind::Unexpected => return e.into(),
     };
 
     let mut message = e.to_string();
@@ -65,7 +64,7 @@ fn explain_project_context_error(e: ProjectContextError) -> anyhow::Error {
     }
 }
 
-/// Require a linked Tracel Console project.
+/// Load the workspace and the project it is linked to.
 pub fn require_linked_project() -> anyhow::Result<ProjectContext> {
     let manifest_path = find_manifest()?;
     ProjectContext::load(&manifest_path).map_err(explain_project_context_error)
@@ -75,7 +74,7 @@ pub fn parse_project(value: &str) -> Result<TracelProject, CliError> {
     if let Some((namespace, project)) = value.split_once('/') {
         if !namespace.is_empty() && !project.is_empty() && !project.contains('/') {
             return Ok(TracelProject {
-                owner: namespace.to_owned(),
+                namespace: namespace.to_owned(),
                 name: project.to_owned(),
             });
         }
@@ -126,14 +125,14 @@ fn project_not_found() -> CliError {
         .with_hint("Run `tracel init`, or pass --project <namespace>/<name>.")
 }
 
-/// The error for a project the Tracel Console doesn't have, with a hint that fits how
-/// it was selected.
+/// Build the error for a project the Tracel Console doesn't have, with a hint that fits
+/// how it was selected.
 pub fn missing_project(project: &TracelProject, source: &ProjectSource) -> CliError {
     let error = CliError::new(
         CliErrorKind::NotFound,
         format!(
             "No project {}/{} on the Tracel Console.",
-            project.owner, project.name
+            project.namespace, project.name
         ),
     );
     match source {
@@ -146,12 +145,13 @@ pub fn missing_project(project: &TracelProject, source: &ProjectSource) -> CliEr
     }
 }
 
-/// Resolve project identity from flags, environment variables, or tracel.toml.
+/// Find the project a command works on.
 pub fn resolve_namespace_project(context: &CliContext) -> anyhow::Result<ResolvedProject> {
     resolve_project(context.project())
 }
 
-/// The project `flag` names, or else the one the environment or `tracel.toml` names.
+/// Find the project `flag` names, else the one TRACEL_NAMESPACE and TRACEL_PROJECT
+/// name, else `tracel.toml`'s. The variables each override their key.
 pub fn resolve_project(flag: Option<&TracelProject>) -> anyhow::Result<ResolvedProject> {
     resolve_project_from(
         flag,
@@ -211,7 +211,7 @@ fn resolve_project_from(
 
     Ok(ResolvedProject {
         project: TracelProject {
-            owner: namespace
+            namespace: namespace
                 .or(config.namespace)
                 .ok_or_else(project_not_found)?,
             name: project.or(config.project).ok_or_else(project_not_found)?,
@@ -220,14 +220,14 @@ fn resolve_project_from(
     })
 }
 
-/// Require a Cargo workspace (with or without Tracel Console linkage)
+/// Load the Cargo workspace around the current directory, linked or not.
 pub fn require_cargo_workspace() -> anyhow::Result<WorkspaceInfo> {
     let manifest_path = find_manifest()?;
     ProjectContext::load_workspace_info(&manifest_path).map_err(explain_project_context_error)
 }
 
-/// Whether `tracel init` should go ahead: fails outside a Rust project, and is
-/// false when the project is already linked and `force` is off.
+/// Decide whether `tracel init` links: not when the workspace is linked and `force` is
+/// off. Fails outside a workspace.
 pub fn can_initialize_project(force: bool) -> anyhow::Result<bool> {
     find_manifest()?;
     Ok(force || !is_tracel_project_linked())
@@ -239,11 +239,11 @@ pub fn validate_project_exists_on_server(
     source: &ProjectSource,
     client: &Client,
 ) -> anyhow::Result<()> {
-    match client.get_project(&project.owner, &project.name) {
+    match client.get_project(&project.namespace, &project.name) {
         Ok(_) => Ok(()),
         Err(e) if e.is_not_found() => Err(missing_project(project, source).into()),
         Err(e) => {
-            Err(e).with_context(|| format!("Can't look up {}/{}", project.owner, project.name))
+            Err(e).with_context(|| format!("Can't look up {}/{}", project.namespace, project.name))
         }
     }
 }
@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn project_flag_requires_two_nonempty_parts() {
         let project = parse_project("alice/demo").unwrap();
-        assert_eq!(project.owner, "alice");
+        assert_eq!(project.namespace, "alice");
         assert_eq!(project.name, "demo");
         for value in [
             "",
@@ -282,7 +282,7 @@ mod tests {
             || panic!("File discovery must be skipped"),
         )
         .unwrap();
-        assert_eq!(resolved.project.owner, "alice");
+        assert_eq!(resolved.project.namespace, "alice");
         assert_eq!(resolved.project.name, "demo");
         assert_eq!(resolved.source, ProjectSource::Flag);
 
@@ -291,7 +291,7 @@ mod tests {
                 panic!("File discovery must be skipped")
             })
             .unwrap();
-        assert_eq!(resolved.project.owner, "alice");
+        assert_eq!(resolved.project.namespace, "alice");
         assert_eq!(resolved.project.name, "demo");
         assert_eq!(resolved.source, ProjectSource::Env);
     }
@@ -327,7 +327,7 @@ mod tests {
                 },
             )
             .unwrap();
-            assert_eq!(resolved.project.owner, expected_namespace);
+            assert_eq!(resolved.project.namespace, expected_namespace);
             assert_eq!(resolved.project.name, expected_project);
             assert_eq!(resolved.source, source);
         }
@@ -347,7 +347,7 @@ mod tests {
                 || Ok(toml::from_str(contents).unwrap()),
             )
             .unwrap();
-            assert_eq!(resolved.project.owner, "alice");
+            assert_eq!(resolved.project.namespace, "alice");
             assert_eq!(resolved.project.name, "demo");
         }
     }

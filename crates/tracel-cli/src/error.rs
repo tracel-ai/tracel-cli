@@ -80,8 +80,8 @@ impl<'a> ErrorReport<'a> {
     }
 }
 
-/// `text` ending as a sentence does, as an error chain such as "Can't read 'a': No
-/// such file or directory (os error 2)" does not.
+/// End `text` with a period unless it already ends a sentence. An error chain such as
+/// "Can't read 'a': No such file or directory (os error 2)" ends without one.
 fn sentence(text: String) -> String {
     let text = text.trim_end();
     if text.ends_with(['.', '!', '?']) {
@@ -278,7 +278,9 @@ mod tests {
                 ErrorKind::NotAuthenticated,
             ),
             (
-                ClientCreationError::ServerConnectionError("offline".into()),
+                ClientCreationError::ServerConnectionError(
+                    url::Url::parse("http://localhost:9001/").unwrap(),
+                ),
                 ErrorKind::Unavailable,
             ),
             (

@@ -5,7 +5,7 @@ use std::process::Stdio;
 
 use anyhow::Context;
 
-/// The manifest of the Cargo workspace around the current directory, if any.
+/// Find the manifest of the Cargo workspace around the current directory.
 pub fn try_locate_manifest() -> Option<PathBuf> {
     let output = command()
         .arg("locate-project")
@@ -19,12 +19,12 @@ pub fn try_locate_manifest() -> Option<PathBuf> {
     location["root"].as_str().map(PathBuf::from)
 }
 
-/// Retrieve the command to run cargo as define by the CARGO environment variable or default to "cargo"
+/// Start a cargo command, with the cargo `CARGO` names when it is set.
 pub fn command() -> std::process::Command {
     std::process::Command::new(std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")))
 }
 
-/// A cargo build that ran with cargo's own output kept back, as [`build_quietly`] runs it.
+/// A finished cargo build whose own output was kept back.
 pub struct QuietBuild {
     label: String,
     succeeded: bool,
@@ -37,12 +37,13 @@ impl QuietBuild {
         self.succeeded
     }
 
-    /// Prints cargo's output on stderr, as it would have printed it.
+    /// Print cargo's output on stderr, as cargo would have.
     pub fn show_output(&self) {
         let _ = io::stderr().write_all(&self.output);
     }
 
-    /// The executables the build made, as `(target name, path)` pairs, or why it failed.
+    /// List the executables the build made as `(target name, path)` pairs, or fail if
+    /// the build did.
     pub fn executables(self) -> anyhow::Result<Vec<(String, PathBuf)>> {
         if !self.succeeded {
             anyhow::bail!("`{}` failed.", self.label);
@@ -51,9 +52,8 @@ impl QuietBuild {
     }
 }
 
-/// Run `command`, a cargo build named `label` in messages, keeping cargo's own output back:
-/// each of its status lines, such as `Compiling trainer v0.1.0`, goes to `status` as the
-/// build runs.
+/// Run `command`, a cargo build named `label` in errors, keeping cargo's output back.
+/// Each status line, such as `Compiling trainer v0.1.0`, goes to `status` as it comes.
 pub fn build_quietly(
     mut command: std::process::Command,
     label: &str,
@@ -94,7 +94,7 @@ pub fn build_quietly(
     })
 }
 
-/// A line of cargo's output that says what it is doing, such as `Compiling trainer v0.1.0`,
+/// Find what cargo says it is doing in `line`, such as `Compiling trainer v0.1.0`,
 /// without the path it may end with.
 fn status_line(line: &str) -> Option<String> {
     const STATUSES: [&str; 6] = [
@@ -118,7 +118,7 @@ fn status_line(line: &str) -> Option<String> {
     Some(line.to_string())
 }
 
-/// The executables in cargo's JSON build messages, as `(target name, path)` pairs.
+/// List the executables in cargo's JSON build messages.
 fn executables(messages: &[u8]) -> anyhow::Result<Vec<(String, PathBuf)>> {
     let mut executables = Vec::new();
     for line in messages.split(|&b| b == b'\n') {

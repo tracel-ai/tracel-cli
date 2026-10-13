@@ -1,14 +1,12 @@
 use serde::Serialize;
 
 use crate::context::CliContext;
-use crate::ui::{Outcome, Render};
+use crate::ui::Outcome;
 
 #[derive(Serialize)]
 struct LoggedOut {
     logged_out: bool,
 }
-
-impl Render for LoggedOut {}
 
 pub fn handle_command(context: CliContext) -> anyhow::Result<Outcome> {
     let app_session = context.app_session()?;
@@ -21,8 +19,7 @@ pub fn handle_command(context: CliContext) -> anyhow::Result<Outcome> {
         "Already logged out."
     });
 
-    Ok(LoggedOut {
+    Ok(Outcome::data(LoggedOut {
         logged_out: was_logged_in,
-    }
-    .into())
+    }))
 }
