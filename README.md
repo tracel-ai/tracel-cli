@@ -85,10 +85,11 @@ even when stdout is redirected.
 
 On a terminal, each command draws everything in one frame: a title, its progress
 and result, and a closing line that sums it up. Tables shorten long descriptions to
-fit the width and show times in your time zone. What a command streams, such as
+fit the width and show times in your time zone; a line of a table or of text that
+is still too long wraps inside the frame. What a command streams, such as
 `experiments logs --follow`, is written as it arrives, without the frame's border.
-Redirected output is plain text without colors or symbols, is never shortened, and
-ends with that summary line.
+Redirected output is plain text without colors or symbols, is never shortened or
+wrapped, and ends with that summary line.
 
 | Error code | Exit code |
 | --- | --- |

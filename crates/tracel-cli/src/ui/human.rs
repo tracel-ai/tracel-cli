@@ -4,6 +4,8 @@ use std::io::{self, Write};
 use serde::Serialize;
 use serde_json::Value;
 
+use super::screen::GUTTER_WIDTH;
+
 /// The narrowest a shrinkable table column gets, ellipsis included.
 const MIN_COLUMN_WIDTH: usize = 4;
 
@@ -33,14 +35,21 @@ pub enum Draw {
 }
 
 impl Draw {
-    /// Draws the line with cliclack, on stderr.
+    /// Draws the line with cliclack, on stderr. A remark's lines that are wider than
+    /// the frame wrap inside its gutter.
     pub fn show(&self) -> io::Result<()> {
         match self {
             Self::Info(text) => cliclack::log::info(text),
             Self::Step(text) => cliclack::log::step(text),
-            Self::Remark(text) => cliclack::log::remark(text),
+            Self::Remark(text) => cliclack::log::remark(in_gutter(text)),
         }
     }
+}
+
+/// `text` with each line wider than the frame wrapped to fit after cliclack's bar. The
+/// width skips escape sequences, so styled text wraps where it shows.
+fn in_gutter(text: &str) -> String {
+    cliclack::termwrap(text, GUTTER_WIDTH)
 }
 
 /// The lines drawn so far, and the one that text written now goes to.
@@ -650,6 +659,49 @@ mod tests {
                 Draw::Remark("partial\nnext".into()),
                 Draw::Info("Name: weights".into()),
             ]
+        );
+    }
+
+    /// The columns `in_gutter` wraps to, measured as `cliclack::termwrap` measures them.
+    fn gutter_width() -> usize {
+        usize::from(
+            console::Term::stderr()
+                .size()
+                .1
+                .saturating_sub(GUTTER_WIDTH),
+        )
+    }
+
+    #[test]
+    fn wrapping_in_the_gutter_keeps_a_styled_table_fitted_to_the_frame() {
+        let width = gutter_width();
+        let mut out = Human::cliclack(Some(width));
+        out.color = true;
+        Table::new(["NAME", "DESCRIPTION", "ID"])
+            .shrink("DESCRIPTION")
+            .rows([[
+                "weights".into(),
+                "a rather long description ".repeat(width / 8),
+                String::new(),
+            ]])
+            .write(&mut out)
+            .unwrap();
+        let [Draw::Remark(table)] = <[Draw; 1]>::try_from(out.into_draws()).unwrap() else {
+            panic!("expected one remark");
+        };
+        assert!(table.contains('\u{1b}'));
+        assert_eq!(in_gutter(&table), table);
+    }
+
+    #[test]
+    fn text_wider_than_the_frame_wraps_in_the_gutter() {
+        let width = gutter_width();
+        let wrapped = in_gutter("word ".repeat(width).trim_end());
+        assert!(wrapped.lines().count() > 1);
+        assert!(
+            wrapped
+                .lines()
+                .all(|line| console::measure_text_width(line) <= width)
         );
     }
 

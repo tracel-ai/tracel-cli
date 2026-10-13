@@ -7,7 +7,7 @@ use cliclack::{MultiProgress, ProgressBar};
 use super::Format;
 
 /// The columns cliclack's bar and the space after it take at the start of a line.
-const GUTTER_WIDTH: usize = 3;
+pub const GUTTER_WIDTH: u16 = 3;
 
 /// The terminal a command draws on. With human output on a styled stderr, cliclack
 /// draws a frame and widgets there, and the result too when stdout is the same
@@ -79,7 +79,8 @@ impl Screen {
 
     /// The columns inside the frame, after cliclack's bar.
     pub fn frame_width(&self) -> Option<usize> {
-        columns(&console::Term::stderr()).map(|columns| columns.saturating_sub(GUTTER_WIDTH))
+        columns(&console::Term::stderr())
+            .map(|columns| columns.saturating_sub(usize::from(GUTTER_WIDTH)))
     }
 
     /// The columns of the terminal stdout is, if it is one.
