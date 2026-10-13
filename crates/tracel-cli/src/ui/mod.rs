@@ -16,9 +16,9 @@ mod time;
 use std::sync::Arc;
 
 pub use format::{Format, FormatArg};
-pub use human::{Details, Human, Table, counted};
+pub use human::{Details, Human, Table, counted, list_summary, number, short_digest, size};
 pub use layout::{Layout, Place};
-pub use stderr::{Declined, Terminal};
+pub use stderr::{Declined, Terminal, Unanswered};
 pub use stdout::{Outcome, Output, Render, StdoutClosed};
 pub use time::{Timestamp, log_time, when};
 

@@ -4,11 +4,10 @@ use std::collections::HashSet;
 use std::process::{Command, Stdio};
 
 use anyhow::Context;
-use colored::Colorize;
 use tracel_client::console::project::request::{Arch, Os};
 
 use crate::error::{CliError, ErrorKind};
-use crate::ui::{Declined, Terminal};
+use crate::ui::{Declined, Terminal, Unanswered};
 
 /// Every (os, arch) target we offer to build for, in canonical display order.
 /// The host is surfaced separately and pulled to the front by `prompt_targets`.
@@ -47,9 +46,8 @@ pub fn parse_target(triple: &str) -> Result<(Os, Arch), CliError> {
                 .join(", ");
             CliError::new(
                 ErrorKind::Usage,
-                format!("Invalid --target '{triple}'. Valid values: {valid}."),
+                format!("No target '{triple}'. Targets: {valid}."),
             )
-            .with_hint("Pass --target <triple> using one of the valid values.")
         })
 }
 
@@ -80,7 +78,7 @@ pub fn select_targets(
 }
 
 /// Human-friendly name for an (os, arch) pair, e.g. "Linux x86_64".
-fn pretty_name(os: Os, arch: Arch) -> &'static str {
+pub fn pretty_name(os: Os, arch: Arch) -> &'static str {
     match (os, arch) {
         (Os::Linux, Arch::X86_64) => "Linux x86_64",
         (Os::Linux, Arch::Arm64) => "Linux arm64",
@@ -97,15 +95,15 @@ pub fn host_target() -> anyhow::Result<(Os, Arch)> {
         "windows" => Os::Windows,
         "linux" => Os::Linux,
         "macos" => Os::Macos,
-        other => anyhow::bail!("Unsupported host operating system for packaging: `{other}`"),
+        other => anyhow::bail!("Packaging doesn't support this operating system ({other})."),
     };
     let arch = match std::env::consts::ARCH {
         "x86_64" => Arch::X86_64,
         "aarch64" | "arm64" => Arch::Arm64,
-        other => anyhow::bail!("Unsupported host architecture for packaging: `{other}`"),
+        other => anyhow::bail!("Packaging doesn't support this architecture ({other})."),
     };
     if (os, arch) == (Os::Macos, Arch::X86_64) {
-        anyhow::bail!("macOS on x86_64 (Intel) is not supported for packaging.");
+        anyhow::bail!("Packaging doesn't support macOS on Intel.");
     }
     Ok((os, arch))
 }
@@ -143,11 +141,9 @@ pub fn add_target(triple: &str) -> anyhow::Result<()> {
         .stdin(Stdio::null())
         .stdout(Stdio::from(std::io::stderr()))
         .status()
-        .with_context(|| {
-            format!("Failed to run `rustup target add {triple}` (is rustup installed?)")
-        })?;
+        .with_context(|| format!("Can't run `rustup target add {triple}`"))?;
     if !status.success() {
-        anyhow::bail!("`rustup target add {triple}` failed");
+        anyhow::bail!("`rustup target add {triple}` failed.");
     }
     Ok(())
 }
@@ -174,30 +170,29 @@ pub fn prompt_targets(
                 (
                     (os, arch),
                     format!("{name}  ({triple})  (this machine)"),
-                    "builds natively; no extra toolchain needed".to_string(),
+                    "builds natively".to_string(),
                 )
             } else if installed.contains(triple) {
                 ((os, arch), format!("{name}  ({triple})"), String::new())
             } else {
-                // Not installed: dim the whole label (stays greyed even under the
-                // cursor) and keep a visible textual marker so the distinction
-                // survives in terminals without color, plus an actionable hint.
+                // Dim the whole label, which stays dim under the cursor, and keep a
+                // marker that survives without colors.
                 (
                     (os, arch),
-                    format!("{name}  ({triple})  - not installed")
-                        .dimmed()
+                    console::style(format!("{name}  ({triple})  not installed"))
+                        .dim()
                         .to_string(),
-                    format!("run: rustup target add {triple}"),
+                    "installed with rustup if chosen".to_string(),
                 )
             }
         })
         .collect();
 
     terminal.multiselect(
-        "Select the target(s) to build for (space to toggle, enter to confirm)",
-        "target",
+        "Targets",
         &items,
         vec![host],
+        Unanswered::new("Packaging needs targets.", "Pass --target <triple>."),
     )
 }
 
@@ -210,11 +205,12 @@ pub fn install_missing_target(
         let list = missing.join(", ");
         if install_targets
             || terminal.confirm(
-                &format!(
-                    "These targets are not installed: {list}. Run `rustup target add` for them now?"
-                ),
-                "install-targets",
+                &format!("Install {list} with rustup?"),
                 true,
+                Unanswered::new(
+                    format!("Installing {list} needs confirmation."),
+                    "Pass --install-targets to install them without asking.",
+                ),
             )?
         {
             for triple in &missing {

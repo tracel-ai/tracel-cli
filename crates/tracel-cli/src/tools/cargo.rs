@@ -5,30 +5,18 @@ use std::process::Stdio;
 
 use anyhow::Context;
 
-pub fn try_locate_manifest() -> Option<std::path::PathBuf> {
+/// The manifest of the Cargo workspace around the current directory, if any.
+pub fn try_locate_manifest() -> Option<PathBuf> {
     let output = command()
         .arg("locate-project")
         .arg("--workspace")
         .output()
-        .expect("Failed to run cargo locate-project");
+        .ok()?;
     if !output.status.success() {
         return None;
     }
-
-    let output_str = String::from_utf8(output.stdout).expect("Failed to parse output");
-    if output_str.trim().is_empty() {
-        return None;
-    }
-    let parsed_output: serde_json::Value =
-        serde_json::from_str(&output_str).expect("Failed to parse output");
-
-    let manifest_path_str = parsed_output["root"]
-        .as_str()
-        .expect("Failed to parse output")
-        .to_owned();
-
-    let manifest_path = std::path::PathBuf::from(manifest_path_str);
-    Some(manifest_path)
+    let location: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    location["root"].as_str().map(PathBuf::from)
 }
 
 /// Retrieve the command to run cargo as define by the CARGO environment variable or default to "cargo"
@@ -57,7 +45,7 @@ impl QuietBuild {
     /// The executables the build made, as `(target name, path)` pairs, or why it failed.
     pub fn executables(self) -> anyhow::Result<Vec<(String, PathBuf)>> {
         if !self.succeeded {
-            anyhow::bail!("`{}` failed", self.label);
+            anyhow::bail!("`{}` failed.", self.label);
         }
         executables(&self.messages)
     }
@@ -79,7 +67,7 @@ pub fn build_quietly(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .with_context(|| format!("Failed to run `{label}`"))?;
+        .with_context(|| format!("Can't run `{label}`"))?;
     let mut stdout = child.stdout.take().context("cargo's stdout is not piped")?;
     let messages = std::thread::spawn(move || {
         let mut messages = Vec::new();
@@ -97,7 +85,7 @@ pub fn build_quietly(
     }
     let messages = messages
         .join()
-        .map_err(|_| anyhow::anyhow!("Failed to read the output of `{label}`"))??;
+        .map_err(|_| anyhow::anyhow!("Can't read the output of `{label}`."))??;
     Ok(QuietBuild {
         label: label.to_string(),
         succeeded: child.wait()?.success(),
@@ -143,9 +131,9 @@ fn executables(messages: &[u8]) -> anyhow::Result<Vec<(String, PathBuf)>> {
         let Some(executable) = message["executable"].as_str() else {
             continue;
         };
-        let name = message["target"]["name"].as_str().ok_or_else(|| {
-            anyhow::anyhow!("Cargo did not return a name for binary {executable}")
-        })?;
+        let name = message["target"]["name"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Cargo sent no name for the binary {executable}."))?;
         executables.push((name.to_string(), PathBuf::from(executable)));
     }
     Ok(executables)

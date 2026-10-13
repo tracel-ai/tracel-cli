@@ -9,7 +9,7 @@ use tracel_client::console::dataset::response::{
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::helpers::{Resource, map_resource_error, resolve_namespace_project};
-use crate::ui::{Details, Human, Outcome, Render, Table, counted, when};
+use crate::ui::{Details, Human, Outcome, Render, Table, list_summary, when};
 
 #[derive(Args, Debug)]
 pub struct DatasetsArgs {
@@ -19,38 +19,40 @@ pub struct DatasetsArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum DatasetsCommands {
-    /// List datasets in the selected project.
+    /// List the project's datasets
     List(ListArgs),
-    /// Show a dataset and its metadata.
+    /// Show a dataset and its metadata
     Get(GetArgs),
-    /// List published dataset versions.
+    /// List a dataset's published versions
     Versions(VersionsArgs),
 }
 
 #[derive(Args, Debug)]
 pub struct ListArgs {
-    /// Page number (zero-based).
+    /// Show this page, counting from 0
     #[arg(long, value_name = "N")]
     pub page: Option<u32>,
-    /// Maximum datasets per page.
+    /// Show this many datasets per page
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
     pub per_page: Option<u32>,
 }
 
 #[derive(Args, Debug)]
 pub struct GetArgs {
+    /// Dataset name
     #[arg(value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub dataset: String,
 }
 
 #[derive(Args, Debug)]
 pub struct VersionsArgs {
+    /// Dataset name
     #[arg(value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub dataset: String,
-    /// Page number (zero-based).
+    /// Show this page, counting from 0
     #[arg(long, value_name = "N")]
     pub page: Option<u32>,
-    /// Maximum versions per page.
+    /// Show this many versions per page
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
     pub per_page: Option<u32>,
 }
@@ -104,20 +106,19 @@ pub fn handle_command(args: DatasetsArgs, context: CliContext) -> anyhow::Result
 
 impl Render for DatasetListResponse {
     fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
-        Table::new(["NAME", "DESCRIPTION", "ID"])
+        Table::new(["NAME", "DESCRIPTION"])
             .shrink("DESCRIPTION")
             .rows(self.items.iter().map(|dataset| {
                 [
                     dataset.name.clone(),
                     dataset.description.clone().unwrap_or_default(),
-                    dataset.id.clone(),
                 ]
             }))
             .write(out)
     }
 
     fn summary(&self) -> Option<String> {
-        Some(counted(
+        Some(list_summary(
             self.items.len(),
             self.total_count,
             ["dataset", "datasets"],
@@ -130,7 +131,6 @@ impl Render for DatasetResponse {
     fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         Details::new()
             .field("Name", &self.name)
-            .field("ID", &self.id)
             .optional("Description", self.description.as_ref())
             .section("Metadata", &self.metadata)
             .write(out)
@@ -142,8 +142,8 @@ impl Render for DatasetVersionListResponse {
         Table::new(["VERSION", "ITEMS", "SOURCE", "CREATED AT"])
             .rows(self.items.iter().map(|version| {
                 let source = match version.source_kind {
-                    SourceKindResponse::AnnotationSet => "annotation_set",
-                    SourceKindResponse::DirectUpload => "direct_upload",
+                    SourceKindResponse::AnnotationSet => "annotation set",
+                    SourceKindResponse::DirectUpload => "direct upload",
                 };
                 [
                     version.version.to_string(),
@@ -156,7 +156,7 @@ impl Render for DatasetVersionListResponse {
     }
 
     fn summary(&self) -> Option<String> {
-        Some(counted(
+        Some(list_summary(
             self.items.len(),
             self.total_count,
             ["version", "versions"],

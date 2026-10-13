@@ -43,11 +43,11 @@ pub fn linker_need(host: (Os, Arch), target: (Os, Arch)) -> LinkerNeed {
             Os::Linux => match target_arch {
                 Arch::Arm64 => LinkerNeed::ConfigEntry {
                     linker: "aarch64-linux-gnu-gcc",
-                    install_hint: "install the cross-linker, e.g. `apt install gcc-aarch64-linux-gnu` (Debian/Ubuntu) or `pacman -S aarch64-linux-gnu-gcc` (Arch)",
+                    install_hint: "Install it with `apt install gcc-aarch64-linux-gnu`.",
                 },
                 Arch::X86_64 => LinkerNeed::ConfigEntry {
                     linker: "x86_64-linux-gnu-gcc",
-                    install_hint: "install the cross-linker, e.g. `apt install gcc-x86-64-linux-gnu` (Debian/Ubuntu)",
+                    install_hint: "Install it with `apt install gcc-x86-64-linux-gnu`.",
                 },
             },
             // macOS (clang) and Windows (MSVC) toolchains build either arch natively.
@@ -133,9 +133,7 @@ pub fn resolve_linker(
                 return None;
             }
             if !linker_on_path(linker_bin) {
-                terminal.print_warning(&format!(
-                    "Linker `{linker_bin}` was not found on PATH — {install_hint}."
-                ));
+                terminal.print_warning(&format!("No linker {linker_bin} on PATH.\n{install_hint}"));
             }
             Some(linker_bin)
         }

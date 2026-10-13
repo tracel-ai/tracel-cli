@@ -25,7 +25,7 @@ pub fn get_first_commit_hash() -> anyhow::Result<String> {
         .sorting(Sorting::ByCommitTime(CommitTimeOrder::OldestFirst));
     let revs = platform.all()?;
 
-    let last_hash = revs.last().context("No commits found in the repository.")?;
+    let last_hash = revs.last().context("The repository has no commit")?;
     let last_hash = last_hash?.id();
 
     Ok(last_hash.to_string())
@@ -37,7 +37,7 @@ pub fn is_repo_initialized() -> bool {
 
 pub fn init_repo(dir: &Path) -> anyhow::Result<Repository> {
     if is_repo_initialized() {
-        return Err(anyhow::anyhow!("Repository already initialized."));
+        anyhow::bail!("The git repository already exists.");
     }
 
     let repo = gix::init(dir)?;

@@ -1,4 +1,5 @@
 use anyhow::Context;
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -6,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tracel_client::ClientError;
 
-use crate::ui::Terminal;
+use crate::ui::{Terminal, counted};
 
 use super::parts::PartUploadTask;
 
@@ -23,14 +24,13 @@ impl PartUploader for tracel_client::console::Client {
 }
 
 fn read_part_bytes(path: &Path, offset: u64, size: u64) -> anyhow::Result<Vec<u8>> {
-    let mut file =
-        File::open(path).with_context(|| format!("Failed to open file '{}'.", path.display()))?;
+    let mut file = File::open(path).with_context(|| format!("Can't open '{}'", path.display()))?;
     file.seek(SeekFrom::Start(offset))
-        .with_context(|| format!("Failed to seek in file '{}'.", path.display()))?;
+        .with_context(|| format!("Can't seek in '{}'", path.display()))?;
 
     let mut buffer = vec![0u8; size as usize];
     file.read_exact(&mut buffer)
-        .with_context(|| format!("Failed to read part from file '{}'.", path.display()))?;
+        .with_context(|| format!("Can't read '{}'", path.display()))?;
 
     Ok(buffer)
 }
@@ -83,7 +83,10 @@ fn upload_chunk(
             }
             Err(e) => {
                 cancelled.store(true, Ordering::Relaxed);
-                return Err(e.context(format!("{} (part {})", task.rel_path, task.part)));
+                return Err(e.context(format!(
+                    "Can't upload '{}' (part {})",
+                    task.rel_path, task.part
+                )));
             }
         }
     }
@@ -97,17 +100,19 @@ pub fn upload_parts(
     terminal: &Terminal,
 ) -> anyhow::Result<()> {
     let total_parts = tasks.len();
+    let files: BTreeSet<&str> = tasks.iter().map(|task| task.rel_path.as_str()).collect();
+    let progress = terminal.progress(
+        format!(
+            "Uploading {}",
+            counted(files.len() as u64, ["file", "files"])
+        ),
+        total_parts as u64,
+    );
     let worker_count = UPLOAD_WORKER_COUNT.min(total_parts.max(1));
     let chunks = chunk_tasks(tasks, worker_count);
 
     let cancelled = AtomicBool::new(false);
     let completed = AtomicU64::new(0);
-
-    let progress = terminal.progress(
-        &format!("Uploading {total_parts} part(s) with {worker_count} worker(s)"),
-        total_parts as u64,
-    );
-    progress.set(0, format!("Uploading (0/{total_parts})"));
 
     let failure = std::thread::scope(|scope| {
         let handles: Vec<_> = chunks
@@ -123,7 +128,7 @@ pub fn upload_parts(
         while handles.iter().any(|handle| !handle.is_finished()) {
             let done = completed.load(Ordering::Relaxed);
             if done > reported {
-                progress.set(done, format!("Uploading ({done}/{total_parts})"));
+                progress.set_position(done);
                 reported = done;
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -137,18 +142,15 @@ pub fn upload_parts(
             .filter_map(|handle| match handle.join() {
                 Ok(Ok(())) => None,
                 Ok(Err(e)) => Some(e),
-                Err(_) => Some(anyhow::anyhow!("An upload worker thread panicked.")),
+                Err(_) => Some(anyhow::anyhow!("An upload worker stopped unexpectedly.")),
             })
             .next()
     });
 
     match failure {
-        Some(e) => {
-            progress.error("Upload failed.");
-            Err(e.context("Failed to upload model file part"))
-        }
+        Some(error) => Err(error),
         None => {
-            progress.stop(format!("Uploaded {total_parts}/{total_parts}"));
+            progress.clear();
             Ok(())
         }
     }

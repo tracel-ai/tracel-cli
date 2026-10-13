@@ -11,15 +11,15 @@ const CLIENT_ID: &str = "tracel-cli";
 
 #[derive(thiserror::Error, Debug)]
 pub enum ClientCreationError {
-    #[error("No credentials found")]
+    #[error("Not logged in.")]
     NoCredentials,
-    #[error("Invalid credentials")]
+    #[error("Your login has ended.")]
     InvalidCredentials,
-    #[error("The API key in TRACEL_API_KEY was refused: {0}")]
-    ApiKeyRefused(ClientError),
+    #[error("TRACEL_API_KEY was rejected: it's invalid, expired or revoked.")]
+    ApiKeyRefused,
     #[error(transparent)]
     SessionStore(ClientError),
-    #[error("Server connection error: {0}")]
+    #[error("Can't reach the Tracel Console at {0}.")]
     ServerConnectionError(String),
 }
 
@@ -78,12 +78,12 @@ impl CliContext {
         Client::connect(self.environment(), &credentials).map_err(|e| match e {
             ClientError::SessionStore(_) => ClientCreationError::SessionStore(e),
             ClientError::Unauthenticated | ClientError::CredentialNotAllowed if uses_api_key => {
-                ClientCreationError::ApiKeyRefused(e)
+                ClientCreationError::ApiKeyRefused
             }
             ClientError::Unauthenticated | ClientError::AppSessionEnded => {
                 ClientCreationError::InvalidCredentials
             }
-            _ => ClientCreationError::ServerConnectionError(e.to_string()),
+            _ => ClientCreationError::ServerConnectionError(self.get_api_endpoint()),
         })
     }
 

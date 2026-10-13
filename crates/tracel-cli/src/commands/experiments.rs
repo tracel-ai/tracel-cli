@@ -20,7 +20,10 @@ use crate::error::{CliError, ErrorKind};
 use crate::helpers::project::resolve_namespace_project;
 use crate::helpers::{Resource, map_resource_error};
 use crate::tools::tracel_config::TracelProject;
-use crate::ui::{Details, Human, Layout, Outcome, Output, Render, Table, counted, log_time, when};
+use crate::ui::{
+    Details, Human, Layout, Outcome, Output, Render, Table, counted, list_summary, log_time,
+    number, when,
+};
 
 #[derive(Args, Debug)]
 pub struct ExperimentsArgs {
@@ -31,10 +34,9 @@ pub struct ExperimentsArgs {
 impl ExperimentsArgs {
     pub fn layout(&self) -> Layout {
         match &self.command {
-            ExperimentsCommands::Logs(args) if args.follow => Layout::flow(
-                format!("Follow the logs of experiment {}", args.num),
-                format!("Stopped following experiment {}.", args.num),
-            ),
+            ExperimentsCommands::Logs(args) if args.follow => {
+                Layout::flow(format!("Follow the logs of experiment {}", args.num))
+            }
             _ => Layout::Read,
         }
     }
@@ -42,25 +44,25 @@ impl ExperimentsArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum ExperimentsCommands {
-    /// List experiments in the selected project.
+    /// List the project's experiments
     List(ListArgs),
-    /// Show an experiment by its project-scoped number, or latest.
+    /// Show an experiment
     Get(GetArgs),
-    /// List metric definitions, or read a metric series or summary.
+    /// List metrics, or show one metric's series
     Metrics(MetricsArgs),
-    /// Read experiment logs, optionally following until the experiment finishes.
+    /// Show an experiment's logs
     Logs(LogsArgs),
 }
 
 #[derive(Args, Debug)]
 pub struct ListArgs {
-    /// Page number (zero-based).
-    #[arg(long)]
+    /// Show this page, counting from 0
+    #[arg(long, value_name = "N")]
     pub page: Option<u32>,
-    /// Maximum experiments per page.
-    #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+    /// Show at most this many experiments
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
     pub limit: Option<u32>,
-    /// Server sort: field, field,asc, or field,desc; repeat for multiple fields.
+    /// Sort by a field, asc or desc; repeat for more
     #[arg(long, value_name = "FIELD[,asc|desc]")]
     pub sort: Vec<String>,
 }
@@ -77,33 +79,33 @@ fn parse_experiment(value: &str) -> Result<ExperimentSelector, String> {
     }
     match value.parse::<i32>() {
         Ok(number) if number > 0 => Ok(ExperimentSelector::Number(number)),
-        _ => Err("Expected a positive project-scoped experiment number or 'latest'.".into()),
+        _ => Err("Expected an experiment number or latest.".into()),
     }
 }
 
 #[derive(Args, Debug)]
 pub struct GetArgs {
-    /// Project-scoped experiment number, or latest.
+    /// Experiment number, or latest
     #[arg(value_name = "NUM|latest", value_parser = parse_experiment)]
     pub experiment: ExperimentSelector,
 }
 
 #[derive(Args, Debug)]
 pub struct MetricsArgs {
-    /// Project-scoped experiment number.
+    /// Experiment number
     #[arg(value_parser = clap::value_parser!(i32).range(1..))]
     pub num: i32,
-    /// Metric name; omit to list metric definitions.
-    #[arg(long)]
+    /// Show this metric's series
+    #[arg(long, value_name = "NAME")]
     pub metric: Option<String>,
-    /// Return a summary instead of the series.
+    /// Show the metric's summary instead of its series
     #[arg(long, requires = "metric")]
     pub summary: bool,
-    /// Maximum number of series points.
-    #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(i64).range(1..))]
+    /// Show at most this many points
+    #[arg(long, value_name = "N", default_value_t = 100, value_parser = clap::value_parser!(i64).range(1..))]
     pub max_points: i64,
-    /// Series downsampling factor.
-    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(i64).range(1..))]
+    /// Downsample the series by this factor
+    #[arg(long, value_name = "N", default_value_t = 1, value_parser = clap::value_parser!(i64).range(1..))]
     pub downsampling: i64,
 }
 
@@ -131,46 +133,46 @@ impl From<LogLevel> for LogLevelRequest {
 fn parse_metadata_pair(value: &str) -> Result<(String, String), String> {
     match value.split_once('=') {
         Some((key, value)) if !key.is_empty() => Ok((key.into(), value.into())),
-        _ => Err("Expected KEY=VALUE with a nonempty key.".into()),
+        _ => Err("Expected KEY=VALUE with a key.".into()),
     }
 }
 
 #[derive(Args, Debug)]
 pub struct LogsArgs {
-    /// Project-scoped experiment number.
+    /// Experiment number
     #[arg(value_parser = clap::value_parser!(i32).range(1..))]
     pub num: i32,
-    /// Maximum entries per request.
-    #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..))]
+    /// Show at most this many entries
+    #[arg(long, value_name = "N", default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..))]
     pub limit: u32,
-    /// Include this log level; repeat to include multiple levels.
+    /// Show only this level; repeat for more
     #[arg(long = "level", value_enum, value_name = "LEVEL")]
     pub levels: Vec<LogLevel>,
-    /// Return entries after this sequence, oldest first.
-    #[arg(long, conflicts_with_all = ["from", "to", "offset"])]
+    /// Show entries after this sequence number
+    #[arg(long, value_name = "SEQ", conflicts_with_all = ["from", "to", "offset"])]
     pub after: Option<u64>,
-    /// Start of the time range, as a timestamp string.
-    #[arg(long)]
+    /// Show entries from this time
+    #[arg(long, value_name = "TIME")]
     pub from: Option<String>,
-    /// End of the time range, as a timestamp string.
-    #[arg(long)]
+    /// Show entries up to this time
+    #[arg(long, value_name = "TIME")]
     pub to: Option<String>,
-    /// Offset within the time range.
-    #[arg(long)]
+    /// Skip this many entries
+    #[arg(long, value_name = "N")]
     pub offset: Option<u32>,
-    /// Filter messages by search text.
-    #[arg(long)]
+    /// Show entries whose message contains this text
+    #[arg(long, value_name = "TEXT")]
     pub search: Option<String>,
-    /// Require a metadata value; repeat for multiple filters.
+    /// Show entries with this metadata; repeat for more
     #[arg(long, value_name = "KEY=VALUE", value_parser = parse_metadata_pair)]
     pub metadata: Vec<(String, String)>,
-    /// Exclude a metadata value; repeat for multiple filters.
+    /// Hide entries with this metadata; repeat for more
     #[arg(long, value_name = "KEY=VALUE", value_parser = parse_metadata_pair)]
     pub metadata_not: Vec<(String, String)>,
-    /// Require a metadata key; repeat for multiple filters.
+    /// Show entries that have this metadata key
     #[arg(long, value_name = "KEY", value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub metadata_exists: Vec<String>,
-    /// Poll every 2 seconds until finished; JSON output is NDJSON log and end events.
+    /// Keep showing new entries until the experiment ends
     #[arg(long, conflicts_with_all = ["from", "to", "offset"])]
     pub follow: bool,
 }
@@ -221,7 +223,7 @@ impl Render for ListExperimentsResponse {
                 [
                     experiment.experiment_num.to_string(),
                     experiment.name.clone().unwrap_or_default(),
-                    experiment.status.clone(),
+                    status_name(&experiment.status).to_string(),
                     when(&experiment.created_at),
                     experiment.created_by.username.clone(),
                 ]
@@ -230,7 +232,7 @@ impl Render for ListExperimentsResponse {
     }
 
     fn summary(&self) -> Option<String> {
-        Some(counted(
+        Some(list_summary(
             self.items.len(),
             self.total,
             ["experiment", "experiments"],
@@ -242,11 +244,7 @@ impl Render for ListExperimentsResponse {
 impl Render for ExperimentDetailsResponse {
     fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         Details::new()
-            .field("Number", self.experiment_num)
-            .field("ID", self.id)
-            .field("Project ID", self.project_id)
             .optional("Name", self.name.as_ref())
-            .field("Status", &self.status)
             .field("Description", &self.description)
             .field("Created at", when(&self.created_at))
             .field("Created by", &self.created_by.username)
@@ -257,10 +255,12 @@ impl Render for ExperimentDetailsResponse {
     }
 
     fn summary(&self) -> Option<String> {
-        Some(format!(
-            "Experiment {} is {}.",
-            self.experiment_num, self.status
-        ))
+        let number = self.experiment_num;
+        Some(match self.status.as_str() {
+            "completed" => format!("Experiment {number} completed."),
+            "failed" => format!("Experiment {number} failed."),
+            status => format!("Experiment {number} is {}.", status_name(status)),
+        })
     }
 }
 
@@ -278,13 +278,10 @@ impl Render for MetricMetadataResponse {
     }
 
     fn summary(&self) -> Option<String> {
-        let plural = |count: usize, one: &str, many: &str| {
-            format!("{count} {}", if count == 1 { one } else { many })
-        };
         Some(format!(
             "{} in {}.",
-            plural(self.metric_types.len(), "metric", "metrics"),
-            plural(self.groups.len(), "group", "groups")
+            counted(self.metric_types.len() as u64, ["metric", "metrics"]),
+            counted(self.groups.len() as u64, ["group", "groups"])
         ))
     }
 }
@@ -303,9 +300,9 @@ impl Render for Option<MetricResponse> {
                         group.name.clone(),
                         entry.epoch.to_string(),
                         entry.iteration.to_string(),
-                        entry.value.to_string(),
-                        entry.low.to_string(),
-                        entry.high.to_string(),
+                        number(entry.value),
+                        number(entry.low),
+                        number(entry.high),
                     ]
                 })
             }))
@@ -324,7 +321,7 @@ impl Render for Option<MetricSummaryResponse> {
             .rows(summary.groups.iter().map(|group| {
                 [
                     group.group.clone(),
-                    group.optimal_value.to_string(),
+                    number(group.optimal_value),
                     group.epoch.to_string(),
                 ]
             }))
@@ -341,12 +338,20 @@ impl Render for ExperimentLogQueryResponse {
     }
 
     fn summary(&self) -> Option<String> {
-        Some(counted(
+        Some(list_summary(
             self.items.len(),
             self.total,
             ["log entry", "log entries"],
             "No log entries.",
         ))
+    }
+}
+
+/// An experiment status as a word: the server's `cancel_requested` reads "stopping".
+fn status_name(status: &str) -> &str {
+    match status {
+        "cancel_requested" => "stopping",
+        status => status,
     }
 }
 
@@ -413,11 +418,7 @@ fn follow_logs(
             return output.event(&LogEvent::End { running: false });
         }
         if response.has_more && cursor == previous {
-            return Err(CliError::new(
-                ErrorKind::Internal,
-                "Log response has more entries but no advancing sequence.",
-            )
-            .into());
+            anyhow::bail!("The Tracel Console sent more log entries without a new sequence.");
         }
         // Drain a backlog right away; wait only once caught up.
         if !response.has_more {
@@ -452,7 +453,7 @@ pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Res
                 ExperimentSelector::Latest => client
                     .get_project_latest_experiment(owner, name)?
                     .ok_or_else(|| {
-                        CliError::new(ErrorKind::NotFound, "No experiments found in this project.")
+                        CliError::new(ErrorKind::NotFound, "No experiments in this project yet.")
                     })?,
             };
             Ok(experiment.into())

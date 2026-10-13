@@ -12,10 +12,7 @@ impl WorkspaceInfo {
     pub fn load_from_path(manifest_path: &Path) -> Result<Self, ProjectContextError> {
         if !manifest_path.is_file() {
             return Err(ProjectContextError::new(
-                format!(
-                    "Cargo.toml not found at specified path '{}'",
-                    manifest_path.display()
-                ),
+                format!("No Cargo.toml at '{}'", manifest_path.display()),
                 ErrorKind::ManifestNotFound,
                 None,
             ));
@@ -27,9 +24,8 @@ impl WorkspaceInfo {
             .map_err(|e| {
                 ProjectContextError::new(
                     format!(
-                        "Failed to load cargo metadata for manifest at '{}': {}",
-                        manifest_path.display(),
-                        e
+                        "Can't read the cargo metadata of '{}'",
+                        manifest_path.display()
                     ),
                     ErrorKind::Parsing,
                     Some(anyhow::anyhow!(e)),
@@ -42,10 +38,7 @@ impl WorkspaceInfo {
         let workspace_toml_path = workspace_root.join("Cargo.toml");
         if !workspace_toml_path.exists() {
             return Err(ProjectContextError::new(
-                format!(
-                    "Cargo.toml not found at workspace root '{}'. This is not a valid cargo project.",
-                    workspace_toml_path.display()
-                ),
+                format!("No Cargo.toml at '{}'", workspace_toml_path.display()),
                 ErrorKind::ManifestNotFound,
                 None,
             ));
@@ -53,11 +46,7 @@ impl WorkspaceInfo {
 
         let toml_str = std::fs::read_to_string(&workspace_toml_path).map_err(|e| {
             ProjectContextError::new(
-                format!(
-                    "Failed to read Cargo.toml at '{}': {}",
-                    workspace_toml_path.display(),
-                    e
-                ),
+                format!("Can't read '{}'", workspace_toml_path.display()),
                 ErrorKind::Parsing,
                 Some(anyhow::anyhow!(e)),
             )

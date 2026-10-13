@@ -4,7 +4,7 @@ use crate::helpers::{can_initialize_project, require_cargo_workspace, require_li
 use crate::tools::git;
 use crate::tools::project_context::ProjectContext;
 use crate::tools::tracel_config::TracelProject;
-use crate::ui::{Declined, Outcome, Render, Terminal};
+use crate::ui::{Declined, Outcome, Render, Terminal, Unanswered};
 use anyhow::Context;
 use clap::Args;
 use serde::Serialize;
@@ -14,30 +14,30 @@ use tracel_client::console::project::response::ProjectResponse;
 
 #[derive(Args, Debug)]
 pub struct InitArgs {
-    /// Force reinitialization of the project
+    /// Relink a workspace that is already linked
     #[arg(long, short = 'f')]
     pub force: bool,
-    /// Namespace of your user or one of your organizations
+    /// Own the project as yourself or an organization
     #[arg(long, value_name = "NAMESPACE")]
     pub owner: Option<String>,
-    /// Project name (alphanumeric characters, underscores, and hyphens)
+    /// Use this project name
     #[arg(long, value_name = "PROJECT")]
     pub name: Option<String>,
-    /// Description for a new project (use an empty string for none)
+    /// Describe a new project
     #[arg(long, value_name = "TEXT")]
     pub description: Option<String>,
-    /// Link an existing project without asking for confirmation
+    /// Link an existing project without asking
     #[arg(long, short = 'y')]
     pub yes: bool,
-    /// Commit all current changes, creating the first commit if needed
+    /// Commit all current changes first
     #[arg(long, conflicts_with = "allow_dirty")]
     pub commit: bool,
-    /// Continue with uncommitted changes
+    /// Link with uncommitted changes
     #[arg(long)]
     pub allow_dirty: bool,
 }
 
-/// The project the repository is linked to. `url` is null when it already was.
+/// The project the workspace is linked to. `url` is null when it already was.
 #[derive(Serialize)]
 struct ProjectLinked {
     namespace: String,
@@ -48,11 +48,11 @@ struct ProjectLinked {
 
 impl Render for ProjectLinked {}
 
+const NOTHING_LINKED: &str = "Nothing was linked.";
+
 pub fn handle_command(args: InitArgs, context: CliContext) -> anyhow::Result<Outcome> {
     if let Some(name) = &args.name {
-        validate_project_name(name).map_err(|message| {
-            CliError::new(ErrorKind::Usage, message).with_hint("Pass --name <project>.")
-        })?;
+        validate_project_name(name).map_err(|message| CliError::new(ErrorKind::Usage, message))?;
     }
     if !can_initialize_project(args.force)? {
         let project = require_linked_project()?;
@@ -63,16 +63,16 @@ pub fn handle_command(args: InitArgs, context: CliContext) -> anyhow::Result<Out
             return Err(CliError::new(
                 ErrorKind::Conflict,
                 format!(
-                    "This repository is already linked to {}/{}.",
+                    "This workspace is already linked to {}/{}.",
                     linked.owner, linked.name
                 ),
             )
-            .with_hint("Pass --force to link it to another project.")
+            .with_hint("Pass --force to link another project.")
             .into());
         }
         context
             .terminal()
-            .print("Pass --force to link it to another project.");
+            .print("Pass --force to link another project.");
         context.terminal().outro(&format!(
             "Already linked to {}/{}.",
             linked.owner, linked.name
@@ -87,9 +87,7 @@ pub fn handle_command(args: InitArgs, context: CliContext) -> anyhow::Result<Out
     }
 
     let client = super::login::get_client_and_login_if_needed(&context)?;
-    let linked =
-        prompt_init(args, &context, &client).context("Failed to initialize the project")?;
-    Ok(linked.into())
+    Ok(prompt_init(args, &context, &client)?.into())
 }
 
 fn prompt_init(
@@ -105,7 +103,7 @@ fn prompt_init(
     ensure_git_repo_initialized(&workspace_info.get_ws_root(), terminal)?;
     ensure_git_repo_clean(terminal, args.commit, args.allow_dirty)?;
 
-    git::get_first_commit_hash().context("The repository needs an initial commit")?;
+    git::get_first_commit_hash().context("Can't read the first commit")?;
 
     let project_owner = prompt_owner_name(
         &user.username,
@@ -132,25 +130,28 @@ fn prompt_init(
             create_new_project(
                 client,
                 project_owner.clone(),
+                owner_name,
                 &project_name,
                 args.description,
                 terminal,
             )?,
             true,
         ),
-        Err(e) => return Err(e).context("Failed to check for an existing project"),
+        Err(e) => {
+            return Err(e).with_context(|| format!("Can't look up {owner_name}/{project_name}"));
+        }
     };
 
-    ProjectContext::init(project_info.clone(), &workspace_info.get_manifest_path())
-        .context("Failed to initialize project metadata")?;
-    terminal.print("Created project metadata");
+    ProjectContext::init(project_info.clone(), &workspace_info.get_manifest_path())?;
 
     let frontend_url = project_url(context, &project_owner, owner_name, &project_name)?;
-
-    terminal.outro(&format!(
-        "Project initialized successfully! You can check out your project at {}",
-        context.terminal().format_url(&frontend_url)
-    ));
+    let project = format!("{}/{}", project_info.owner, project_info.name);
+    let url = terminal.format_url(&frontend_url);
+    terminal.outro(&if created {
+        format!("Created and linked {project} at {url}.")
+    } else {
+        format!("Linked to {project} at {url}.")
+    });
 
     Ok(ProjectLinked {
         namespace: project_info.owner,
@@ -183,20 +184,22 @@ fn prompt_owner_name(
             ProjectKind::Organization(owner.to_string())
         });
     }
-    let mut namespaces = vec![(ProjectKind::User, format!("[user] {user_name}"), "")];
+    let mut namespaces = vec![(ProjectKind::User, format!("{user_name} (you)"), "")];
     namespaces.extend(organizations.organizations.iter().map(|org| {
         (
             ProjectKind::Organization(org.namespace.clone()),
-            format!("[org] {}", org.name),
+            org.name.clone(),
             "",
         )
     }));
     terminal.select(
-        "Select the owner of the project",
-        "owner",
+        "Owner",
         &namespaces,
         Some(ProjectKind::User),
-        &valid_values,
+        Unanswered::new(
+            "Linking needs an owner.",
+            format!("Pass --owner with {}.", valid_values.join(" or ")),
+        ),
     )
 }
 
@@ -207,38 +210,31 @@ fn validate_owner(owner: &str, valid_values: &[&str]) -> Result<(), CliError> {
         Err(CliError::new(
             ErrorKind::Usage,
             format!(
-                "Invalid --owner '{owner}'. Valid values: {}.",
+                "Unknown owner '{owner}'. Owners: {}.",
                 valid_values.join(", ")
             ),
-        )
-        .with_hint("Pass --owner <namespace> using one of the valid values."))
+        ))
     }
 }
 
 fn validate_project_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
-        Err("Project name cannot be empty.".to_string())
+        Err("A project name can't be empty.".to_string())
     } else if name
         .chars()
         .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
     {
         Ok(())
     } else {
-        Err(
-            "Project name must contain only alphanumeric characters, underscores, or hyphens."
-                .to_string(),
-        )
+        Err("Project names use only letters, digits, '_' and '-'.".to_string())
     }
 }
 
 pub fn prompt_project_name(workspace_name: &str, terminal: &Terminal) -> anyhow::Result<String> {
     let input = terminal.input_validated(
-        &format!(
-            "Enter the project name (default: {}) ",
-            console::style(workspace_name).bold()
-        ),
-        "name",
+        "Project name",
         workspace_name,
+        Unanswered::new("Linking needs a project name.", "Pass --name <project>."),
         |input| {
             if input.is_empty() {
                 Ok(())
@@ -263,14 +259,15 @@ fn handle_existing_project(
     terminal: &Terminal,
     yes: bool,
 ) -> anyhow::Result<TracelProject> {
+    let name = format!("{}/{}", project.namespace_name, project.project_name);
     let confirmed = yes
         || terminal.confirm(
-            &format!(
-                "Project \"{}\" already exists under owner \"{}\". Do you want to link it?",
-                project.project_name, project.namespace_name
-            ),
-            "yes",
+            &format!("Link existing project {name}?"),
             false,
+            Unanswered::new(
+                format!("Linking {name} needs confirmation."),
+                "Pass --yes to link it without asking.",
+            ),
         )?;
 
     if confirmed {
@@ -279,7 +276,7 @@ fn handle_existing_project(
             name: project.project_name.clone(),
         })
     } else {
-        Err(Declined::new("Nothing was linked.").into())
+        Err(Declined::new(NOTHING_LINKED).into())
     }
 }
 
@@ -305,6 +302,7 @@ fn project_url(
 fn create_new_project(
     client: &Client,
     project_kind: ProjectKind,
+    namespace: &str,
     name: &str,
     description: Option<String>,
     terminal: &Terminal,
@@ -312,8 +310,11 @@ fn create_new_project(
     let description = match description {
         Some(description) => description,
         None if terminal.is_interactive() => terminal.input(
-            "Enter the project description (default empty)",
-            "description",
+            "Description (optional)",
+            Unanswered::new(
+                format!("Creating {namespace}/{name} needs a description."),
+                "Pass --description <text>.",
+            ),
         )?,
         None => String::new(),
     };
@@ -333,7 +334,8 @@ fn create_new_project(
         ),
     };
 
-    let project = created_project_path.context("Failed to create project")?;
+    let project =
+        created_project_path.with_context(|| format!("Can't create project {namespace}/{name}"))?;
     Ok(TracelProject {
         owner: project.namespace_name,
         name: project.project_name,
@@ -345,11 +347,8 @@ pub fn ensure_git_repo_initialized(
     terminal: &Terminal,
 ) -> anyhow::Result<()> {
     if !git::is_repo_initialized() {
-        let repo = git::init_repo(ws_root)?;
-        terminal.step(&format!(
-            "No git repository found. Initialized new git repository at: {}",
-            repo.path().display()
-        ));
+        git::init_repo(ws_root)?;
+        terminal.step("Created a git repository");
     }
     Ok(())
 }
@@ -363,7 +362,7 @@ pub fn ensure_git_repo_clean(
     let dirty = match git::is_repo_dirty() {
         Ok(dirty) => dirty,
         Err(_) if !has_commit => true,
-        Err(error) => return Err(error).context("Failed to check if the repository is dirty"),
+        Err(error) => return Err(error).context("Can't read the git status"),
     };
     if !dirty && has_commit {
         return Ok(());
@@ -375,31 +374,35 @@ pub fn ensure_git_repo_clean(
         return Ok(());
     }
     if allow_dirty {
-        return Err(
-            CliError::new(ErrorKind::Usage, "The repository needs an initial commit.")
-                .with_hint("Pass --commit to create the first commit.")
-                .into(),
-        );
+        return Err(no_commit()
+            .with_hint("Pass --commit to make the first one.")
+            .into());
     }
     if !terminal.is_interactive() {
         return Err(commit_required().into());
     }
-    terminal.print(
-        "Repository is dirty. Tracel Console needs a valid commit hash to associate your code with your repository.",
-    );
+    terminal.print_warning(if has_commit {
+        "The workspace has uncommitted changes."
+    } else {
+        "The workspace has no commit yet."
+    });
     if !terminal.confirm(
-        "Do you want to automatically commit all files?",
-        "commit",
+        "Commit all files?",
         false,
+        Unanswered::new("Linking needs a commit.", "Pass --commit or --allow-dirty."),
     )? {
-        return Err(Declined::new("Nothing was linked.").into());
+        return Err(Declined::new(NOTHING_LINKED).into());
     }
-    commit_all(terminal).context("Failed to make initial commit")
+    commit_all(terminal)
+}
+
+fn no_commit() -> CliError {
+    CliError::new(ErrorKind::Usage, "The workspace has no commit yet.")
 }
 
 fn commit_required() -> CliError {
-    CliError::new(ErrorKind::Usage, "The repository has uncommitted changes.")
-        .with_hint("Commit your changes, or pass --commit or --allow-dirty")
+    CliError::new(ErrorKind::Usage, "The workspace has uncommitted changes.")
+        .with_hint("Commit them, or pass --commit or --allow-dirty.")
 }
 
 /// Commit everything in the working tree, making the first commit if there is none.
@@ -411,9 +414,9 @@ pub fn commit_all(terminal: &Terminal) -> anyhow::Result<()> {
         .stderr(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .status()
-        .context("Failed to run `git add .`")?;
+        .context("Can't run `git add --all`")?;
     if !status.success() {
-        return Err(anyhow::anyhow!("Failed to add files to git"));
+        anyhow::bail!("`git add --all` failed.");
     }
     let mut command = std::process::Command::new("git");
     command.args(["commit", "-m", commit_message]);
@@ -425,11 +428,11 @@ pub fn commit_all(terminal: &Terminal) -> anyhow::Result<()> {
         .stderr(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .status()
-        .context("Failed to run `git commit -m`")?;
+        .context("Can't run `git commit`")?;
     if !status.success() {
-        return Err(anyhow::anyhow!("Failed to commit files to git"));
+        anyhow::bail!("`git commit` failed.");
     }
-    terminal.print_success("Committed all files to git.");
+    terminal.step("Committed all files");
     Ok(())
 }
 
@@ -459,7 +462,7 @@ mod tests {
         assert!(
             validate_project_name("project.name")
                 .unwrap_err()
-                .contains("hyphens")
+                .contains("'_' and '-'")
         );
     }
 }

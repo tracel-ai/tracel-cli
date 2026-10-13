@@ -22,7 +22,7 @@ impl PendingLogin {
     pub fn new(authorization: DeviceCodeResponse, now: SystemTime) -> anyhow::Result<Self> {
         let expires_at = now
             .checked_add(authorization.expires_in())
-            .context("Invalid device authorization expiry")?;
+            .context("The login's expiry is out of range")?;
         Ok(Self {
             authorization,
             expires_at,
@@ -46,9 +46,9 @@ impl PendingLoginStore {
         let bytes = match fs::read(&self.path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error).context("Could not read pending login"),
+            Err(error) => return Err(error).context("Can't read the pending login"),
         };
-        let pending = serde_json::from_slice(&bytes).context("Could not decode pending login")?;
+        let pending = serde_json::from_slice(&bytes).context("Can't read the pending login")?;
         Ok(Some(pending))
     }
 
@@ -57,7 +57,7 @@ impl PendingLoginStore {
         let directory = self
             .path
             .parent()
-            .context("Missing pending login directory")?;
+            .context("The pending login has no directory")?;
         let mut builder = fs::DirBuilder::new();
         builder.recursive(true);
         #[cfg(unix)]
@@ -67,12 +67,12 @@ impl PendingLoginStore {
         }
         builder
             .create(directory)
-            .context("Could not create pending login directory")?;
+            .context("Can't create the pending login's directory")?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
-                .context("Could not protect pending login directory")?;
+                .context("Can't protect the pending login's directory")?;
         }
 
         let (temporary, mut file) = self.create_temporary()?;
@@ -85,14 +85,14 @@ impl PendingLoginStore {
         if result.is_err() {
             let _ = fs::remove_file(&temporary);
         }
-        result.context("Could not save pending login")
+        result.context("Can't save the pending login")
     }
 
     pub fn clear(&self) -> anyhow::Result<()> {
         match fs::remove_file(&self.path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error).context("Could not remove pending login"),
+            Err(error) => Err(error).context("Can't remove the pending login"),
         }
     }
 
@@ -108,7 +108,7 @@ impl PendingLoginStore {
             match create_owner_only(&temporary) {
                 Ok(file) => return Ok((temporary, file)),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error).context("Could not create pending login file"),
+                Err(error) => return Err(error).context("Can't create the pending login file"),
             }
         }
     }

@@ -22,20 +22,20 @@ use crate::tools::build_driver::{self, BuildDriver};
 use crate::tools::packager::{PackageEvent, package_workspace};
 use crate::tools::project_context::ProjectContext;
 use crate::tools::{cargo, git, target};
-use crate::ui::{Outcome, Render};
+use crate::ui::{Outcome, Render, Unanswered, short_digest};
 
 #[derive(Args, Debug)]
 pub struct PackageArgs {
-    /// Package even if the git repository has uncommitted changes (skips the commit prompt).
+    /// Package with uncommitted changes
     #[arg(long, action)]
     pub allow_dirty: bool,
-    /// Package a compiled binary or source (required without prompts)
+    /// Package a compiled binary or the source
     #[arg(long, value_enum)]
     pub mode: Option<Mode>,
-    /// Rust target triple to build (repeatable; binary mode only)
+    /// Build for this target triple; repeat for more
     #[arg(long = "target", value_name = "TRIPLE")]
     pub targets: Vec<String>,
-    /// Name of the binary to upload when several are built
+    /// Upload this binary when several are built
     #[arg(long, value_name = "NAME")]
     pub bin: Option<String>,
     /// Install missing Rust targets without asking
@@ -78,12 +78,9 @@ impl Render for Packaged {}
 
 pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<Outcome> {
     if args.mode.is_none() && !context.terminal().is_interactive() {
-        return Err(CliError::new(
-            ErrorKind::Usage,
-            "Missing --mode. Valid values: binary, source.",
-        )
-        .with_hint("Pass --mode binary or --mode source.")
-        .into());
+        return Err(CliError::new(ErrorKind::Usage, MODE_NEEDED)
+            .with_hint(MODE_HINT)
+            .into());
     }
     if args.mode == Some(Mode::Source) && !args.targets.is_empty() {
         return Err(CliError::new(
@@ -96,65 +93,59 @@ pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<
         target::parse_target(triple)?;
     }
 
-    // 0. Require a workspace and a project that exists on the server.
     let workspace_info = require_cargo_workspace()?;
     let resolved = resolve_namespace_project(&context)?;
+    let client = get_client_and_login_if_needed(&context)?;
+    validate_project_exists_on_server(&resolved.project, &resolved.source, &client)?;
     let project = ProjectContext {
         workspace_info,
         project: resolved.project,
     };
-    let client = get_client_and_login_if_needed(&context)?;
-    validate_project_exists_on_server(&project, &client)?;
 
-    // 1. Dirty check — warn and offer to commit, but allow proceeding.
     let has_commit = git::get_last_commit_hash().is_ok();
     if !has_commit && !args.commit && !context.terminal().is_interactive() {
-        return Err(CliError::new(
-            ErrorKind::Usage,
-            "The repository needs at least one commit to package.",
-        )
-        .with_hint("Commit your changes, or pass --commit to create the first commit.")
-        .into());
+        return Err(
+            CliError::new(ErrorKind::Usage, "The workspace has no commit yet.")
+                .with_hint("Commit your changes, or pass --commit.")
+                .into(),
+        );
     }
     if args.commit {
         if !has_commit || git::is_repo_dirty()? {
             commit_all(context.terminal())?;
         }
     } else if git::is_repo_dirty()? && !args.allow_dirty {
-        context
-            .terminal()
-            .print_warning("Your repository has uncommitted changes.");
+        let dirty = "The workspace has uncommitted changes.";
         if !context.terminal().is_interactive() {
-            return Err(
-                CliError::new(ErrorKind::Usage, "The repository has uncommitted changes.")
-                    .with_hint("Commit your changes, or pass --commit or --allow-dirty")
-                    .into(),
-            );
+            return Err(CliError::new(ErrorKind::Usage, dirty)
+                .with_hint("Commit them, or pass --commit or --allow-dirty.")
+                .into());
         }
-        if context
-            .terminal()
-            .confirm("Commit changes before packaging?", "commit", true)?
-        {
+        context.terminal().print_warning(dirty);
+        if context.terminal().confirm(
+            "Commit them first?",
+            true,
+            Unanswered::new(
+                "Packaging needs a commit.",
+                "Pass --commit or --allow-dirty.",
+            ),
+        )? {
             commit_all(context.terminal())?;
         }
     }
 
-    // 2. The code version is identified by the current commit hash.
-    let digest = git::get_last_commit_hash().context(
-        "Failed to read the current git commit. The repository needs at least one commit to package.",
-    )?;
+    let digest = git::get_last_commit_hash().context("Can't read the current commit")?;
     if git::is_repo_dirty()? {
         context.terminal().print_warning(&format!(
-            "Proceeding with uncommitted changes — they will not be part of code version {digest}."
+            "Uncommitted changes are not part of code version {}.",
+            short_digest(&digest)
         ));
     }
 
-    // 3. Choose how to package.
     let mode = match args.mode {
         Some(mode) => mode,
         None => context.terminal().select(
-            "How would you like to package your code?",
-            "mode",
+            "Mode",
             &[
                 (
                     Mode::Binary,
@@ -168,7 +159,7 @@ pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<
                 ),
             ],
             None,
-            &["binary", "source"],
+            Unanswered::new(MODE_NEEDED, MODE_HINT),
         )?,
     };
     if mode == Mode::Source && !args.targets.is_empty() {
@@ -184,7 +175,6 @@ pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<
         Mode::Binary => build_binary_artifact(&context, &project, &args)?,
     };
 
-    // 4. Upload.
     Ok(upload(&context, &client, &project, &digest, mode, artifact)?.into())
 }
 
@@ -192,20 +182,14 @@ fn build_source_artifact(
     context: &CliContext,
     project: &ProjectContext,
 ) -> anyhow::Result<PreparedArtifact> {
-    let spinner = context.terminal().spinner();
-    spinner.start("Packaging workspace...");
-    let spinner_clone = spinner.clone();
+    let spinner = context.terminal().spinner("Packaging the workspace");
+    let reporter = spinner.clone();
     let result = package_workspace(
         project.get_workspace_name(),
-        Arc::new(move |msg: PackageEvent| {
-            spinner_clone.set_message(msg.message);
-        }),
+        Arc::new(move |event: PackageEvent| reporter.set_message(event.message)),
     )
-    .map_err(|e| {
-        spinner.error("Packaging failed.");
-        anyhow::anyhow!("Failed to package workspace: {e}")
-    })?;
-    spinner.stop("Workspace packaged.");
+    .context("Can't package the workspace")?;
+    spinner.clear();
 
     Ok(PreparedArtifact {
         request: PublishArtifactRequest::Source {
@@ -254,7 +238,8 @@ fn build_binary_artifact(
 
         let linker = if is_host {
             context.terminal().print_warning(&format!(
-                "Building for this machine ({triple}). It will only run on compute providers with the same OS and architecture."
+                "The binary runs only on {} compute providers.",
+                target::pretty_name(os, arch)
             ));
             None
         } else {
@@ -297,13 +282,10 @@ fn build_release_binary(
     linker: Option<&str>,
     bin: Option<&str>,
 ) -> anyhow::Result<PathBuf> {
-    let mut cmd_label = match target {
+    let cmd_label = match target {
         Some(triple) => format!("{} --release --target {triple}", driver.label()),
         None => format!("{} --release", driver.label()),
     };
-    if let Some(linker) = linker {
-        cmd_label.push_str(&format!(" (linker {linker})"));
-    }
     let mut command = cargo::command();
     for arg in driver.subcommand_args() {
         command.arg(arg);
@@ -317,15 +299,15 @@ fn build_release_binary(
                 .arg(format!("target.{triple}.linker=\"{linker}\""));
         }
     }
-    let spinner = context.terminal().spinner();
-    spinner.start(format!("Building release binary ({cmd_label})..."));
+    let building = match target {
+        Some(triple) => format!("Building for {triple}"),
+        None => "Building the binary".to_string(),
+    };
+    let spinner = context.terminal().spinner(&building);
     let built = cargo::build_quietly(command, &cmd_label, |status| {
-        spinner.set_status(format!("Building release binary: {status}"));
+        spinner.set_message(format!("{building}: {status}"));
     });
-    match &built {
-        Ok(build) if build.succeeded() => spinner.stop("Built release binary."),
-        _ => spinner.error("Could not build the release binary."),
-    }
+    spinner.clear();
     let built = built?;
     if !built.succeeded() {
         built.show_output();
@@ -341,14 +323,13 @@ fn build_release_binary(
             .ok_or_else(|| {
                 CliError::new(
                     ErrorKind::Usage,
-                    format!("Invalid --bin '{bin}'. Valid values: {}.", names.join(", ")),
+                    format!("No binary '{bin}'. Binaries: {}.", names.join(", ")),
                 )
-                .with_hint("Pass --bin <name> using one of the valid values.")
                 .into()
             });
     }
     match executables.len() {
-        0 => anyhow::bail!("The build did not produce any binary target."),
+        0 => anyhow::bail!("The build made no binary."),
         1 => Ok(executables[0].1.clone()),
         _ => {
             let items: Vec<(PathBuf, String, &str)> = executables
@@ -364,19 +345,23 @@ fn build_release_binary(
                 })
                 .collect();
             context.terminal().select(
-                "Multiple binaries were built. Select which to upload",
-                "bin",
+                "Binary",
                 &items,
                 None,
-                &names,
+                Unanswered::new(
+                    format!("Several binaries were built: {}.", names.join(", ")),
+                    "Pass --bin <name>.",
+                ),
             )
         }
     }
 }
 
+const MODE_NEEDED: &str = "Packaging needs a mode.";
+const MODE_HINT: &str = "Pass --mode binary or --mode source.";
+
 fn sha256_and_size(path: &Path) -> anyhow::Result<(String, u64)> {
-    let bytes = std::fs::read(path)
-        .with_context(|| format!("Failed to read binary at {}", path.display()))?;
+    let bytes = std::fs::read(path).with_context(|| format!("Can't read '{}'", path.display()))?;
     let checksum = format!("{:x}", Sha256::digest(&bytes));
     Ok((checksum, bytes.len() as u64))
 }
@@ -402,7 +387,7 @@ fn upload(
         )
         .with_context(|| {
             format!(
-                "Failed to request upload URLs for {}/{}",
+                "Can't start the upload to {}/{}",
                 bc_project.owner, bc_project.name
             )
         })?;
@@ -417,42 +402,38 @@ fn upload(
         uploaded,
     };
     let Some(urls) = response.urls else {
-        context.terminal().print_success(&format!(
-            "This commit ({digest}) is already packaged (version {}).",
-            response.id
+        context.terminal().outro(&format!(
+            "Code version {} is already uploaded.",
+            short_digest(digest)
         ));
-        context.terminal().outro("Nothing to upload.");
         return Ok(packaged(false));
     };
 
-    let spinner = context.terminal().spinner();
-    spinner.start("Uploading artifacts...");
+    let spinner = context.terminal().spinner("Uploading the code version");
     for (key, path) in prepared.uploads {
-        let url = urls.get(&key).ok_or_else(|| {
-            spinner.error("Upload failed.");
-            anyhow::anyhow!("Server did not return an upload URL for `{key}`")
-        })?;
+        let url = urls
+            .get(&key)
+            .with_context(|| format!("The Tracel Console sent no upload URL for '{key}'"))?;
         let bytes =
-            std::fs::read(&path).with_context(|| format!("Failed to read {}", path.display()))?;
-        client.upload_bytes_to_url(url, bytes).map_err(|e| {
-            spinner.error("Upload failed.");
-            anyhow::Error::new(e).context(format!("Failed to upload `{key}`"))
-        })?;
+            std::fs::read(&path).with_context(|| format!("Can't read '{}'", path.display()))?;
+        client
+            .upload_bytes_to_url(url, bytes)
+            .with_context(|| format!("Can't upload '{key}'"))?;
     }
-    spinner.stop("Artifacts uploaded.");
+    spinner.clear();
 
     client
         .complete_project_version_upload(&bc_project.owner, &bc_project.name, &response.id)
         .with_context(|| {
             format!(
-                "Failed to finalize upload for {}/{}",
+                "Can't finish the upload to {}/{}",
                 bc_project.owner, bc_project.name
             )
         })?;
 
-    context
-        .terminal()
-        .print_success(&format!("New code version uploaded: {}", response.digest));
-    context.terminal().outro("Project packaged successfully.");
+    context.terminal().outro(&format!(
+        "Uploaded code version {}.",
+        short_digest(&response.digest)
+    ));
     Ok(packaged(true))
 }

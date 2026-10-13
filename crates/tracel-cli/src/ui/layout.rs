@@ -4,26 +4,17 @@ use std::fmt::{self, Display};
 pub enum Layout {
     /// A command that reads: its result in one box, under its summary.
     Read,
-    /// A command that does work: a session that first says what it does and where.
-    Flow(Flow),
+    /// A command that does work: a session that first says what it does, such as
+    /// "Run job 'train'", and where.
+    Flow(String),
     /// Nothing drawn: the output is a bare value, or another program's.
     Bare,
 }
 
 impl Layout {
-    pub fn flow(what: impl Into<String>, failure: impl Into<String>) -> Self {
-        Self::Flow(Flow {
-            what: what.into(),
-            failure: failure.into(),
-        })
+    pub fn flow(what: impl Into<String>) -> Self {
+        Self::Flow(what.into())
     }
-}
-
-/// What a flow does, such as "Run job 'train'", and the outcome that closes it when it
-/// fails, such as "Job 'train' did not complete."
-pub struct Flow {
-    pub what: String,
-    pub failure: String,
 }
 
 /// Where a command works: the project it uses, and its environment unless that is

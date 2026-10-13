@@ -38,7 +38,7 @@ impl Format {
                 Some(value) => {
                     return Err(CliError::new(
                         ErrorKind::Usage,
-                        format!("Invalid TRACEL_OUTPUT value '{value}': expected human or json."),
+                        format!("Unknown TRACEL_OUTPUT '{value}'. Formats: human, json."),
                     ));
                 }
             },

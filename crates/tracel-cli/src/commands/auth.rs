@@ -6,7 +6,7 @@ use serde::Serialize;
 use tracel_client::ClientError;
 use tracel_client::console::TracelCredentials;
 
-use crate::commands::login::environment_suffix;
+use crate::commands::login::LOG_IN;
 use crate::context::{CliContext, ClientCreationError};
 use crate::error::{CliError, ErrorKind};
 use crate::ui::{Details, Human, Layout, Outcome, Render, Timestamp};
@@ -19,10 +19,9 @@ pub struct AuthArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum AuthCommands {
-    /// Print an access token of your login, renewed if needed, for scripts.
-    /// TRACEL_API_KEY is ignored.
+    /// Print an access token of your login for scripts
     Token,
-    /// Show which credential commands use, the user they act as, and when your login ends.
+    /// Show the credential in use and when your login ends
     Status,
 }
 
@@ -93,14 +92,12 @@ impl Render for AuthStatus {
         Details::new()
             .field("Credential", credential)
             .field("Login", login)
-            .field("User", &self.user.username)
             .field("Namespace", &self.user.namespace)
-            .field("Environment", &self.environment)
             .write(out)
     }
 
     fn summary(&self) -> Option<String> {
-        Some(format!("Commands act as {}.", self.user.username))
+        Some(format!("Logged in as {}.", self.user.username))
     }
 }
 
@@ -110,14 +107,11 @@ fn access_token(context: &CliContext) -> anyhow::Result<AccessToken> {
         .access_token()
         .map_err(|e| -> anyhow::Error {
             match e {
-                ClientError::AppSessionEnded => CliError::new(
-                    ErrorKind::NotAuthenticated,
-                    format!(
-                        "Not logged in{}. Run 'tracel login' first.",
-                        environment_suffix(&context.environment())
-                    ),
-                )
-                .into(),
+                ClientError::AppSessionEnded => {
+                    CliError::new(ErrorKind::NotAuthenticated, "Not logged in.")
+                        .with_hint("Run `tracel login`.")
+                        .into()
+                }
                 e => e.into(),
             }
         })?;
@@ -147,16 +141,13 @@ fn status(context: &CliContext) -> anyhow::Result<AuthStatus> {
             },
             environment: context.environment_name(),
         }),
-        Err(ClientCreationError::NoCredentials | ClientCreationError::InvalidCredentials) => {
-            Err(CliError::new(
-                ErrorKind::NotAuthenticated,
-                format!(
-                    "Not logged in{}. Run 'tracel login' or set TRACEL_API_KEY.",
-                    environment_suffix(&context.environment())
-                ),
-            )
-            .into())
-        }
+        Err(
+            error @ (ClientCreationError::NoCredentials | ClientCreationError::InvalidCredentials),
+        ) => Err(
+            CliError::new(ErrorKind::NotAuthenticated, error.to_string())
+                .with_hint(LOG_IN)
+                .into(),
+        ),
         Err(e) => Err(e.into()),
     }
 }

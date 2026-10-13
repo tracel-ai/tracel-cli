@@ -2,7 +2,7 @@ use std::io::{self, IsTerminal};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use cliclack::{MultiProgress, ProgressBar};
+use cliclack::ProgressBar;
 
 use super::Format;
 use super::layout::{Layout, Place};
@@ -30,14 +30,14 @@ pub struct Screen {
 struct Live {
     id: u64,
     bar: ProgressBar,
-    group: Option<MultiProgress>,
     message: String,
 }
 
+/// How a live widget ends: as a line with its message, or with nothing left.
 #[derive(Clone, Copy)]
 pub enum Ending {
     Done,
-    Failed,
+    Cleared,
 }
 
 /// How a result reaches the person.
@@ -102,13 +102,13 @@ impl Screen {
 
     /// Opens a flow's session: the tracel badge, then what the flow does and where.
     pub fn begin(&self) {
-        let Layout::Flow(flow) = &self.layout else {
+        let Layout::Flow(what) = &self.layout else {
             return;
         };
         if !self.styled {
             return;
         }
-        let mut what = flow.what.clone();
+        let mut what = what.clone();
         if let Some(project) = &self.place.project {
             what.push_str(&format!(
                 " in {}",
@@ -164,23 +164,10 @@ impl Screen {
         }
     }
 
-    /// Ends a flow's session with the commands to run next, one per line.
-    pub fn close_with_next_steps(&self, steps: &str) {
-        if self.session.swap(false, Ordering::Relaxed) {
-            self.draw(|| cliclack::outro_note("Next steps", steps));
-        }
-    }
-
-    /// Closes what a failure was just reported in: a flow's session with its failure, or
-    /// a bare corner.
+    /// Closes the frame a failure was just reported in with a bare corner.
     pub fn close_failed(&self) {
-        let outcome = match &self.layout {
-            Layout::Flow(flow) if self.session.swap(false, Ordering::Relaxed) => {
-                flow.failure.as_str()
-            }
-            _ => "",
-        };
-        self.draw(|| cliclack::outro_cancel(outcome));
+        self.session.store(false, Ordering::Relaxed);
+        self.draw(|| cliclack::outro_cancel(""));
     }
 
     pub fn next_id(&self) -> u64 {
@@ -193,44 +180,41 @@ impl Screen {
         let _ = draw();
     }
 
-    /// Settles the live widget, then draws the one `draw` makes as live widget `id`.
-    pub fn show(
-        &self,
-        id: u64,
-        message: String,
-        draw: impl FnOnce() -> (ProgressBar, Option<MultiProgress>),
-    ) {
+    /// Settles the live widget, then starts `bar` as live widget `id`.
+    pub fn show(&self, id: u64, bar: ProgressBar, message: String) {
         let mut live = self.lock();
         if let Some(previous) = live.take() {
             previous.end(Ending::Done, None);
         }
-        let (bar, group) = draw();
         bar.start(&message);
-        *live = Some(Live {
-            id,
-            bar,
-            group,
-            message,
-        });
+        *live = Some(Live { id, bar, message });
     }
 
-    /// Changes the live widget `id`; nothing when it was settled.
-    pub fn update(&self, id: u64, message: String, position: Option<u64>) {
+    /// Changes the message of live widget `id`; nothing when it was settled.
+    pub fn update(&self, id: u64, message: String) {
         if let Some(live) = self.lock().as_mut().filter(|live| live.id == id) {
-            if let Some(position) = position {
-                live.bar.set_position(position);
-            }
             live.bar.set_message(&message);
             live.message = message;
         }
     }
 
-    /// Finishes the live widget `id`. False when something else settled it first.
-    pub fn finish(&self, id: u64, ending: Ending, message: &str) -> bool {
+    /// Moves the bar of live widget `id` to `position`; nothing when it was settled.
+    pub fn update_position(&self, id: u64, position: u64) {
+        if let Some(live) = self.lock().as_ref().filter(|live| live.id == id) {
+            live.bar.set_position(position);
+        }
+    }
+
+    /// Clears live widget `id`, leaving no line.
+    pub fn clear(&self, id: u64) {
+        self.end(id, Ending::Cleared, None);
+    }
+
+    fn end(&self, id: u64, ending: Ending, message: Option<&str>) -> bool {
         let mut live = self.lock();
         match live.take() {
             Some(widget) if widget.id == id => {
-                widget.end(ending, Some(message));
+                widget.end(ending, message);
                 true
             }
             other => {
@@ -285,20 +269,9 @@ fn columns(terminal: &console::Term) -> Option<usize> {
 
 impl Live {
     fn end(self, ending: Ending, message: Option<&str>) {
-        let message = message.unwrap_or(&self.message);
         match ending {
-            Ending::Done => {
-                self.bar.stop(message);
-                if let Some(group) = &self.group {
-                    group.stop();
-                }
-            }
-            Ending::Failed => {
-                self.bar.error(message);
-                if let Some(group) = &self.group {
-                    group.error(message);
-                }
-            }
+            Ending::Done => self.bar.stop(message.unwrap_or(&self.message)),
+            Ending::Cleared => self.bar.clear(),
         }
     }
 }

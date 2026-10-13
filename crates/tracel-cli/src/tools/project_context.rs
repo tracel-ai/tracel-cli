@@ -55,14 +55,14 @@ impl ProjectContext {
         let project = TracelProject::load(&workspace_info.workspace_root)
             .map_err(|e| {
                 ProjectContextError::new(
-                    "Failed to read tracel.toml".to_string(),
+                    "Can't read tracel.toml".to_string(),
                     ErrorKind::Parsing,
                     Some(e.into()),
                 )
             })?
             .ok_or_else(|| {
                 ProjectContextError::new(
-                    "No Tracel Console project linked to this repository".to_string(),
+                    "This workspace isn't linked to a project".to_string(),
                     ErrorKind::ProjectNotLinked,
                     None,
                 )
@@ -79,7 +79,7 @@ impl ProjectContext {
 
         project.save(&workspace_info.workspace_root).map_err(|e| {
             ProjectContextError::new(
-                "Failed to write tracel.toml".to_string(),
+                "Can't write tracel.toml".to_string(),
                 ErrorKind::ProjectInitialization,
                 Some(e.into()),
             )
@@ -96,7 +96,7 @@ impl ProjectContext {
 
         TracelProject::remove(&workspace_info.workspace_root).map_err(|e| {
             ProjectContextError::new(
-                "Failed to remove tracel.toml".to_string(),
+                "Can't remove tracel.toml".to_string(),
                 ErrorKind::Unexpected,
                 Some(e.into()),
             )

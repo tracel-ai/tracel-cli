@@ -7,8 +7,12 @@ use crate::{context::CliContext, tools::cargo, ui::Outcome};
 
 #[derive(Parser, Debug, Default)]
 pub struct TrainingArgs {
-    /// Arguments forwarded to `cargo run` (everything after `--`).
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    /// Arguments for the program, after --
+    #[arg(
+        value_name = "ARGS",
+        trailing_var_arg = true,
+        allow_hyphen_values = true
+    )]
     forwarded: Vec<String>,
 }
 
@@ -45,13 +49,13 @@ pub fn run_cargo(forwarded: &[String], context: CliContext) -> anyhow::Result<()
 fn hand_over(mut cmd: std::process::Command) -> anyhow::Result<()> {
     use std::os::unix::process::CommandExt;
 
-    Err(cmd.exec()).context("Failed to run `cargo run`")
+    Err(cmd.exec()).context("Can't run `cargo run`")
 }
 
 /// Windows cannot replace a process, so wait for the child and mirror its exit code.
 #[cfg(not(unix))]
 fn hand_over(mut cmd: std::process::Command) -> anyhow::Result<()> {
-    let status = cmd.status().context("Failed to run `cargo run`")?;
+    let status = cmd.status().context("Can't run `cargo run`")?;
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
     }

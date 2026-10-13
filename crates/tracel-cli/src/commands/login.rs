@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, SystemTime};
 use clap::Args;
 use serde::Serialize;
 use tracel_client::console::auth::{DeviceAuthClient, DeviceFlowError, DevicePollOutcome};
-use tracel_client::console::{Client, Env, TracelCredentials};
+use tracel_client::console::{Client, TracelCredentials};
 use url::Url;
 
 use self::pending::{PendingLogin, PendingLoginStore};
@@ -16,13 +16,13 @@ use crate::ui::{Layout, Outcome, Render, Terminal, Timestamp};
 
 #[derive(Args, Debug)]
 pub struct LoginArgs {
-    /// Start a login and save it for later completion.
+    /// Start a login and finish it later with --complete
     #[arg(long, conflicts_with = "complete")]
     pub no_wait: bool,
-    /// Finish the pending login.
+    /// Finish a login started with --no-wait
     #[arg(long)]
     pub complete: bool,
-    /// Wait at most this many seconds, keeping the pending login on timeout.
+    /// Stop waiting after this many seconds
     #[arg(long, requires = "complete", value_name = "SECONDS")]
     pub timeout: Option<u64>,
 }
@@ -30,17 +30,11 @@ pub struct LoginArgs {
 impl LoginArgs {
     pub fn layout(&self) -> Layout {
         if self.no_wait {
-            Layout::flow(
-                "Start a login to the Tracel Console",
-                "No login was started.",
-            )
+            Layout::flow("Start a login to the Tracel Console")
         } else if self.complete {
-            Layout::flow(
-                "Finish the pending login to the Tracel Console",
-                "Login failed.",
-            )
+            Layout::flow("Finish the pending login to the Tracel Console")
         } else {
-            Layout::flow("Log in to the Tracel Console", "Login failed.")
+            Layout::flow("Log in to the Tracel Console")
         }
     }
 }
@@ -58,52 +52,32 @@ pub fn get_client_and_login_if_needed(context: &CliContext) -> anyhow::Result<Cl
     loop {
         match context.create_client() {
             Ok(client) => return Ok(client),
-            Err(ClientCreationError::InvalidCredentials | ClientCreationError::NoCredentials)
-                if !logged_in =>
-            {
-                let env_msg = environment_suffix(&context.environment());
+            Err(
+                error @ (ClientCreationError::InvalidCredentials
+                | ClientCreationError::NoCredentials),
+            ) if !logged_in => {
                 if !context.terminal().is_interactive() {
-                    return Err(CliError::new(
-                        ErrorKind::NotAuthenticated,
-                        format!(
-                            "Not logged in{}. Run 'tracel login' or set TRACEL_API_KEY.",
-                            env_msg
-                        ),
-                    )
-                    .with_hint(
-                        "Run 'tracel login', or 'tracel login --no-wait' then 'tracel login --complete'.",
-                    )
-                    .into());
+                    return Err(
+                        CliError::new(ErrorKind::NotAuthenticated, error.to_string())
+                            .with_hint(LOG_IN)
+                            .into(),
+                    );
                 }
-                context.terminal().print_err(&format!(
-                    "Not logged in{}. Log in below, or press Ctrl+C to exit.",
-                    env_msg
-                ));
+                context.terminal().print_warning(&error.to_string());
                 log_in(context)?;
                 logged_in = true;
             }
-            Err(ClientCreationError::ServerConnectionError(msg)) => match delays.next() {
+            Err(error @ ClientCreationError::ServerConnectionError(_)) => match delays.next() {
                 Some(delay) => std::thread::sleep(delay),
-                None => {
-                    return Err(CliError::new(
-                        ErrorKind::Unavailable,
-                        format!("Server connection failed after maximum retries: {}", msg),
-                    )
-                    .into());
-                }
+                None => return Err(error.into()),
             },
-            Err(err) => return Err(err.into()),
+            Err(error) => return Err(error.into()),
         }
     }
 }
 
-pub fn environment_suffix(environment: &Env) -> String {
-    match environment {
-        Env::Development => " (development environment)".to_string(),
-        Env::Staging(version) => format!(" (staging environment v{})", version),
-        Env::Production => String::new(),
-    }
-}
+/// The hint for a command that needs a login.
+pub const LOG_IN: &str = "Run `tracel login`, or set TRACEL_API_KEY.";
 
 fn log_in(context: &CliContext) -> anyhow::Result<()> {
     let terminal = context.terminal();
@@ -119,12 +93,9 @@ fn log_in(context: &CliContext) -> anyhow::Result<()> {
     terminal.instruct(&instructions);
     offer_browser(terminal, &approval_page)?;
 
-    let spinner = terminal.spinner();
-    spinner.start("Waiting for approval... Press Ctrl+C to cancel.");
-    let issued = device_auth
-        .wait_for_approval(&authorization)
-        .inspect_err(|_| spinner.error("Login failed."))?;
-    spinner.stop("Login approved.");
+    let spinner = terminal.spinner("Waiting for approval");
+    let issued = device_auth.wait_for_approval(&authorization)?;
+    spinner.clear();
 
     context.app_session()?.sign_in(issued)?;
 
@@ -138,7 +109,7 @@ fn offer_browser(terminal: &Terminal, approval_page: &Url) -> anyhow::Result<()>
     }
     if let Err(error) = webbrowser::open(approval_page.as_str()) {
         terminal.print_warning(&format!(
-            "Could not open a browser ({error}). Open the link above instead."
+            "Can't open a browser ({error}), so open the link yourself."
         ));
     }
     Ok(())
@@ -177,10 +148,7 @@ fn start_pending_login(context: &CliContext) -> anyhow::Result<LoginPending> {
         )?),
         console::style(&pending.authorization.user_code).bold()
     ));
-    terminal.next_steps(
-        "The login waits for your approval.",
-        &["tracel login --complete".to_string()],
-    );
+    terminal.outro("Once you approve it, run `tracel login --complete`.");
 
     Ok(LoginPending {
         verification_uri_complete: pending.authorization.verification_uri_complete,
@@ -202,9 +170,9 @@ impl PollDeadline {
                 ErrorKind::NotAuthenticated,
                 "The pending login expired before it was approved.",
             )
-            .with_hint("Start again with 'tracel login --no-wait'."),
+            .with_hint("Start a new one with `tracel login --no-wait`."),
             Self::Timeout => CliError::new(ErrorKind::Timeout, "The login is still pending.")
-                .with_hint("Run 'tracel login --complete' again."),
+                .with_hint("Run `tracel login --complete` again."),
         }
     }
 }
@@ -246,16 +214,16 @@ fn poll_with_deadline(
         Ok(Ok(outcome)) => Ok(outcome),
         Err(RecvTimeoutError::Timeout) => Err(deadline.error().into()),
         Ok(Err(DeviceFlowError::Client(error))) => {
-            Err(anyhow::Error::new(error).context("Failed to check the pending login"))
+            Err(anyhow::Error::new(error).context("Can't check the pending login"))
         }
         Ok(Err(error)) => Err(
             CliError::new(ErrorKind::NotAuthenticated, error.to_string())
-                .with_hint("Start again with 'tracel login --no-wait'.")
+                .with_hint("Start a new one with `tracel login --no-wait`.")
                 .into(),
         ),
-        Err(RecvTimeoutError::Disconnected) => Err(anyhow::anyhow!(
-            "The pending login check stopped unexpectedly"
-        )),
+        Err(RecvTimeoutError::Disconnected) => {
+            Err(anyhow::anyhow!("The pending login check stopped."))
+        }
     }
 }
 
@@ -263,8 +231,8 @@ fn complete_pending_login(context: &CliContext, timeout: Option<u64>) -> anyhow:
     let started = Instant::now();
     let store = PendingLoginStore::for_server(&context.environment().get_url())?;
     let mut pending = store.load()?.ok_or_else(|| {
-        CliError::new(ErrorKind::NotFound, "No pending login found.")
-            .with_hint("Run 'tracel login --no-wait' first.")
+        CliError::new(ErrorKind::NotFound, "No pending login.")
+            .with_hint("Start one with `tracel login --no-wait`.")
     })?;
     let timeout = timeout.map(Duration::from_secs);
     let expires_at = pending.expires_at;
@@ -343,11 +311,9 @@ pub fn handle_command(args: LoginArgs, context: CliContext) -> anyhow::Result<Ou
             "TRACEL_API_KEY is set, so other commands use it instead of this login.",
         );
     }
-    context.terminal().outro(&format!(
-        "Logged in as {}{}.",
-        client.user().username,
-        environment_suffix(&context.environment())
-    ));
+    context
+        .terminal()
+        .outro(&format!("Logged in as {}.", client.user().username));
 
     Ok(LoggedIn {
         username: client.user().username.clone(),

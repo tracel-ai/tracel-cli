@@ -19,24 +19,20 @@ struct CurrentUser {
 impl Render for CurrentUser {
     fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         Details::new()
-            .field("Username", &self.username)
             .optional("Email", self.email.as_ref())
             .field("Namespace", &self.namespace)
-            .field("Environment", &self.environment)
             .field("API URL", &self.api_url)
             .write(out)
     }
 
     fn summary(&self) -> Option<String> {
-        Some(format!("Signed in as {}.", self.username))
+        Some(format!("Logged in as {}.", self.username))
     }
 }
 
 pub fn handle_command(context: CliContext) -> anyhow::Result<Outcome> {
     let client = get_client_and_login_if_needed(&context)?;
-    let user = client
-        .get_current_user()
-        .context("Failed to retrieve user information")?;
+    let user = client.get_current_user().context("Can't read your user")?;
 
     Ok(CurrentUser {
         username: user.username,

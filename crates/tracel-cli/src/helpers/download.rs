@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use tracel_client::console::Client;
 
 use crate::error::{CliError, ErrorKind};
-use crate::ui::Terminal;
+use crate::ui::{Terminal, counted, short_digest};
 
 pub struct DownloadFile {
     pub rel_path: String,
@@ -98,8 +98,10 @@ impl<W: Write> HashingWriter<W> {
                 return Err(CliError::new(
                     ErrorKind::Internal,
                     format!(
-                        "Checksum mismatch for '{}': expected {checksum}, received {actual}.",
-                        file.rel_path
+                        "Checksum mismatch for '{}': expected {}, received {}.",
+                        file.rel_path,
+                        short_digest(checksum),
+                        short_digest(&actual)
                     ),
                 ));
             }
@@ -129,15 +131,12 @@ pub fn download_files(
     force: bool,
 ) -> anyhow::Result<Vec<DownloadResult>> {
     check_destinations(directory, files, force)?;
-    let spinner = terminal.spinner();
-    spinner.start(format!("Downloading {} file(s)...", files.len()));
-    let results = download_each(client, directory, files)
-        .inspect_err(|_| spinner.error("Download failed."))?;
-    let bytes: u64 = results.iter().map(|result| result.bytes).sum();
-    spinner.stop(format!(
-        "Downloaded {} file(s), {bytes} bytes.",
-        results.len()
+    let spinner = terminal.spinner(format!(
+        "Downloading {}",
+        counted(files.len() as u64, ["file", "files"])
     ));
+    let results = download_each(client, directory, files)?;
+    spinner.clear();
     Ok(results)
 }
 
@@ -151,15 +150,15 @@ fn download_each(
         let path = directory.join(&file.rel_path);
         let parent = path.parent().expect("Validated relative file has a parent");
         fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create '{}'.", parent.display()))?;
+            .with_context(|| format!("Can't create '{}'", parent.display()))?;
         let mut name = path
             .file_name()
             .expect("Validated relative file has a name")
             .to_os_string();
         name.push(".part");
         let part = path.with_file_name(name);
-        let output = File::create(&part)
-            .with_context(|| format!("Failed to create '{}'.", part.display()))?;
+        let output =
+            File::create(&part).with_context(|| format!("Can't create '{}'", part.display()))?;
         let result = (|| -> anyhow::Result<u64> {
             let mut writer = HashingWriter::new(output);
             client.download_from_url(&file.url, &mut writer)?;
@@ -167,8 +166,7 @@ fn download_each(
             writer.verify(file)?;
             let bytes = writer.bytes;
             drop(writer);
-            fs::rename(&part, &path)
-                .with_context(|| format!("Failed to save '{}'.", path.display()))?;
+            fs::rename(&part, &path).with_context(|| format!("Can't save '{}'", path.display()))?;
             Ok(bytes)
         })();
         let bytes = result.inspect_err(|_| {

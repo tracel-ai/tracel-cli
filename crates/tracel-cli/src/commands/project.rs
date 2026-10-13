@@ -9,9 +9,9 @@ use tracel_client::console::project::response::ProjectResponse;
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
-use crate::helpers::project::ProjectSource;
+use crate::helpers::project::{ProjectSource, missing_project};
 use crate::helpers::resolve_namespace_project;
-use crate::ui::{Details, Human, Outcome, Render, Table, counted, when};
+use crate::ui::{Details, Human, Outcome, Render, Table, list_summary, when};
 
 #[derive(Args, Debug)]
 pub struct ProjectArgs {
@@ -21,13 +21,13 @@ pub struct ProjectArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum ProjectCommands {
-    /// List your projects and your organizations' projects.
+    /// List your and your organizations' projects
     List(ListArgs),
 }
 
 #[derive(Args, Debug)]
 pub struct ListArgs {
-    /// Your namespace or one of your organizations; omit to list all.
+    /// List only this namespace's projects
     #[arg(value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub namespace: Option<String>,
 }
@@ -52,7 +52,7 @@ impl Render for Projects {
     }
 
     fn summary(&self) -> Option<String> {
-        Some(counted(
+        Some(list_summary(
             self.0.len(),
             self.0.len() as u64,
             ["project", "projects"],
@@ -74,8 +74,6 @@ struct ProjectInfo {
 impl Render for ProjectInfo {
     fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         Details::new()
-            .field("Project", &self.name)
-            .field("Namespace", &self.namespace)
             .field("Description", &self.description)
             .field("Visibility", visibility_name(&self.visibility))
             .field("Created by", &self.created_by)
@@ -134,11 +132,8 @@ fn list_projects(args: ListArgs, context: CliContext) -> anyhow::Result<Projects
                 .join(", ");
             return Err(CliError::new(
                 ErrorKind::NotFound,
-                format!("Namespace '{namespace}' is not available."),
+                format!("Unknown namespace '{namespace}'. Namespaces: {available}."),
             )
-            .with_hint(format!(
-                "Available namespaces: {available}. Use `tracel project list <NAMESPACE>`."
-            ))
             .into());
         }
         projects.extend(client.list_organization_projects(&namespace)?);
@@ -158,20 +153,12 @@ fn show_project(context: CliContext) -> anyhow::Result<ProjectInfo> {
     let project = match client.get_project(&bc_project.owner, &bc_project.name) {
         Ok(project) => project,
         Err(e) if e.is_not_found() => {
-            return Err(CliError::new(
-                ErrorKind::NotFound,
-                format!(
-                    "Project {}/{} not found on Tracel Console.",
-                    bc_project.owner, bc_project.name
-                ),
-            )
-            .with_hint("Run 'tracel init --force' to link another project.")
-            .into());
+            return Err(missing_project(bc_project, &resolved.source).into());
         }
         Err(e) => {
             return Err(e).with_context(|| {
                 format!(
-                    "Failed to retrieve project {}/{}",
+                    "Can't read project {}/{}",
                     bc_project.owner, bc_project.name
                 )
             });

@@ -10,11 +10,12 @@ use std::{
     sync::Arc,
 };
 
-use colored::Colorize;
+use anyhow::Context;
 use sha2::Digest as _;
 use sha2::Sha256;
 
 use crate::tools::event::Reporter;
+use crate::ui::{counted, size};
 
 #[derive(Debug)]
 pub struct ArchiveMetadata {
@@ -36,40 +37,22 @@ pub fn package_workspace(
     workspace_name: &str,
     event_reporter: Arc<PackageEventReporter>,
 ) -> anyhow::Result<ArchiveMetadata> {
-    event_reporter.report_event(PackageEvent {
-        message: "Initializing workspace packaging".to_string(),
-    });
-
-    // Get workspace metadata
-    let cmd = cargo_metadata::MetadataCommand::new();
-    let metadata = cmd.exec()?;
-
+    let metadata = cargo_metadata::MetadataCommand::new().exec()?;
     let workspace_root = metadata
         .workspace_root
         .canonicalize()
-        .map_err(|e| anyhow::anyhow!("Failed to canonicalize workspace root: {}", e))?;
+        .context("Can't find the workspace root")?;
 
-    tracing::info!(
-        "Packaging workspace at: {}",
-        workspace_root.display().to_string().bold()
-    );
-
-    // List all files in the workspace respecting gitignore
     event_reporter.report_event(PackageEvent {
-        message: "Discovering files (respecting .gitignore)".to_string(),
+        message: "Listing files".to_string(),
     });
-
     let files = list_workspace_files(&workspace_root)?;
 
-    tracing::info!("Found {} files to package", files.len());
-
     event_reporter.report_event(PackageEvent {
-        message: format!("Discovered {} files", files.len()),
-    });
-
-    // Create the archive
-    event_reporter.report_event(PackageEvent {
-        message: "Creating compressed archive".to_string(),
+        message: format!(
+            "Compressing {}",
+            counted(files.len() as u64, ["file", "files"])
+        ),
     });
 
     // Write the archive under the cargo target directory, the idiomatic home for
@@ -91,49 +74,19 @@ pub fn package_workspace(
         create_workspace_archive(&workspace_root, &files, &archive_file, workspace_name)?;
 
     event_reporter.report_event(PackageEvent {
-        message: format!(
-            "Archive created: {}",
-            human_readable_bytes(uncompressed_size)
-        ),
+        message: format!("Computing the checksum of {}", size(uncompressed_size)),
     });
-
-    // Calculate checksum
-    event_reporter.report_event(PackageEvent {
-        message: "Computing checksum".to_string(),
-    });
-
     let archive_data = std::fs::read(&archive_path)?;
-    let checksum = format!("{:x}", Sha256::digest(&archive_data));
-    let size = archive_data.len() as u64;
-
-    // Build metadata from cargo_metadata
-    event_reporter.report_event(PackageEvent {
-        message: "Extracting package metadata".to_string(),
-    });
-
-    let archive_data = ArchiveMetadata {
+    Ok(ArchiveMetadata {
         path: archive_path,
-        checksum: checksum.clone(),
-        size,
-    };
-
-    event_reporter.report_event(PackageEvent {
-        message: "Workspace packaging completed successfully".to_string(),
-    });
-
-    Ok(archive_data)
+        checksum: format!("{:x}", Sha256::digest(&archive_data)),
+        size: archive_data.len() as u64,
+    })
 }
 
 /// Lists all files in the workspace that should be packaged, respecting gitignore rules.
 fn list_workspace_files(workspace_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
     let git_repo = discover_gix_repo(workspace_root)?;
-
-    if let Some(ref repo) = git_repo {
-        tracing::info!(
-            "Git repository found at {}",
-            repo.path().display().to_string().bold()
-        );
-    }
 
     // Build gitignore matcher
     let mut exclude_builder = ignore::gitignore::GitignoreBuilder::new(workspace_root);
@@ -192,7 +145,7 @@ fn create_workspace_archive(
     for file_path in files {
         let relative_path = file_path
             .strip_prefix(workspace_root)
-            .map_err(|e| anyhow::anyhow!("Failed to strip workspace root prefix: {}", e))?;
+            .context("A packaged file is outside the workspace")?;
 
         if file_path.is_file() {
             let mut file = File::open(file_path)?;
@@ -223,10 +176,7 @@ fn discover_gix_repo(root: &Path) -> anyhow::Result<Option<gix::Repository>> {
     };
 
     let repo_root = repo.workdir().ok_or_else(|| {
-        anyhow::format_err!(
-            "Did not expect repo at {} to be bare",
-            repo.path().display()
-        )
+        anyhow::format_err!("The git repository at {} is bare.", repo.path().display())
     })?;
 
     // Verify the repository contains the workspace root
@@ -325,18 +275,4 @@ fn list_files_walk(
     }
 
     Ok(())
-}
-
-/// Formats a byte count into a human-readable string.
-fn human_readable_bytes(bytes: u64) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-    let mut size = bytes as f64;
-    let mut unit_idx = 0;
-
-    while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
-        size /= 1024.0;
-        unit_idx += 1;
-    }
-
-    format!("{:.2} {}", size, UNITS[unit_idx])
 }

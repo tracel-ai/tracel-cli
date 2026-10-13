@@ -73,10 +73,21 @@ impl<'a> ErrorReport<'a> {
         let hint = explicit_error(error).and_then(|error| error.hint.as_deref());
         Self {
             code,
-            message: format!("{error:#}"),
+            message: sentence(format!("{error:#}")),
             hint,
             exit_code: code.exit_code(),
         }
+    }
+}
+
+/// `text` ending as a sentence does, as an error chain such as "Can't read 'a': No
+/// such file or directory (os error 2)" does not.
+fn sentence(text: String) -> String {
+    let text = text.trim_end();
+    if text.ends_with(['.', '!', '?']) {
+        text.to_string()
+    } else {
+        format!("{text}.")
     }
 }
 
@@ -90,7 +101,7 @@ pub fn classify(error: &anyhow::Error) -> ErrorKind {
             return match error {
                 ClientCreationError::NoCredentials
                 | ClientCreationError::InvalidCredentials
-                | ClientCreationError::ApiKeyRefused(_) => ErrorKind::NotAuthenticated,
+                | ClientCreationError::ApiKeyRefused => ErrorKind::NotAuthenticated,
                 ClientCreationError::ServerConnectionError(_) => ErrorKind::Unavailable,
                 ClientCreationError::SessionStore(error) => classify_client(error),
             };
@@ -263,7 +274,7 @@ mod tests {
                 ErrorKind::NotAuthenticated,
             ),
             (
-                ClientCreationError::ApiKeyRefused(ClientError::CredentialNotAllowed),
+                ClientCreationError::ApiKeyRefused,
                 ErrorKind::NotAuthenticated,
             ),
             (

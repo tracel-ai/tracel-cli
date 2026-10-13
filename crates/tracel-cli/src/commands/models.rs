@@ -25,7 +25,10 @@ use crate::helpers::{
 };
 use crate::tools::fs::{build_file_specs, collect_files};
 use crate::tools::tracel_config::TracelProject;
-use crate::ui::{Declined, Details, Human, Layout, Outcome, Render, Table, counted, when};
+use crate::ui::{
+    Declined, Details, Human, Layout, Outcome, Render, Table, counted, list_summary, short_digest,
+    size, when,
+};
 
 #[derive(Args, Debug)]
 pub struct ModelsArgs {
@@ -36,36 +39,29 @@ pub struct ModelsArgs {
 impl ModelsArgs {
     pub fn layout(&self) -> Layout {
         match &self.command {
-            ModelsCommands::Pull(args) => Layout::flow(
-                format!("Download model '{}' {}", args.model, args.version),
-                format!("Model '{}' was not downloaded.", args.model),
-            ),
-            ModelsCommands::Push(args) => Layout::flow(
-                format!("Upload a version of model '{}'", args.model_name),
-                format!("No version of model '{}' was uploaded.", args.model_name),
-            ),
-            ModelsCommands::Promote(args) => Layout::flow(
-                format!(
-                    "Promote artifact '{}' of experiment {} to model '{}'",
-                    args.artifact, args.experiment, args.model
-                ),
-                format!("Artifact '{}' was not promoted.", args.artifact),
-            ),
+            ModelsCommands::Pull(args) => Layout::flow(format!(
+                "Download model '{}' ({})",
+                args.model, args.version
+            )),
+            ModelsCommands::Push(args) => {
+                Layout::flow(format!("Upload a version of model '{}'", args.model_name))
+            }
+            ModelsCommands::Promote(args) => Layout::flow(format!(
+                "Promote artifact '{}' of experiment {} to model '{}'",
+                args.artifact, args.experiment, args.model
+            )),
             ModelsCommands::Alias(AliasArgs {
                 command: AliasCommands::Set(args),
-            }) => Layout::flow(
-                format!(
-                    "Point alias '{}' of model '{}' at v{}",
-                    args.alias, args.model, args.version
-                ),
-                format!("Alias '{}' was not changed.", args.alias),
-            ),
+            }) => Layout::flow(format!(
+                "Point alias '{}' of model '{}' at v{}",
+                args.alias, args.model, args.version
+            )),
             ModelsCommands::Alias(AliasArgs {
                 command: AliasCommands::Remove(args),
-            }) => Layout::flow(
-                format!("Remove alias '{}' of model '{}'", args.alias, args.model),
-                format!("Alias '{}' was not removed.", args.alias),
-            ),
+            }) => Layout::flow(format!(
+                "Remove alias '{}' of model '{}'",
+                args.alias, args.model
+            )),
             _ => Layout::Read,
         }
     }
@@ -73,94 +69,98 @@ impl ModelsArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum ModelsCommands {
-    /// List models in the selected project.
+    /// List the project's models
     List,
-    /// Show a model or a version selected by reference.
+    /// Show a model, or one of its versions
     Get(GetArgs),
-    /// List ready versions, or versions in all states.
+    /// List a model's versions
     Versions(VersionsArgs),
-    /// Download a model version.
+    /// Download a model version
     Pull(PullArgs),
-    /// Upload a local directory of files as a new model version.
+    /// Upload a directory as a new model version
     Push(PushArgs),
-    /// Promote an experiment artifact into a new model version.
+    /// Make an experiment artifact a new model version
     Promote(PromoteArgs),
-    /// List, set, or remove model aliases.
+    /// List, set or remove model aliases
     Alias(AliasArgs),
 }
 
 #[derive(Args, Debug)]
 pub struct GetArgs {
+    /// Model name
     #[arg(value_name = "MODEL", value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub model: String,
-    /// Version reference: latest, 7, v7, or an alias.
+    /// Show this version: latest, 7, v7 or an alias
     #[arg(long, value_name = "REF", value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub version: Option<String>,
 }
 
 #[derive(Args, Debug)]
 pub struct VersionsArgs {
+    /// Model name
     #[arg(value_name = "MODEL", value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub model: String,
-    /// Include pending, failed, and deleted versions.
+    /// Include pending, failed and deleted versions
     #[arg(long)]
     pub all: bool,
 }
 
 #[derive(Args, Debug)]
 pub struct PullArgs {
+    /// Model name
     #[arg(value_name = "MODEL", value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub model: String,
-    /// Version reference: latest, 7, v7, or an alias.
+    /// Download this version: latest, 7, v7 or an alias
     #[arg(long, value_name = "REF", default_value = "latest", value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub version: String,
-    /// Destination directory (default: ./<MODEL>-v<version>).
+    /// Download into this directory
     #[arg(short, long, value_name = "DIR")]
     pub directory: Option<PathBuf>,
-    /// Overwrite existing destination files.
+    /// Overwrite existing files
     #[arg(long)]
     pub force: bool,
 }
 
 #[derive(Args, Debug)]
 pub struct PushArgs {
-    /// Name of the model to upload a version to.
+    /// Model name
     #[arg(value_name = "MODEL", value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub model_name: String,
-    /// Local directory containing the files to upload.
+    /// Upload the files in this directory
     #[arg(short, long, value_name = "DIR")]
     pub directory: PathBuf,
-    /// Create a missing model (true/false); otherwise ask when interactive.
-    #[arg(long, short)]
+    /// Create the model if it's missing (true or false)
+    #[arg(long, short, value_name = "BOOL")]
     pub auto_create: Option<bool>,
-    /// Description to use when auto-creating the model. Requires --auto-create true.
+    /// Describe a model it creates
     #[arg(long, requires = "auto_create", value_name = "TEXT")]
     pub description: Option<String>,
-    /// Metadata for the new version, as a JSON object.
+    /// Attach this JSON object to the new version
     #[arg(long, value_name = "JSON", value_parser = parse_metadata)]
     pub metadata: Option<Value>,
 }
 
 #[derive(Args, Debug)]
 pub struct PromoteArgs {
+    /// Model name
     #[arg(value_name = "MODEL", value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub model: String,
-    /// Project-scoped experiment number.
+    /// Promote from this experiment number
     #[arg(long, value_name = "NUM", value_parser = clap::value_parser!(i32).range(1..))]
     pub experiment: i32,
-    /// Artifact name or id in the experiment.
+    /// Promote this artifact, by name or id
     #[arg(long, value_name = "NAME|ID", value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub artifact: String,
-    /// Point this alias at the new version.
+    /// Point this alias at the new version
     #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub alias: Option<String>,
-    /// Metadata for the new version, as a JSON object.
+    /// Attach this JSON object to the new version
     #[arg(long, value_name = "JSON", value_parser = parse_metadata)]
     pub metadata: Option<Value>,
-    /// Create a missing model (true/false); otherwise ask when interactive.
-    #[arg(long)]
+    /// Create the model if it's missing (true or false)
+    #[arg(long, value_name = "BOOL")]
     pub auto_create: Option<bool>,
-    /// Description to use when auto-creating the model. Requires --auto-create true.
+    /// Describe a model it creates
     #[arg(long, requires = "auto_create", value_name = "TEXT")]
     pub description: Option<String>,
 }
@@ -173,37 +173,43 @@ pub struct AliasArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum AliasCommands {
-    /// List aliases for a model.
+    /// List a model's aliases
     List(AliasListArgs),
-    /// Create or move an alias to a ready version.
+    /// Point an alias at a ready version
     Set(AliasSetArgs),
-    /// Remove an alias.
+    /// Remove an alias
     Remove(AliasRemoveArgs),
 }
 
 #[derive(Args, Debug)]
 pub struct AliasListArgs {
+    /// Model name
     #[arg(value_name = "MODEL", value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub model: String,
 }
 
 #[derive(Args, Debug)]
 pub struct AliasSetArgs {
+    /// Model name
     #[arg(value_name = "MODEL", value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub model: String,
+    /// Alias name
     #[arg(value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub alias: String,
+    /// Version number
     #[arg(value_parser = clap::value_parser!(u32).range(1..))]
     pub version: u32,
-    /// Move the alias only if it currently points at this version.
+    /// Move it only if it points at this version now
     #[arg(long, value_name = "VERSION", value_parser = clap::value_parser!(u32).range(1..))]
     pub expect: Option<u32>,
 }
 
 #[derive(Args, Debug)]
 pub struct AliasRemoveArgs {
+    /// Model name
     #[arg(value_name = "MODEL", value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub model: String,
+    /// Alias name
     #[arg(value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub alias: String,
 }
@@ -258,7 +264,7 @@ impl Render for ModelListResponse {
     }
 
     fn summary(&self) -> Option<String> {
-        Some(counted(
+        Some(list_summary(
             self.items.len(),
             self.total as u64,
             ["model", "models"],
@@ -269,14 +275,15 @@ impl Render for ModelListResponse {
 
 impl Render for ModelResponse {
     fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
-        Details::new()
-            .field("Name", &self.name)
-            .field("ID", &self.id)
-            .field("Project ID", self.project_id)
-            .field("Display name", &self.display_name)
+        let details = Details::new();
+        let details = if self.display_name == self.name {
+            details
+        } else {
+            details.field("Display name", &self.display_name)
+        };
+        details
             .optional("Description", self.description.as_ref())
             .field("Versions", self.version_count)
-            .field("Latest", latest_version(self))
             .field("Aliases", alias_summary(&self.aliases))
             .field("Created at", when(&self.created_at))
             .field("Created by", &self.created_by.username)
@@ -293,10 +300,7 @@ impl Render for ModelResponse {
 
 impl Render for ModelVersionResponse {
     fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
-        Details::new()
-            .field("Version", format!("v{}", self.version))
-            .field("ID", &self.id)
-            .field("State", state_name(self.state))
+        let details = Details::new()
             .field("Source", source_name(self.source_kind))
             .optional(
                 "Experiment",
@@ -304,21 +308,24 @@ impl Render for ModelVersionResponse {
                     .as_ref()
                     .map(|experiment| experiment.experiment_num),
             )
-            .field("Size", self.size)
-            .field("Digest", &self.digest)
+            .field("Size", size(self.size))
+            .field("Digest", short_digest(&self.digest))
             .field("Aliases", self.aliases.join(", "))
             .field("Created at", when(&self.created_at))
-            .field("Created by", &self.created_by.username)
-            .optional("Failure reason", self.failure_reason.as_ref())
-            .write(out)?;
+            .field("Created by", &self.created_by.username);
+        match &self.failure_reason {
+            Some(reason) => details.field("Failure reason", reason),
+            None => details,
+        }
+        .write(out)?;
         out.heading("Files")?;
-        Table::new(["REL PATH", "SIZE", "CHECKSUM"])
+        Table::new(["PATH", "SIZE", "CHECKSUM"])
             .empty("No files.")
             .rows(self.manifest.files.iter().map(|file| {
                 [
                     file.rel_path.clone(),
-                    file.size_bytes.to_string(),
-                    file.checksum.clone(),
+                    size(file.size_bytes),
+                    short_digest(&file.checksum).to_string(),
                 ]
             }))
             .write(out)?;
@@ -360,7 +367,7 @@ impl Render for ModelVersionListResponse {
                 format!("v{}", version.version),
                 state_name(version.state).into(),
                 source,
-                version.size.to_string(),
+                size(version.size),
                 version.aliases.join(", "),
                 when(&version.created_at),
             ]
@@ -369,7 +376,7 @@ impl Render for ModelVersionListResponse {
     }
 
     fn summary(&self) -> Option<String> {
-        Some(counted(
+        Some(list_summary(
             self.items.len(),
             self.total as u64,
             ["version", "versions"],
@@ -390,7 +397,7 @@ impl Render for ModelAliasListResponse {
     }
 
     fn summary(&self) -> Option<String> {
-        Some(counted(
+        Some(list_summary(
             self.items.len(),
             self.total as u64,
             ["alias", "aliases"],
@@ -435,7 +442,7 @@ fn validate_download_directory(directory: Option<&Path>, model: &str) -> anyhow:
         if directory.as_os_str().is_empty() || (directory.exists() && !directory.is_dir()) {
             return Err(CliError::new(
                 ErrorKind::Usage,
-                format!("Invalid destination directory '{}'.", directory.display()),
+                format!("'{}' isn't a directory.", directory.display()),
             )
             .into());
         }
@@ -544,14 +551,16 @@ fn pull(
         })
         .collect();
     let files = download_files(&client, context.terminal(), &directory, &files, args.force)?;
+    let bytes = files.iter().map(|file| file.bytes).sum();
     context.terminal().outro(&format!(
-        "Downloaded '{}' v{} to {}.",
+        "Downloaded '{}' v{} ({}) to {}.",
         args.model,
         version.version,
+        size(bytes),
         directory.display()
     ));
     Ok(ModelPulled {
-        bytes: files.iter().map(|file| file.bytes).sum(),
+        bytes,
         model: args.model,
         version,
         directory,
@@ -568,10 +577,6 @@ fn push(
     validate_auto_create(args.auto_create, args.description.as_deref())?;
     let files = collect_push_files(&args.directory, context)?;
     let client = get_client_and_login_if_needed(context)?;
-    context
-        .terminal()
-        .print(&format!("Uploading to {namespace}/{name}"));
-
     if !ensure_model_exists(
         context,
         &client,
@@ -584,20 +589,19 @@ fn push(
         return Err(Declined::new("Nothing was uploaded.").into());
     }
 
-    let spinner = context.terminal().spinner();
-    spinner.start("Computing checksums...");
-    let file_specs = build_file_specs(&files).inspect_err(|_e| {
-        spinner.error("Failed to compute checksums.");
-    })?;
-    spinner.stop("Checksums computed.");
+    let spinner = context.terminal().spinner(format!(
+        "Reading {}",
+        counted(files.len() as u64, ["file", "files"])
+    ));
+    let file_specs = build_file_specs(&files)?;
+    spinner.clear();
 
     let file_sizes: BTreeMap<String, u64> = file_specs
         .iter()
         .map(|f| (f.rel_path.clone(), f.size_bytes))
         .collect();
 
-    let spinner = context.terminal().spinner();
-    spinner.start("Requesting upload URLs...");
+    let spinner = context.terminal().spinner("Starting the upload");
     let upload_request = RequestModelVersionUploadRequest {
         files: file_specs
             .into_iter()
@@ -611,11 +615,8 @@ fn push(
     };
     let upload = client
         .request_model_version_upload(namespace, name, &args.model_name, upload_request)
-        .map_err(|e| {
-            spinner.error("Failed to request upload URLs.");
-            map_resource_error(e, namespace, name, Resource::Model(&args.model_name))
-        })?;
-    spinner.stop(format!("Allocated model version {}.", upload.version));
+        .map_err(|e| map_resource_error(e, namespace, name, Resource::Model(&args.model_name)))?;
+    spinner.clear();
 
     let tasks = build_part_tasks(&files, &file_sizes, &upload.files)?;
     upload_parts(&client, tasks, context.terminal())?;
@@ -630,8 +631,10 @@ fn push(
         .map_err(map_error)?;
 
     context.terminal().outro(&format!(
-        "Uploaded model '{}' v{} to {namespace}/{name}.",
-        args.model_name, upload.version
+        "Uploaded '{}' v{} ({}).",
+        args.model_name,
+        upload.version,
+        size(version.size)
     ));
     Ok(NewVersion(version))
 }
@@ -640,13 +643,10 @@ fn collect_push_files(
     directory: &Path,
     context: &CliContext,
 ) -> anyhow::Result<BTreeMap<String, PathBuf>> {
-    let spinner = context.terminal().spinner();
-    spinner.start("Collecting files...");
-    let files = collect_files(directory).map_err(|error| {
-        spinner.error("Failed to collect files.");
-        CliError::new(ErrorKind::Usage, format!("{error:#}"))
-    })?;
-    spinner.stop(format!("Found {} file(s).", files.len()));
+    let spinner = context.terminal().spinner("Looking for files");
+    let files = collect_files(directory)
+        .map_err(|error| CliError::new(ErrorKind::Usage, format!("{error:#}")))?;
+    spinner.clear();
     Ok(files)
 }
 

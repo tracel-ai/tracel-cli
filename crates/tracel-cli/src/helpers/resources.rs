@@ -80,10 +80,7 @@ pub fn map_resource_error(
 
 pub fn parse_metadata(value: &str) -> Result<Value, CliError> {
     let metadata: Value = serde_json::from_str(value).map_err(|error| {
-        CliError::new(
-            ErrorKind::Usage,
-            format!("Invalid --metadata JSON: {error}"),
-        )
+        CliError::new(ErrorKind::Usage, format!("--metadata isn't JSON: {error}"))
     })?;
     if !metadata.is_object() {
         return Err(CliError::new(
@@ -101,7 +98,7 @@ pub fn validate_auto_create(
     if description.is_some() && auto_create != Some(true) {
         return Err(CliError::new(
             ErrorKind::Usage,
-            "--description can only be used together with --auto-create true.",
+            "--description needs --auto-create true.",
         ));
     }
     Ok(())
@@ -132,16 +129,16 @@ pub fn select_artifact<'a>(
         [(index, _)] => Ok(*index),
         _ => Err(CliError::new(
             ErrorKind::Conflict,
-            format!(
-                "Several artifacts named '{value}' in experiment {experiment}: {}.",
-                matches
-                    .iter()
-                    .map(|(_, id)| *id)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+            format!("Several artifacts in experiment {experiment} are named '{value}'."),
         )
-        .with_hint("Pass the artifact id instead.")),
+        .with_hint(format!(
+            "Pass one of their ids: {}.",
+            matches
+                .iter()
+                .map(|(_, id)| *id)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
     }
 }
 
@@ -361,7 +358,10 @@ mod tests {
         assert_eq!(select_artifact(items, "logs", 7).unwrap(), 3);
         let error = select_artifact(items, "weights", 7).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Conflict);
-        assert!(error.to_string().contains("a, b"));
+        assert_eq!(
+            ErrorReport::new(&error.into()).hint,
+            Some("Pass one of their ids: a, b.")
+        );
         let error = select_artifact(items, "missing", 7).unwrap_err();
         assert_eq!(error.kind, ErrorKind::NotFound);
         assert_eq!(error.to_string(), "No artifact 'missing' in experiment 7.");

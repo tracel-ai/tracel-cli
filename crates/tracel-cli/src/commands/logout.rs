@@ -1,6 +1,5 @@
 use serde::Serialize;
 
-use crate::commands::login::environment_suffix;
 use crate::context::CliContext;
 use crate::ui::{Outcome, Render};
 
@@ -16,14 +15,11 @@ pub fn handle_command(context: CliContext) -> anyhow::Result<Outcome> {
     let was_logged_in = app_session.stored()?.is_some();
     app_session.sign_out()?;
 
-    let env_msg = environment_suffix(&context.environment());
-    if was_logged_in {
-        context.terminal().outro(&format!("Logged out{}.", env_msg));
+    context.terminal().outro(if was_logged_in {
+        "Logged out."
     } else {
-        context
-            .terminal()
-            .outro(&format!("Nobody was logged in{}.", env_msg));
-    }
+        "Already logged out."
+    });
 
     Ok(LoggedOut {
         logged_out: was_logged_in,

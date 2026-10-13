@@ -282,15 +282,58 @@ impl Details {
     }
 }
 
+/// A count of things, such as "1 file" or "3 files".
+pub fn counted(count: u64, [one, many]: [&str; 2]) -> String {
+    match count {
+        1 => format!("1 {one}"),
+        count => format!("{count} {many}"),
+    }
+}
+
 /// The summary of a list: "Showing 10 of 16 experiments." when some are left out,
 /// "16 experiments." when not, and `none` when there are none.
-pub fn counted(shown: usize, total: u64, [one, many]: [&str; 2], none: &str) -> String {
+pub fn list_summary(shown: usize, total: u64, forms: [&str; 2], none: &str) -> String {
     let shown = shown as u64;
     match total.max(shown) {
         0 => none.to_string(),
-        total if shown < total => format!("Showing {shown} of {total} {many}."),
-        1 => format!("1 {one}."),
-        total => format!("{total} {many}."),
+        total if shown < total => format!("Showing {shown} of {total} {}.", forms[1]),
+        total => format!("{}.", counted(total, forms)),
+    }
+}
+
+/// The first 12 characters of a digest, enough to tell code and model versions apart.
+pub fn short_digest(digest: &str) -> &str {
+    digest.get(..12).unwrap_or(digest)
+}
+
+/// A size in bytes, as "512 B", "6.9 KB" or "713.7 MB".
+pub fn size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["KB", "MB", "GB", "TB"];
+    if bytes < 1000 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64 / 1000.0;
+    let mut unit = 0;
+    while value >= 1000.0 && unit + 1 < UNITS.len() {
+        value /= 1000.0;
+        unit += 1;
+    }
+    format!("{} {}", number(value), UNITS[unit])
+}
+
+/// A number to about 4 significant digits, as "0.75" for 0.7499999999999999. Large
+/// numbers keep their integer digits.
+pub fn number(value: f64) -> String {
+    if value == 0.0 || !value.is_finite() {
+        return value.to_string();
+    }
+    let magnitude = value.abs().log10().floor() as i32;
+    let decimals = (3 - magnitude).max(0) as usize;
+    let text = format!("{value:.decimals$}");
+    if text.contains('.') {
+        text.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        text
     }
 }
 
@@ -308,6 +351,9 @@ fn flatten(prefix: &str, value: &Value, fields: &mut Vec<(String, String)>) {
         }
         Value::Object(_) if prefix.is_empty() => {}
         Value::String(text) => fields.push((prefix.into(), text.clone())),
+        Value::Number(value) if value.is_f64() => {
+            fields.push((prefix.into(), number(value.as_f64().unwrap_or_default())))
+        }
         other => fields.push((prefix.into(), other.to_string())),
     }
 }
@@ -493,7 +539,7 @@ mod tests {
 
     #[test]
     fn counts_mention_what_was_left_out() {
-        let count = |shown, total| counted(shown, total, ["model", "models"], "No models.");
+        let count = |shown, total| list_summary(shown, total, ["model", "models"], "No models.");
         assert_eq!(count(0, 0), "No models.");
         assert_eq!(count(1, 1), "1 model.");
         assert_eq!(count(3, 3), "3 models.");

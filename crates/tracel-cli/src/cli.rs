@@ -13,12 +13,18 @@ use crate::ui::{
 };
 
 #[derive(Parser, Debug)]
-#[clap(name = "tracel", author, version, about, long_about = None)]
+#[clap(
+    name = "tracel",
+    author,
+    version,
+    about = "Train, track and share Burn models with the Tracel Console",
+    long_about = None
+)]
 pub struct CliArgs {
     #[command(subcommand)]
     pub command: Option<Commands>,
 
-    /// Output format (default: auto)
+    /// Choose the output format
     #[arg(short, long, global = true, value_enum, conflicts_with = "json")]
     pub output: Option<FormatArg>,
 
@@ -26,11 +32,11 @@ pub struct CliArgs {
     #[arg(long, global = true, conflicts_with = "output")]
     pub json: bool,
 
-    /// Never prompt; fail when input is needed
+    /// Fail instead of asking for input
     #[arg(long, global = true)]
     pub no_input: bool,
 
-    /// Tracel Console project to use
+    /// Use this Tracel Console project
     #[arg(long, global = true, value_name = "NAMESPACE/NAME", value_parser = parse_project)]
     pub project: Option<TracelProject>,
 
@@ -38,11 +44,11 @@ pub struct CliArgs {
     #[arg(short = 'C', global = true, value_name = "DIR")]
     pub working_directory: Option<std::path::PathBuf>,
 
-    /// Use development environment (localhost:9001) with separate dev credentials
+    /// Use the development environment
     #[arg(long, global = true, action = clap::ArgAction::SetTrue, hide = true, conflicts_with = "staging")]
     pub dev: bool,
 
-    /// Use staging environment (specify version: 1, 2, etc.)
+    /// Use this staging environment
     #[arg(
         long,
         global = true,
@@ -55,33 +61,32 @@ pub struct CliArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Run your project locally via `cargo run` (forwards args after `--`).
+    /// Run the workspace locally with `cargo run`
     Train(commands::training::TrainingArgs),
-
-    /// Package your project for running on a remote machine.
+    /// Upload a code version of the workspace
     Package(commands::package::PackageArgs),
-    /// Log in to the Tracel server.
+    /// Log in to the Tracel Console
     Login(commands::login::LoginArgs),
-    /// Log out of the Tracel server.
+    /// Log out of the Tracel Console
     Logout,
-    /// Show which credential commands use, or print an access token for scripts.
+    /// Show your login, or print an access token
     Auth(commands::auth::AuthArgs),
-    /// Browse project experiments, metrics, and logs.
+    /// Browse experiments, their metrics and logs
     #[command(visible_alias = "exp")]
     Experiments(commands::experiments::ExperimentsArgs),
-    /// Initialize a new project or reinitialize an existing one.
+    /// Link the workspace to a Tracel Console project
     Init(commands::init::InitArgs),
-    /// Unlink the Tracel Console project from this repository.
+    /// Unlink the workspace from its project
     Unlink(commands::unlink::UnlinkArgs),
-    /// Display current user information.
+    /// Show who you are logged in as
     Me,
-    /// Display the current project, or list projects.
+    /// Show the current project, or list projects
     Project(commands::project::ProjectArgs),
-    /// Browse and manage models in the model registry.
+    /// Browse and manage models
     Models(commands::models::ModelsArgs),
-    /// Browse and download experiment artifacts.
+    /// Browse and download experiment artifacts
     Artifacts(commands::artifacts::ArtifactsArgs),
-    /// Browse datasets in the selected project.
+    /// Browse the project's datasets
     Datasets(commands::datasets::DatasetsArgs),
 }
 
@@ -92,20 +97,12 @@ impl Commands {
         match self {
             Self::Train(_) => Layout::Bare,
             Self::Auth(args) => args.layout(),
-            Self::Package(_) => {
-                Layout::flow("Package the project", "The project was not packaged.")
-            }
+            Self::Package(_) => Layout::flow("Package a code version"),
             Self::Login(args) => args.layout(),
-            Self::Logout => Layout::flow("Log out of the Tracel Console", "Logout failed."),
+            Self::Logout => Layout::flow("Log out of the Tracel Console"),
             Self::Experiments(args) => args.layout(),
-            Self::Init(_) => Layout::flow(
-                "Link this workspace to a Tracel Console project",
-                "The workspace was not linked.",
-            ),
-            Self::Unlink(_) => Layout::flow(
-                "Unlink this workspace from its Tracel Console project",
-                "The workspace is still linked.",
-            ),
+            Self::Init(_) => Layout::flow("Link this workspace to a Tracel Console project"),
+            Self::Unlink(_) => Layout::flow("Unlink this workspace from its project"),
             Self::Me | Self::Project(_) | Self::Datasets(_) => Layout::Read,
             Self::Models(args) => args.layout(),
             Self::Artifacts(args) => args.layout(),
@@ -173,7 +170,7 @@ pub fn cli_main() {
             let error = CliError::new(
                 ErrorKind::Usage,
                 format!(
-                    "Cannot change directory to '{}': {error}",
+                    "Can't change to directory '{}': {error}",
                     directory.display()
                 ),
             );
@@ -235,7 +232,9 @@ fn resolve_environment(
             .ok_or_else(|| {
                 CliError::new(
                     ErrorKind::Usage,
-                    format!("Invalid TRACEL_ENV value '{value}'."),
+                    format!(
+                        "Unknown TRACEL_ENV '{value}'. Environments: production, development, staging-<N>."
+                    ),
                 )
             }),
     }

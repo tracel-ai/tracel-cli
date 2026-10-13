@@ -13,7 +13,7 @@ use crate::helpers::{
     DownloadFile, DownloadResult, Resource, download_files, map_resource_error,
     resolve_namespace_project, select_artifact, validate_rel_path,
 };
-use crate::ui::{Human, Layout, Outcome, Render, Table, counted, when};
+use crate::ui::{Human, Layout, Outcome, Render, Table, list_summary, size, when};
 
 #[derive(Args, Debug)]
 pub struct ArtifactsArgs {
@@ -25,47 +25,44 @@ impl ArtifactsArgs {
     pub fn layout(&self) -> Layout {
         match &self.command {
             ArtifactsCommands::List(_) => Layout::Read,
-            ArtifactsCommands::Download(args) => Layout::flow(
-                format!(
-                    "Download artifact '{}' of experiment {}",
-                    args.artifact, args.experiment
-                ),
-                format!("Artifact '{}' was not downloaded.", args.artifact),
-            ),
+            ArtifactsCommands::Download(args) => Layout::flow(format!(
+                "Download artifact '{}' of experiment {}",
+                args.artifact, args.experiment
+            )),
         }
     }
 }
 
 #[derive(Subcommand, Debug)]
 pub enum ArtifactsCommands {
-    /// List artifacts in an experiment.
+    /// List an experiment's artifacts
     List(ListArgs),
-    /// Download an artifact selected by name or id.
+    /// Download an artifact by name or id
     Download(DownloadArgs),
 }
 
 #[derive(Args, Debug)]
 pub struct ListArgs {
-    /// Project-scoped experiment number.
+    /// Experiment number
     #[arg(value_parser = clap::value_parser!(i32).range(1..))]
     pub experiment: i32,
-    /// Show only artifacts whose name contains this text.
+    /// Show only artifacts whose name contains this text
     #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub name: Option<String>,
 }
 
 #[derive(Args, Debug)]
 pub struct DownloadArgs {
-    /// Project-scoped experiment number.
+    /// Experiment number
     #[arg(value_parser = clap::value_parser!(i32).range(1..))]
     pub experiment: i32,
-    /// Artifact name or id in the experiment.
+    /// Artifact name or id
     #[arg(value_name = "NAME|ID", value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub artifact: String,
-    /// Destination directory (default: ./<artifact name>).
+    /// Download into this directory
     #[arg(short, long, value_name = "DIR")]
     pub directory: Option<PathBuf>,
-    /// Overwrite existing destination files.
+    /// Overwrite existing files
     #[arg(long)]
     pub force: bool,
 }
@@ -115,12 +112,11 @@ impl Render for ArtifactDownloaded {}
 
 impl Render for ArtifactListResponse {
     fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
-        Table::new(["NAME", "KIND", "ID", "FILES", "CREATED AT"])
+        Table::new(["NAME", "KIND", "FILES", "CREATED AT"])
             .rows(self.items.iter().map(|artifact| {
                 [
                     artifact.name.clone(),
                     artifact.kind.clone(),
-                    artifact.id.clone(),
                     manifest_files(&artifact.manifest)
                         .map(|files| files.len().to_string())
                         .unwrap_or_default(),
@@ -131,7 +127,7 @@ impl Render for ArtifactListResponse {
     }
 
     fn summary(&self) -> Option<String> {
-        Some(counted(
+        Some(list_summary(
             self.items.len(),
             self.total as u64,
             ["artifact", "artifacts"],
@@ -147,7 +143,7 @@ pub fn handle_command(args: ArtifactsArgs, context: CliContext) -> anyhow::Resul
             if directory.as_os_str().is_empty() || (directory.exists() && !directory.is_dir()) {
                 return Err(CliError::new(
                     ErrorKind::Usage,
-                    format!("Invalid destination directory '{}'.", directory.display()),
+                    format!("'{}' isn't a directory.", directory.display()),
                 )
                 .into());
             }
@@ -215,14 +211,16 @@ pub fn handle_command(args: ArtifactsArgs, context: CliContext) -> anyhow::Resul
                 .collect();
             let files =
                 download_files(&client, context.terminal(), &directory, &files, args.force)?;
+            let bytes = files.iter().map(|file| file.bytes).sum();
             context.terminal().outro(&format!(
-                "Downloaded artifact '{}' to {}.",
+                "Downloaded artifact '{}' ({}) to {}.",
                 artifact.name,
+                size(bytes),
                 directory.display()
             ));
             Ok(ArtifactDownloaded {
                 experiment: args.experiment,
-                bytes: files.iter().map(|file| file.bytes).sum(),
+                bytes,
                 artifact,
                 directory,
                 files,

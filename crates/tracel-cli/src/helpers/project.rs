@@ -17,12 +17,9 @@ use tracel_client::console::Client;
 
 pub fn find_manifest() -> anyhow::Result<std::path::PathBuf> {
     try_locate_manifest().ok_or_else(|| {
-        CliError::new(
-            CliErrorKind::Usage,
-            "Could not locate a Cargo.toml manifest.",
-        )
-        .with_hint("Run this command inside a Burn project directory.")
-        .into()
+        CliError::new(CliErrorKind::Usage, "Not in a Cargo workspace.")
+            .with_hint("Run it in your project's directory, or pass -C <DIR>.")
+            .into()
     })
 }
 
@@ -40,18 +37,18 @@ fn explain_project_context_error(e: ProjectContextError) -> anyhow::Error {
     let (kind, hint) = match e.kind() {
         ErrorKind::ManifestNotFound => (
             CliErrorKind::Usage,
-            "Run this command from a Rust project directory.",
+            Some("Run it in your project's directory, or pass -C <DIR>."),
         ),
-        ErrorKind::ProjectNotLinked => (CliErrorKind::NotFound, "Run 'tracel init' to link it."),
-        ErrorKind::Parsing => (
-            CliErrorKind::Usage,
-            "Check that Cargo.toml and tracel.toml are valid.",
+        ErrorKind::ProjectNotLinked => (
+            CliErrorKind::NotFound,
+            Some("Run `tracel init` to link it."),
         ),
+        ErrorKind::Parsing => (CliErrorKind::Usage, None),
         ErrorKind::ProjectInitialization => (
             CliErrorKind::Internal,
-            "Re-link the project with 'tracel init --force'.",
+            Some("Link it again with `tracel init --force`."),
         ),
-        ErrorKind::Unexpected => (CliErrorKind::Internal, "Check your project setup."),
+        ErrorKind::Unexpected => (CliErrorKind::Internal, None),
     };
 
     let mut message = e.to_string();
@@ -61,9 +58,11 @@ fn explain_project_context_error(e: ProjectContextError) -> anyhow::Error {
         cause = err.source();
     }
 
-    CliError::new(kind, format!("{message}."))
-        .with_hint(hint)
-        .into()
+    let error = CliError::new(kind, message);
+    match hint {
+        Some(hint) => error.with_hint(hint).into(),
+        None => error.into(),
+    }
 }
 
 /// Require a linked Tracel Console project.
@@ -84,7 +83,7 @@ pub fn parse_project(value: &str) -> Result<TracelProject, CliError> {
 
     Err(CliError::new(
         CliErrorKind::Usage,
-        format!("Invalid --project value '{value}': expected <namespace>/<name>."),
+        format!("--project needs <namespace>/<name>, not '{value}'."),
     ))
 }
 
@@ -123,11 +122,28 @@ struct TracelTomlConfig {
 }
 
 fn project_not_found() -> CliError {
-    CliError::new(
+    CliError::new(CliErrorKind::NotFound, "No project here.")
+        .with_hint("Run `tracel init`, or pass --project <namespace>/<name>.")
+}
+
+/// The error for a project the Tracel Console doesn't have, with a hint that fits how
+/// it was selected.
+pub fn missing_project(project: &TracelProject, source: &ProjectSource) -> CliError {
+    let error = CliError::new(
         CliErrorKind::NotFound,
-        "No Tracel Console project resolved.",
-    )
-    .with_hint("Run 'tracel init' or pass --project <namespace>/<name>.")
+        format!(
+            "No project {}/{} on the Tracel Console.",
+            project.owner, project.name
+        ),
+    );
+    match source {
+        ProjectSource::TracelToml => {
+            error.with_hint("Run `tracel init --force` to link another project.")
+        }
+        ProjectSource::Flag | ProjectSource::Env => {
+            error.with_hint("List your projects with `tracel project list`.")
+        }
+    }
 }
 
 /// Resolve project identity from flags, environment variables, or tracel.toml.
@@ -153,7 +169,7 @@ pub fn resolve_project(flag: Option<&TracelProject>) -> anyhow::Result<ResolvedP
                 Err(error) => {
                     return Err(CliError::new(
                         CliErrorKind::Usage,
-                        format!("Failed to read '{}': {error}", path.display()),
+                        format!("Can't read '{}': {error}", path.display()),
                     )
                     .into());
                 }
@@ -161,7 +177,7 @@ pub fn resolve_project(flag: Option<&TracelProject>) -> anyhow::Result<ResolvedP
             toml::from_str(&contents).map_err(|error| {
                 CliError::new(
                     CliErrorKind::Usage,
-                    format!("Failed to parse '{}': {error}", path.display()),
+                    format!("Can't parse '{}': {error}", path.display()),
                 )
                 .into()
             })
@@ -217,25 +233,18 @@ pub fn can_initialize_project(force: bool) -> anyhow::Result<bool> {
     Ok(force || !is_tracel_project_linked())
 }
 
-/// Validate that the linked project exists on Tracel Console server
+/// Fail unless the Tracel Console has `project`, selected by `source`.
 pub fn validate_project_exists_on_server(
-    project: &ProjectContext,
+    project: &TracelProject,
+    source: &ProjectSource,
     client: &Client,
 ) -> anyhow::Result<()> {
-    let bc_project = project.get_project();
-
-    match client.get_project(&bc_project.owner, &bc_project.name) {
+    match client.get_project(&project.owner, &project.name) {
         Ok(_) => Ok(()),
-        Err(e) if e.is_not_found() => Err(CliError::new(
-            CliErrorKind::NotFound,
-            format!(
-                "Project {}/{} not found on Tracel Console. It may have been deleted or renamed.",
-                bc_project.owner, bc_project.name
-            ),
-        )
-        .with_hint("Run 'tracel init --force' to link another project.")
-        .into()),
-        Err(e) => Err(e).context("Failed to verify project exists on server"),
+        Err(e) if e.is_not_found() => Err(missing_project(project, source).into()),
+        Err(e) => {
+            Err(e).with_context(|| format!("Can't look up {}/{}", project.owner, project.name))
+        }
     }
 }
 
@@ -358,7 +367,7 @@ mod tests {
             assert_eq!(report.exit_code, 5);
             assert_eq!(
                 report.hint,
-                Some("Run 'tracel init' or pass --project <namespace>/<name>.")
+                Some("Run `tracel init`, or pass --project <namespace>/<name>.")
             );
         }
         for (source, value) in [
