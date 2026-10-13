@@ -268,11 +268,7 @@ impl Render for MetricMetadataResponse {
             .empty("No metrics recorded.")
             .rows(self.metric_types.iter().map(|name| [name.clone()]))
             .write(out)?;
-        if out.framed() {
-            out.spacer()?;
-        } else {
-            writeln!(out)?;
-        }
+        writeln!(out)?;
         Table::new(["GROUP"])
             .empty("No metric groups.")
             .rows(self.groups.iter().map(|name| [name.clone()]))
@@ -669,7 +665,7 @@ mod tests {
             json!({"type": "end", "running": false})
         );
         let mut text = Vec::new();
-        let mut out = Human::plain(&mut text);
+        let mut out = Human::plain(&mut text, None);
         LogEvent::Log(&item).render(&mut out).unwrap();
         LogEvent::End { running: false }.render(&mut out).unwrap();
         assert_eq!(

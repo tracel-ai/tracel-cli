@@ -1,25 +1,24 @@
 use std::io::{self, Write};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
 use serde::Serialize;
 
 use super::Format;
-use super::human::{Human, Style};
+use super::human::{Draw, Human};
 use super::screen::{Outro, Screen};
 use crate::error::ErrorReport;
 
-/// A command result: serialized for JSON output, written as text for people.
+/// A command result: serialized for JSON output, written for people.
 pub trait Render: Serialize {
-    /// The text a person reads on stdout. The default writes nothing, for actions
-    /// that report what they did on stderr as they go.
+    /// What a person reads. The default writes nothing, for actions that report
+    /// what they did on stderr as they go.
     fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         let _ = out;
         Ok(())
     }
 
     /// One line that sums the result up: the badge that closes the frame on a
-    /// terminal, the last line of the text otherwise.
+    /// terminal, and the last line of plain text.
     fn summary(&self) -> Option<String> {
         None
     }
@@ -84,7 +83,8 @@ struct Failure<'a> {
 #[error("stdout was closed")]
 pub struct StdoutClosed;
 
-/// Stdout, which carries only command results, in the format the user chose.
+/// Where command results go, in the format the user chose: drawn in the command's
+/// frame on a terminal, and otherwise on stdout, which carries nothing else.
 #[derive(Clone)]
 pub struct Output {
     screen: Arc<Screen>,
@@ -98,28 +98,30 @@ impl Output {
     /// Writes the result of a finished command, and closes the frame it was drawn in
     /// with its summary.
     pub fn finish(&self, outcome: Outcome) -> anyhow::Result<()> {
-        let format = self.screen.format();
-        let style = self.screen.text_style();
-        let framed = self.screen.frame_open();
         let summary = outcome.0.as_ref().and_then(|report| report.summary());
-        let line_start = AtomicBool::new(true);
-        self.write_stdout(|out| {
-            let summary = if framed { None } else { summary.as_deref() };
-            finish(format, style, &line_start, outcome, summary, out)
-        })?;
-        if framed {
+        if let Some(report) = outcome.0 {
+            if self.screen.frames_results() {
+                let draws = drawn(report.as_ref(), self.screen.frame_width())?;
+                self.screen.draw(|| draws.iter().try_for_each(Draw::show));
+            } else {
+                let (format, width) = (self.screen.format(), self.screen.stdout_width());
+                self.write_stdout(|out| {
+                    write_result(format, report.as_ref(), summary.as_deref(), width, out)
+                })?;
+            }
+        }
+        if self.screen.frame_open() {
             self.screen.outro(Outro::Done(summary.as_deref()));
         }
         Ok(())
     }
 
-    /// Writes one event of a stream as it happens: an NDJSON line, or its text.
+    /// Writes one event of a stream as it happens: an NDJSON line, or its plain text,
+    /// which stays the program's own output on a terminal too.
     pub fn event(&self, event: &impl Render) -> anyhow::Result<()> {
-        let format = self.screen.format();
-        let style = self.screen.text_style();
-        let line_start = self.screen.line_start();
+        let (format, width) = (self.screen.format(), self.screen.stdout_width());
         self.write_stdout(|out| {
-            write_event(format, style, line_start, event, out)?;
+            write_event(format, width, event, out)?;
             out.flush()
         })
     }
@@ -142,28 +144,27 @@ impl Output {
     }
 }
 
-/// `summary` is the result's last line, when no frame shows it.
-fn finish(
+/// The cliclack lines of a result, fitted to `width`.
+fn drawn(report: &dyn Report, width: Option<usize>) -> io::Result<Vec<Draw>> {
+    let mut out = Human::cliclack(width);
+    report.write_text(&mut out)?;
+    Ok(out.into_draws())
+}
+
+/// A result on stdout: its envelope, or its plain text ending with `summary`.
+fn write_result(
     format: Format,
-    style: Style,
-    line_start: &AtomicBool,
-    outcome: Outcome,
+    report: &dyn Report,
     summary: Option<&str>,
+    width: Option<usize>,
     out: &mut dyn Write,
 ) -> io::Result<()> {
-    let Some(report) = outcome.0 else {
-        return Ok(());
-    };
     match format {
         Format::Human => {
-            let mut out = Human::new(out, style, line_start);
+            let mut out = Human::plain(out, width);
             report.write_text(&mut out)?;
-            out.spacer()?;
             match summary {
-                Some(summary) => {
-                    let summary = out.dim(summary);
-                    writeln!(out, "{summary}")
-                }
+                Some(summary) => writeln!(out, "{summary}"),
                 None => Ok(()),
             }
         }
@@ -176,13 +177,12 @@ fn finish(
 
 fn write_event(
     format: Format,
-    style: Style,
-    line_start: &AtomicBool,
+    width: Option<usize>,
     event: &impl Render,
     out: &mut dyn Write,
 ) -> io::Result<()> {
     match format {
-        Format::Human => event.render(&mut Human::new(out, style, line_start)),
+        Format::Human => event.render(&mut Human::plain(out, width)),
         Format::Json => {
             serde_json::to_writer(&mut *out, event)?;
             writeln!(out)
@@ -232,52 +232,52 @@ mod tests {
         String::from_utf8(out).unwrap()
     }
 
-    fn finished(format: Format, outcome: Outcome, summary: Option<&str>) -> String {
-        let line_start = AtomicBool::new(true);
-        written(|out| finish(format, Style::plain(), &line_start, outcome, summary, out))
+    fn result(format: Format, report: &dyn Report, summary: Option<&str>) -> String {
+        written(|out| write_result(format, report, summary, None, out))
     }
 
     #[test]
     fn results_are_an_envelope_or_their_text() {
-        let greeting = || Outcome::from(Greeting { name: "Ada" });
+        let greeting = Greeting { name: "Ada" };
         assert_eq!(
-            finished(Format::Json, greeting(), None),
+            result(Format::Json, &greeting, None),
             "{\"ok\":true,\"data\":{\"name\":\"Ada\"}}\n"
         );
-        assert_eq!(finished(Format::Human, greeting(), None), "Hello, Ada.\n");
-        assert_eq!(finished(Format::Human, Done {}.into(), None), "");
+        assert_eq!(result(Format::Human, &greeting, None), "Hello, Ada.\n");
+        assert_eq!(result(Format::Human, &Done {}, None), "");
     }
 
     #[test]
-    fn without_a_frame_the_summary_ends_the_text() {
-        let greeting = || Outcome::from(Greeting { name: "Ada" });
+    fn plain_text_ends_with_the_summary() {
+        let greeting = Greeting { name: "Ada" };
         assert_eq!(
-            finished(Format::Human, greeting(), Some("Greeted.")),
+            result(Format::Human, &greeting, Some("Greeted.")),
             "Hello, Ada.\nGreeted.\n"
         );
         assert_eq!(
-            finished(Format::Json, greeting(), Some("Greeted.")),
+            result(Format::Json, &greeting, Some("Greeted.")),
             "{\"ok\":true,\"data\":{\"name\":\"Ada\"}}\n"
         );
     }
 
     #[test]
-    fn streamed_output_is_not_followed_by_an_envelope() {
-        for format in [Format::Human, Format::Json] {
-            assert_eq!(finished(format, Outcome::streamed(), None), "");
-        }
+    fn in_a_frame_a_result_is_cliclack_lines() {
+        assert_eq!(
+            drawn(&Greeting { name: "Ada" }, None).unwrap(),
+            [Draw::Remark("Hello, Ada.".into())]
+        );
+        assert_eq!(drawn(&Done {}, None).unwrap(), []);
     }
 
     #[test]
     fn events_are_bare_json_lines_or_their_text() {
         let event = Greeting { name: "Ada" };
-        let line_start = AtomicBool::new(true);
         assert_eq!(
-            written(|out| write_event(Format::Json, Style::plain(), &line_start, &event, out)),
+            written(|out| write_event(Format::Json, None, &event, out)),
             "{\"name\":\"Ada\"}\n"
         );
         assert_eq!(
-            written(|out| write_event(Format::Human, Style::plain(), &line_start, &event, out)),
+            written(|out| write_event(Format::Human, None, &event, out)),
             "Hello, Ada.\n"
         );
     }

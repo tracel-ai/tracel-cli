@@ -1,7 +1,8 @@
-//! What the person running a command sees. Stdout carries the command's result and
-//! nothing else, so it can be piped or captured: an envelope with JSON output, or
-//! the text of its `Render` impl. Stderr carries progress, prompts and diagnostics
-//! through `Terminal`. On a terminal both draw in one cliclack frame per command.
+//! What the person running a command sees. On a terminal, cliclack draws one frame
+//! per command, and in it progress, prompts and diagnostics through `Terminal` and
+//! the result through `Output`; what a command streams is written as it comes.
+//! Otherwise stdout carries the result and nothing else, so it can be piped or
+//! captured: an envelope with JSON output, or the plain text of its `Render` impl.
 
 mod format;
 mod human;

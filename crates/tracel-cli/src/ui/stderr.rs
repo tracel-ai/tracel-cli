@@ -30,12 +30,6 @@ impl Terminal {
         self.screen.is_styled()
     }
 
-    /// Draws with cliclack once nothing else is drawing.
-    fn draw(&self, draw: impl FnOnce() -> io::Result<()>) {
-        self.screen.settle(Ending::Done);
-        let _ = draw();
-    }
-
     /// A plain line, for stderr that is not a styled terminal.
     fn line(&self, text: impl Display) {
         let _ = writeln!(
@@ -47,7 +41,7 @@ impl Terminal {
 
     pub fn print_warning(&self, message: &str) {
         if self.is_styled() {
-            self.draw(|| cliclack::log::warning(message));
+            self.screen.draw(|| cliclack::log::warning(message));
         } else if self.is_human() {
             self.line(format_args!("warning: {message}"));
         }
@@ -55,7 +49,7 @@ impl Terminal {
 
     pub fn print(&self, message: &str) {
         if self.is_styled() {
-            self.draw(|| cliclack::log::info(message));
+            self.screen.draw(|| cliclack::log::info(message));
         } else if self.is_human() {
             self.line(message);
         }
@@ -63,7 +57,7 @@ impl Terminal {
 
     pub fn print_err(&self, message: &str) {
         if self.is_styled() {
-            self.draw(|| cliclack::log::error(message));
+            self.screen.draw(|| cliclack::log::error(message));
         } else if self.is_human() {
             self.line(format_args!("error: {message}"));
         }
@@ -71,7 +65,7 @@ impl Terminal {
 
     pub fn print_success(&self, message: &str) {
         if self.is_styled() {
-            self.draw(|| cliclack::log::success(message));
+            self.screen.draw(|| cliclack::log::success(message));
         } else if self.is_human() {
             self.line(message);
         }
@@ -79,7 +73,7 @@ impl Terminal {
 
     pub fn step(&self, message: &str) {
         if self.is_styled() {
-            self.draw(|| cliclack::log::step(message));
+            self.screen.draw(|| cliclack::log::step(message));
         } else {
             self.print(message);
         }
@@ -105,7 +99,7 @@ impl Terminal {
         } else if self.is_styled() {
             match report.hint {
                 Some(hint) => {
-                    self.draw(|| cliclack::log::error(&report.message));
+                    self.screen.draw(|| cliclack::log::error(&report.message));
                     self.screen.outro(Outro::Cancelled(hint));
                 }
                 None => self.screen.outro(Outro::Cancelled(&report.message)),

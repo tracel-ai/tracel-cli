@@ -83,10 +83,12 @@ and errors go to stderr. Commands that change something, such as `init`,
 nothing on stdout. `auth token` prints the bare token unless JSON is requested,
 even when stdout is redirected.
 
-On a terminal, each command draws in one frame: a title, its progress and result,
-and a closing line that sums it up. Tables shorten long descriptions to fit the
-width and show times in your time zone. Redirected output stays plain text, is
-never shortened, and ends with that summary line.
+On a terminal, each command draws everything in one frame: a title, its progress
+and result, and a closing line that sums it up. Tables shorten long descriptions to
+fit the width and show times in your time zone. What a command streams, such as
+`experiments logs --follow`, is written as it arrives, without the frame's border.
+Redirected output is plain text without colors or symbols, is never shortened, and
+ends with that summary line.
 
 | Error code | Exit code |
 | --- | --- |

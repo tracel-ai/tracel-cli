@@ -1,6 +1,5 @@
 use std::fmt::Display;
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -8,71 +7,141 @@ use serde_json::Value;
 /// The narrowest a shrinkable table column gets, ellipsis included.
 const MIN_COLUMN_WIDTH: usize = 4;
 
-/// How text on stdout may look.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Style {
-    pub color: bool,
-    /// The columns text may use, when stdout is a terminal.
-    pub width: Option<usize>,
-    /// Whether the text sits inside a cliclack frame, after its bar.
-    pub framed: bool,
+/// A result for a person: lines cliclack draws in the command's frame on a terminal,
+/// plain text everywhere else. Cards, headings and tables are written through
+/// `Details`, `heading` and `Table`; other text with `write!`.
+pub struct Human<'a> {
+    sink: Sink<'a>,
+    width: Option<usize>,
+    color: bool,
 }
 
-impl Style {
-    pub fn plain() -> Self {
-        Self {
-            color: false,
-            width: None,
-            framed: false,
+enum Sink<'a> {
+    Plain(&'a mut dyn Write),
+    Cliclack(Drawing),
+}
+
+/// One cliclack log line of a result.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Draw {
+    /// A field of a card.
+    Info(String),
+    /// A heading, with the lines under it.
+    Step(String),
+    /// A table, or other text.
+    Remark(String),
+}
+
+impl Draw {
+    /// Draws the line with cliclack, on stderr.
+    pub fn show(&self) -> io::Result<()> {
+        match self {
+            Self::Info(text) => cliclack::log::info(text),
+            Self::Step(text) => cliclack::log::step(text),
+            Self::Remark(text) => cliclack::log::remark(text),
         }
     }
 }
 
-/// Stdout for a person. Inside a frame each line starts with the frame's bar, or with
-/// a symbol as cliclack's own lines do; piped, it is plain text.
-pub struct Human<'a> {
-    out: &'a mut dyn Write,
-    style: Style,
-    line_start: &'a AtomicBool,
-    symbol: Option<String>,
-    line_blank: bool,
-    last_blank: bool,
+/// The lines drawn so far, and the one that text written now goes to.
+#[derive(Default)]
+struct Drawing {
+    draws: Vec<Draw>,
+    open: Option<Open>,
+}
+
+/// The line being written: a heading and the lines under it, or text of its own.
+struct Open {
+    heading: bool,
+    text: Vec<u8>,
+}
+
+impl Drawing {
+    fn open(&mut self, heading: bool, text: impl Into<Vec<u8>>) {
+        self.close();
+        self.open = Some(Open {
+            heading,
+            text: text.into(),
+        });
+    }
+
+    /// Adds `text` to the open line, or to a new one.
+    fn write(&mut self, text: &[u8]) {
+        match &mut self.open {
+            Some(open) => open.text.extend_from_slice(text),
+            None => self.open(false, text),
+        }
+    }
+
+    /// Adds `text` to the heading above it, or starts a line for it.
+    fn block(&mut self, text: &[u8]) {
+        if !self.open.as_ref().is_some_and(|open| open.heading) {
+            self.close();
+        }
+        self.write(text);
+    }
+
+    /// Ends the open line. One that is only blank lines draws nothing: cliclack
+    /// leaves one after each of its lines already.
+    fn close(&mut self) {
+        let Some(Open { heading, text }) = self.open.take() else {
+            return;
+        };
+        let text = String::from_utf8_lossy(&text);
+        let text = text.trim_start_matches('\n').trim_end();
+        if !text.is_empty() {
+            let draw = if heading { Draw::Step } else { Draw::Remark };
+            self.draws.push(draw(text.into()));
+        }
+    }
 }
 
 impl<'a> Human<'a> {
-    /// `line_start` carries over between the writes of one stream.
-    pub fn new(out: &'a mut dyn Write, style: Style, line_start: &'a AtomicBool) -> Self {
+    /// Plain text on `out`. Tables fit in `width` columns, when there is one.
+    pub fn plain(out: &'a mut dyn Write, width: Option<usize>) -> Self {
         Self {
-            out,
-            style,
-            line_start,
-            symbol: None,
-            line_blank: true,
-            // A frame's intro ends with a bar of its own.
-            last_blank: true,
+            sink: Sink::Plain(out),
+            width,
+            color: false,
+        }
+    }
+}
+
+impl Human<'static> {
+    /// cliclack's lines, drawn by `Draw::show`. `width` is what fits after its bar.
+    pub fn cliclack(width: Option<usize>) -> Self {
+        Self {
+            sink: Sink::Cliclack(Drawing::default()),
+            width,
+            color: console::colors_enabled_stderr(),
+        }
+    }
+}
+
+impl Human<'_> {
+    pub fn width(&self) -> Option<usize> {
+        self.width
+    }
+
+    /// The cliclack lines of what was written, in order: none for plain text, which
+    /// is already out.
+    pub fn into_draws(self) -> Vec<Draw> {
+        match self.sink {
+            Sink::Plain(_) => Vec::new(),
+            Sink::Cliclack(mut drawing) => {
+                drawing.close();
+                drawing.draws
+            }
         }
     }
 
-    /// Text without color, width or frame, as when stdout is piped.
-    #[cfg(test)]
-    pub fn plain(out: &'a mut dyn Write) -> Self {
-        static LINE_START: AtomicBool = AtomicBool::new(true);
-        Self::new(out, Style::plain(), &LINE_START)
-    }
-
-    pub fn framed(&self) -> bool {
-        self.style.framed
-    }
-
-    pub fn width(&self) -> Option<usize> {
-        self.style.width
-    }
-
+    /// `text` in `style` on cliclack, when stderr shows colors.
     fn styled(&self, text: impl Display, style: console::Style) -> String {
-        style
-            .apply_to(text)
-            .force_styling(self.style.color)
-            .to_string()
+        if self.color {
+            style.force_styling(true).apply_to(text).to_string()
+        } else {
+            text.to_string()
+        }
     }
 
     pub fn bold(&self, text: impl Display) -> String {
@@ -83,78 +152,82 @@ impl<'a> Human<'a> {
         self.styled(text, console::Style::new().dim())
     }
 
-    /// One line of a card: in a frame, after a bullet and followed by a bar, as
-    /// cliclack logs a message.
-    pub fn item(&mut self, text: impl Display) -> io::Result<()> {
-        if self.framed() {
-            self.symbol = Some(self.styled(console::Emoji("●", "•"), console::Style::new().blue()));
-            writeln!(self, "{text}")?;
-            self.spacer()
-        } else {
-            writeln!(self, "{text}")
-        }
-    }
-
-    /// A line that names what follows: a step in a frame, a title ending in a colon
-    /// otherwise.
+    /// Names what follows, up to the next heading or card: a step with the lines
+    /// under it on cliclack, a title ending in a colon in plain text.
     pub fn heading(&mut self, text: impl Display) -> io::Result<()> {
-        if self.framed() {
-            self.symbol =
-                Some(self.styled(console::Emoji("◇", "o"), console::Style::new().green()));
-            writeln!(self, "{text}")
-        } else {
-            writeln!(self, "{text}:")
+        match &mut self.sink {
+            Sink::Plain(out) => writeln!(out, "{text}:"),
+            Sink::Cliclack(drawing) => {
+                drawing.open(true, format!("{text}\n"));
+                Ok(())
+            }
         }
     }
 
-    /// An empty line of the frame's bar, unless the line before was one.
-    pub fn spacer(&mut self) -> io::Result<()> {
-        if self.framed() && !self.last_blank {
-            writeln!(self)?;
+    /// One field of a card: a line of its own on cliclack, its value aligned after
+    /// labels `width` wide in plain text.
+    fn field(&mut self, label: &str, value: &str, width: usize) -> io::Result<()> {
+        match &mut self.sink {
+            Sink::Plain(out) => {
+                let padding = " ".repeat(width - label.len());
+                writeln!(out, "{label}:{padding}  {value}")
+            }
+            Sink::Cliclack(drawing) => {
+                drawing.close();
+                drawing.draws.push(Draw::Info(format!("{label}: {value}")));
+                Ok(())
+            }
         }
-        Ok(())
     }
 
-    fn bar(&self) -> String {
-        self.styled(
-            console::Emoji("│", "|"),
-            console::Style::new().bright().black(),
-        )
+    /// Lines under a heading, indented in plain text.
+    fn section(&mut self, title: &str, lines: &[String]) -> io::Result<()> {
+        self.heading(title)?;
+        let indent = match self.sink {
+            Sink::Plain(_) => "  ",
+            Sink::Cliclack(_) => "",
+        };
+        lines
+            .iter()
+            .try_for_each(|line| writeln!(self, "{indent}{line}"))
+    }
+
+    /// Lines that belong together, such as a table: a cliclack line of their own,
+    /// unless they sit under a heading.
+    fn block(&mut self, text: &str) -> io::Result<()> {
+        match &mut self.sink {
+            Sink::Plain(out) => out.write_all(text.as_bytes()),
+            Sink::Cliclack(drawing) => {
+                drawing.block(text.as_bytes());
+                Ok(())
+            }
+        }
     }
 }
 
 impl Write for Human<'_> {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        if !self.style.framed {
-            return self.out.write(buffer);
+        match &mut self.sink {
+            Sink::Plain(out) => out.write(buffer),
+            Sink::Cliclack(drawing) => {
+                drawing.write(buffer);
+                Ok(buffer.len())
+            }
         }
-        for line in buffer.split_inclusive(|&byte| byte == b'\n') {
-            if self.line_start.load(Ordering::Relaxed) {
-                let lead = self.symbol.take().unwrap_or_else(|| self.bar());
-                write!(self.out, "{lead}  ")?;
-                self.line_blank = true;
-            }
-            let ends_line = line.ends_with(b"\n");
-            if line.len() > usize::from(ends_line) {
-                self.line_blank = false;
-            }
-            self.out.write_all(line)?;
-            if ends_line {
-                self.last_blank = self.line_blank;
-            }
-            self.line_start.store(ends_line, Ordering::Relaxed);
-        }
-        Ok(buffer.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.out.flush()
+        match &mut self.sink {
+            Sink::Plain(out) => out.flush(),
+            Sink::Cliclack(_) => Ok(()),
+        }
     }
 }
 
-/// Columns aligned under their headers, one row per line. On a terminal too narrow
-/// for it, the columns marked with `shrink` are shortened to fit. Without rows it
-/// writes nothing, or its `empty` text: a list says it has none in its summary.
+/// Columns aligned under their headers, one row per line. When the width is too
+/// narrow for it, the columns marked with `shrink` are shortened to fit. Without
+/// rows it writes nothing, or its `empty` text: a list says it has none in its
+/// summary.
 pub struct Table<const N: usize> {
     headers: [&'static str; N],
     rows: Vec<[String; N]>,
@@ -200,7 +273,7 @@ impl<const N: usize> Table<N> {
             return match self.empty {
                 Some(text) => {
                     let text = out.dim(text);
-                    writeln!(out, "{text}")
+                    out.block(&format!("{text}\n"))
                 }
                 None => Ok(()),
             };
@@ -223,15 +296,15 @@ impl<const N: usize> Table<N> {
 
         let header =
             std::array::from_fn(|column| out.bold(fitted(self.headers[column], widths[column])));
-        self.write_line(out, &header, &widths)?;
+        let mut text = line(&header, &widths);
         for row in &rows {
             let cells = std::array::from_fn(|column| match row[column].as_str() {
                 "-" => out.dim("-"),
                 cell => fitted(cell, widths[column]),
             });
-            self.write_line(out, &cells, &widths)?;
+            text.push_str(&line(&cells, &widths));
         }
-        Ok(())
+        out.block(&text)
     }
 
     /// Narrows the widest shrinkable columns until the table fits in `available`
@@ -248,26 +321,24 @@ impl<const N: usize> Table<N> {
             }
         }
     }
-
-    fn write_line(
-        &self,
-        out: &mut Human<'_>,
-        cells: &[String; N],
-        widths: &[usize; N],
-    ) -> io::Result<()> {
-        for (column, cell) in cells.iter().enumerate() {
-            write!(out, "{cell}")?;
-            if column + 1 < N {
-                let padding = widths[column].saturating_sub(console::measure_text_width(cell));
-                write!(out, "{}  ", " ".repeat(padding))?;
-            }
-        }
-        writeln!(out)
-    }
 }
 
-/// Labelled values: a card of bullets in a frame, aligned lines otherwise. Sections
-/// list the fields of a JSON value under a heading.
+/// One row of a table: each cell but the last padded to its column, then a gap.
+fn line<const N: usize>(cells: &[String; N], widths: &[usize; N]) -> String {
+    let mut line = String::new();
+    for (column, cell) in cells.iter().enumerate() {
+        line.push_str(cell);
+        if column + 1 < N {
+            let padding = widths[column].saturating_sub(console::measure_text_width(cell));
+            line.push_str(&" ".repeat(padding + 2));
+        }
+    }
+    line.push('\n');
+    line
+}
+
+/// Labelled values: a card of fields. Sections list the fields of a JSON value
+/// under a heading.
 #[derive(Default)]
 pub struct Details {
     entries: Vec<Entry>,
@@ -325,24 +396,18 @@ impl Details {
             match entry {
                 Entry::Field(label, value) => {
                     let value = shown(out, value);
-                    if out.framed() {
-                        out.item(format!("{label}: {value}"))?;
-                    } else {
-                        let padding = " ".repeat(width - label.len());
-                        let label = out.dim(format!("{label}:"));
-                        writeln!(out, "{label}{padding}  {value}")?;
-                    }
+                    out.field(label, &value, width)?;
                 }
                 Entry::Section(title, fields) => {
-                    out.heading(title)?;
                     let width = fields.iter().map(|(key, _)| key.len()).max().unwrap_or(0);
-                    let indent = if out.framed() { "" } else { "  " };
-                    for (key, value) in fields {
-                        let padding = " ".repeat(width - key.len());
-                        let (key, value) = (out.dim(key), shown(out, value));
-                        writeln!(out, "{indent}{key}{padding}  {value}")?;
-                    }
-                    out.spacer()?;
+                    let lines: Vec<String> = fields
+                        .iter()
+                        .map(|(key, value)| {
+                            let padding = " ".repeat(width - key.len());
+                            format!("{}{padding}  {}", out.dim(key), shown(out, value))
+                        })
+                        .collect();
+                    out.section(title, &lines)?;
                 }
             }
         }
@@ -407,38 +472,22 @@ fn cell_text(value: &str) -> String {
 mod tests {
     use super::*;
 
-    fn text(style: Style, write: impl FnOnce(&mut Human<'_>) -> io::Result<()>) -> String {
-        let line_start = AtomicBool::new(true);
+    fn text(width: Option<usize>, write: impl FnOnce(&mut Human<'_>) -> io::Result<()>) -> String {
         let mut out = Vec::new();
-        write(&mut Human::new(&mut out, style, &line_start)).unwrap();
+        write(&mut Human::plain(&mut out, width)).unwrap();
         String::from_utf8(out).unwrap()
     }
 
     fn plain(write: impl FnOnce(&mut Human<'_>) -> io::Result<()>) -> String {
-        text(Style::plain(), write)
+        text(None, write)
     }
 
-    fn framed(width: Option<usize>) -> Style {
-        Style {
-            color: false,
-            width,
-            framed: true,
-        }
-    }
-
-    /// `text` with the frame's glyphs as this terminal draws them.
-    fn drawn(text: &str) -> String {
-        text.replace('│', &console::Emoji("│", "|").to_string())
-            .replace('●', &console::Emoji("●", "•").to_string())
-            .replace('◇', &console::Emoji("◇", "o").to_string())
-    }
-
-    fn narrow(width: usize) -> Style {
-        Style {
-            color: false,
-            width: Some(width),
-            framed: false,
-        }
+    /// The cliclack lines `write` makes, unstyled.
+    fn drawn(write: impl FnOnce(&mut Human<'_>) -> io::Result<()>) -> Vec<Draw> {
+        let mut out = Human::cliclack(None);
+        out.color = false;
+        write(&mut out).unwrap();
+        out.into_draws()
     }
 
     fn table() -> Table<3> {
@@ -448,14 +497,13 @@ mod tests {
         ])
     }
 
+    const TABLE: &str = "NAME     DESCRIPTION  ID\n\
+                         weights  two lines    1\n\
+                         w        -            22";
+
     #[test]
     fn table_aligns_columns_and_keeps_cells_on_one_line() {
-        assert_eq!(
-            plain(|out| table().write(out)),
-            "NAME     DESCRIPTION  ID\n\
-             weights  two lines    1\n\
-             w        -            22\n"
-        );
+        assert_eq!(plain(|out| table().write(out)), format!("{TABLE}\n"));
     }
 
     #[test]
@@ -469,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn a_narrow_terminal_shortens_only_shrinkable_columns() {
+    fn a_narrow_width_shortens_only_shrinkable_columns() {
         let table = || {
             Table::new(["NAME", "DESCRIPTION", "ID"]).rows([[
                 "weights".into(),
@@ -478,12 +526,12 @@ mod tests {
             ]])
         };
         assert_eq!(
-            text(narrow(36), |out| table().shrink("DESCRIPTION").write(out)),
+            text(Some(36), |out| table().shrink("DESCRIPTION").write(out)),
             "NAME     DESCRIPTION      ID\n\
              weights  a rather long…   0123456789\n"
         );
         assert_eq!(
-            text(narrow(36), |out| table().write(out)),
+            text(Some(36), |out| table().write(out)),
             plain(|out| table().write(out))
         );
     }
@@ -491,7 +539,7 @@ mod tests {
     #[test]
     fn a_shrinking_column_can_cut_its_header() {
         assert_eq!(
-            text(narrow(18), |out| table().shrink("DESCRIPTION").write(out)),
+            text(Some(18), |out| table().shrink("DESCRIPTION").write(out)),
             "NAME     DESC…  ID\n\
              weights  two…   1\n\
              w        -      22\n"
@@ -499,26 +547,14 @@ mod tests {
     }
 
     #[test]
-    fn a_framed_table_sits_after_the_bar() {
-        assert_eq!(
-            text(framed(None), |out| table().write(out)),
-            drawn(
-                "│  NAME     DESCRIPTION  ID\n\
-                 │  weights  two lines    1\n\
-                 │  w        -            22\n"
-            )
-        );
-    }
-
-    #[test]
-    fn colors_apply_only_when_enabled() {
-        let colored = Style {
-            color: true,
-            width: None,
-            framed: false,
-        };
-        assert!(text(colored, |out| table().write(out)).contains("\u{1b}["));
-        assert!(!plain(|out| table().write(out)).contains("\u{1b}["));
+    fn plain_text_is_never_styled() {
+        let text = plain(|out| {
+            details().write(out)?;
+            table().write(out)?;
+            let (bold, dim) = (out.bold("bold"), out.dim("dim"));
+            writeln!(out, "{bold} {dim}")
+        });
+        assert!(!text.contains('\u{1b}'));
     }
 
     fn details() -> Details {
@@ -546,35 +582,74 @@ mod tests {
     }
 
     #[test]
-    fn framed_details_are_a_card() {
+    fn on_cliclack_details_are_a_line_per_field_and_a_step_per_section() {
         assert_eq!(
-            text(framed(None), |out| details().write(out)),
-            drawn(
-                "●  Name: weights\n\
-                 │  \n\
-                 ●  Description: -\n\
-                 │  \n\
-                 ◇  Config\n\
-                 │  lr               0.1\n\
-                 │  schedule.warmup  2\n\
-                 │  tags             [\"a\"]\n\
-                 │  \n"
-            )
+            drawn(|out| details().write(out)),
+            [
+                Draw::Info("Name: weights".into()),
+                Draw::Info("Description: -".into()),
+                Draw::Step(
+                    "Config\n\
+                     lr               0.1\n\
+                     schedule.warmup  2\n\
+                     tags             [\"a\"]"
+                        .into()
+                ),
+            ]
         );
     }
 
     #[test]
-    fn a_stream_keeps_one_bar_per_line_across_writes() {
-        let line_start = AtomicBool::new(true);
-        let mut out = Vec::new();
-        for piece in ["par", "tial\nnext", "\n"] {
-            Human::new(&mut out, framed(None), &line_start)
-                .write_all(piece.as_bytes())
-                .unwrap();
-        }
+    fn on_cliclack_a_heading_takes_the_table_under_it() {
+        let draws = drawn(|out| {
+            out.heading("Files")?;
+            table().write(out)?;
+            Details::new()
+                .section("Metadata", &serde_json::json!({"seed": 7}))
+                .write(out)
+        });
         assert_eq!(
-            String::from_utf8(out).unwrap(),
-            drawn("│  partial\n│  next\n")
+            draws,
+            [
+                Draw::Step(format!("Files\n{TABLE}")),
+                Draw::Step("Metadata\nseed  7".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn on_cliclack_a_table_is_a_line_of_its_own() {
+        let draws = drawn(|out| {
+            writeln!(out, "Before.")?;
+            table().write(out)?;
+            writeln!(out)?;
+            Table::new(["GROUP"]).empty("No groups.").write(out)
+        });
+        assert_eq!(
+            draws,
+            [
+                Draw::Remark("Before.".into()),
+                Draw::Remark(TABLE.into()),
+                Draw::Remark("No groups.".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn on_cliclack_text_collects_until_the_next_field() {
+        let draws = drawn(|out| {
+            write!(out, "par")?;
+            writeln!(out, "tial")?;
+            writeln!(out, "next")?;
+            Details::new().field("Name", "weights").write(out)?;
+            writeln!(out)
+        });
+        assert_eq!(
+            draws,
+            [
+                Draw::Remark("partial\nnext".into()),
+                Draw::Info("Name: weights".into()),
+            ]
         );
     }
 

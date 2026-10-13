@@ -301,7 +301,6 @@ impl Render for ModelVersionResponse {
                 ]
             }))
             .write(out)?;
-        out.spacer()?;
         Details::new()
             .section("Metadata", &self.metadata)
             .write(out)

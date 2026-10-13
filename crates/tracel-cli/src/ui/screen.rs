@@ -5,20 +5,19 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use cliclack::{MultiProgress, ProgressBar};
 
 use super::Format;
-use super::human::Style;
 
-/// The width cliclack's bar and the space after it take at the start of a line.
+/// The columns cliclack's bar and the space after it take at the start of a line.
 const GUTTER_WIDTH: usize = 3;
 
-/// The terminal a command draws on. Stderr draws cliclack frames and widgets on it
-/// when it is a styled terminal, and stdout shares it when stdout is a terminal too.
-/// Only one thing draws at a time: anything new settles the live widget first.
+/// The terminal a command draws on. With human output on a styled stderr, cliclack
+/// draws a frame and widgets there, and the result too when stdout is the same
+/// terminal. Only one thing draws at a time: anything new settles the live widget
+/// first.
 pub struct Screen {
     format: Format,
     styled: bool,
     stdout_is_terminal: bool,
     frame: AtomicBool,
-    line_start: AtomicBool,
     live: Mutex<Option<Live>>,
     next_id: AtomicU64,
 }
@@ -50,7 +49,6 @@ impl Screen {
             styled: format == Format::Human && io::stderr().is_terminal(),
             stdout_is_terminal: io::stdout().is_terminal(),
             frame: AtomicBool::new(false),
-            line_start: AtomicBool::new(true),
             live: Mutex::new(None),
             next_id: AtomicU64::new(0),
         }
@@ -66,40 +64,31 @@ impl Screen {
     }
 
     /// Whether stdout lands among what stderr draws.
-    pub fn shares_stdout(&self) -> bool {
+    fn shares_stdout(&self) -> bool {
         self.styled && self.stdout_is_terminal
-    }
-
-    /// How text on stdout may look: colors and width only on a terminal, and drawn
-    /// inside the frame when one is open there.
-    pub fn text_style(&self) -> Style {
-        if !self.stdout_is_terminal {
-            return Style::plain();
-        }
-        let framed = self.shares_stdout() && self.frame_open();
-        Style {
-            color: console::colors_enabled(),
-            width: console::Term::stdout()
-                .size_checked()
-                .map(|(_, columns)| usize::from(columns))
-                .map(|columns| {
-                    if framed {
-                        columns.saturating_sub(GUTTER_WIDTH)
-                    } else {
-                        columns
-                    }
-                }),
-            framed,
-        }
     }
 
     pub fn frame_open(&self) -> bool {
         self.frame.load(Ordering::Relaxed)
     }
 
-    /// Whether the next text on stdout starts a line, across the writes of a stream.
-    pub fn line_start(&self) -> &AtomicBool {
-        &self.line_start
+    /// Whether cliclack draws the result in the frame, which stdout shares.
+    pub fn frames_results(&self) -> bool {
+        self.shares_stdout() && self.frame_open()
+    }
+
+    /// The columns inside the frame, after cliclack's bar.
+    pub fn frame_width(&self) -> Option<usize> {
+        columns(&console::Term::stderr()).map(|columns| columns.saturating_sub(GUTTER_WIDTH))
+    }
+
+    /// The columns of the terminal stdout is, if it is one.
+    pub fn stdout_width(&self) -> Option<usize> {
+        if self.stdout_is_terminal {
+            columns(&console::Term::stdout())
+        } else {
+            None
+        }
     }
 
     /// Opens the frame a command draws in, under a green title badge.
@@ -110,7 +99,6 @@ impl Screen {
         self.settle(Ending::Done);
         let badge = console::style(format!(" ▶ {title} ")).black().on_green();
         let _ = cliclack::intro(badge);
-        self.line_start.store(true, Ordering::Relaxed);
         self.frame.store(true, Ordering::Relaxed);
     }
 
@@ -129,12 +117,17 @@ impl Screen {
                 cliclack::outro_cancel(console::style(format!(" {message} ")).black().on_red())
             }
         };
-        self.line_start.store(true, Ordering::Relaxed);
         self.frame.store(false, Ordering::Relaxed);
     }
 
     pub fn next_id(&self) -> u64 {
         self.next_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Settles the live widget, then draws with cliclack.
+    pub fn draw(&self, draw: impl FnOnce() -> io::Result<()>) {
+        self.settle(Ending::Done);
+        let _ = draw();
     }
 
     /// Settles the live widget, then draws the one `draw` makes as live widget `id`.
@@ -204,6 +197,12 @@ impl Screen {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+}
+
+fn columns(terminal: &console::Term) -> Option<usize> {
+    terminal
+        .size_checked()
+        .map(|(_, columns)| usize::from(columns))
 }
 
 impl Live {
