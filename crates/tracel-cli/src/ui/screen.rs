@@ -150,7 +150,10 @@ impl Screen {
                 (false, true) => console::style(summary).for_stderr().bold().to_string(),
                 (true, _) => dim(&place),
             };
-            cliclack::outro_note(title, body.trim_end())
+            cliclack::set_theme(ResultTheme);
+            let drawn = cliclack::outro_note(title, body.trim_end());
+            cliclack::reset_theme();
+            drawn
         });
     }
 
@@ -263,6 +266,21 @@ impl Screen {
         self.live
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// cliclack's theme while a result's box is drawn. cliclack dims the text of a box, as
+/// it dims a prompt's answer; a result keeps its own styles instead. tracel sets no
+/// other theme, so drawing the box goes back to cliclack's own after it.
+struct ResultTheme;
+
+impl cliclack::Theme for ResultTheme {
+    fn input_style(&self, state: &cliclack::ThemeState) -> console::Style {
+        match state {
+            cliclack::ThemeState::Cancel => console::Style::new().dim().strikethrough(),
+            cliclack::ThemeState::Submit => console::Style::new(),
+            _ => console::Style::new(),
+        }
     }
 }
 

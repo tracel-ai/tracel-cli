@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -305,15 +304,11 @@ fn build_release_binary(
     if let Some(linker) = linker {
         cmd_label.push_str(&format!(" (linker {linker})"));
     }
-    context
-        .terminal()
-        .print(&format!("Building release binary ({cmd_label})..."));
-
     let mut command = cargo::command();
     for arg in driver.subcommand_args() {
         command.arg(arg);
     }
-    command.arg("--release").arg("--message-format=json");
+    command.arg("--release");
     if let Some(triple) = target {
         command.arg("--target").arg(triple);
         if let Some(linker) = linker {
@@ -322,32 +317,20 @@ fn build_release_binary(
                 .arg(format!("target.{triple}.linker=\"{linker}\""));
         }
     }
-    let output = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .output()
-        .with_context(|| format!("Failed to run `{cmd_label}`"))?;
-
-    if !output.status.success() {
-        anyhow::bail!("`{cmd_label}` failed");
+    let spinner = context.terminal().spinner();
+    spinner.start(format!("Building release binary ({cmd_label})..."));
+    let built = cargo::build_quietly(command, &cmd_label, |status| {
+        spinner.set_status(format!("Building release binary: {status}"));
+    });
+    match &built {
+        Ok(build) if build.succeeded() => spinner.stop("Built release binary."),
+        _ => spinner.error("Could not build the release binary."),
     }
-
-    let mut executables: Vec<(String, PathBuf)> = Vec::new();
-    for line in output.stdout.split(|&b| b == b'\n') {
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(msg) = serde_json::from_slice::<serde_json::Value>(line) {
-            if msg.get("reason").and_then(|r| r.as_str()) == Some("compiler-artifact") {
-                if let Some(exe) = msg.get("executable").and_then(|e| e.as_str()) {
-                    let name = msg["target"]["name"].as_str().ok_or_else(|| {
-                        anyhow::anyhow!("Cargo did not return a name for binary {exe}")
-                    })?;
-                    executables.push((name.to_string(), PathBuf::from(exe)));
-                }
-            }
-        }
+    let built = built?;
+    if !built.succeeded() {
+        built.show_output();
     }
+    let executables = built.executables()?;
 
     let names: Vec<&str> = executables.iter().map(|(name, _)| name.as_str()).collect();
     if let Some(bin) = bin {

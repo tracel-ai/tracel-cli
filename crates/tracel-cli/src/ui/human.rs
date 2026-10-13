@@ -7,10 +7,6 @@ use serde_json::Value;
 /// The narrowest a shrinkable table column gets, ellipsis included.
 const MIN_COLUMN_WIDTH: usize = 4;
 
-/// A box's text is dim, and a styled span ends with a reset, so each span turns dim
-/// back on after it.
-const BOX_TEXT: &str = "\u{1b}[2m";
-
 /// A result as text for a person: plain, as stdout carries it, or styled for the box a
 /// terminal shows it in. Cards, headings and tables are written through `Details`,
 /// `heading` and `Table`; other text with `write!`.
@@ -47,7 +43,7 @@ impl Human<'_> {
 
     fn styled(&self, text: impl Display, style: console::Style) -> String {
         if self.styled {
-            format!("{}{BOX_TEXT}", style.force_styling(true).apply_to(text))
+            style.force_styling(true).apply_to(text).to_string()
         } else {
             text.to_string()
         }
@@ -69,7 +65,8 @@ impl Human<'_> {
     /// One field of a card, its value aligned after labels `width` wide.
     fn field(&mut self, label: &str, value: &str, width: usize) -> io::Result<()> {
         let padding = " ".repeat(width - label.len());
-        writeln!(self, "{label}:{padding}  {value}")
+        let label = self.dim(format!("{label}:"));
+        writeln!(self, "{label}{padding}  {value}")
     }
 
     /// Lines under a heading, indented.
@@ -457,13 +454,13 @@ mod tests {
     }
 
     #[test]
-    fn a_styled_span_turns_the_box_dim_back_on() {
+    fn a_box_styles_its_spans() {
         assert_eq!(
             boxed(None, |out| {
                 let (bold, dim) = (out.bold("NAME"), out.dim("-"));
                 writeln!(out, "{bold} {dim} x")
             }),
-            "\u{1b}[1mNAME\u{1b}[0m\u{1b}[2m \u{1b}[2m-\u{1b}[0m\u{1b}[2m x\n"
+            "\u{1b}[1mNAME\u{1b}[0m \u{1b}[2m-\u{1b}[0m x\n"
         );
     }
 

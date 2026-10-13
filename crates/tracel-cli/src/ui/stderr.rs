@@ -339,6 +339,16 @@ impl TerminalSpinner {
         }
     }
 
+    /// A passing detail of the step, such as what cargo compiles: shown on a terminal
+    /// only, where it replaces the spinner's message.
+    pub fn set_status(&self, message: impl Display) {
+        if self.terminal.is_styled() {
+            self.terminal
+                .screen
+                .update(self.id, message.to_string(), None);
+        }
+    }
+
     pub fn set_message(&self, message: impl Display) {
         if self.terminal.is_styled() {
             self.terminal
