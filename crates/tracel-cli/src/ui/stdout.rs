@@ -117,6 +117,13 @@ impl Output {
                     let body = box_text(report.as_ref(), width)?;
                     self.screen.show_result(summary.as_deref(), &body);
                 }
+                Delivery::Text => {
+                    let width = self.screen.stdout_width();
+                    self.write_stdout(|out| report.write_text(&mut Human::plain(out, width)))?;
+                    if summary.is_some() {
+                        self.screen.show_result(summary.as_deref(), "");
+                    }
+                }
                 Delivery::Stdout => {
                     let (format, width) = (self.screen.format(), self.screen.stdout_width());
                     self.write_stdout(|out| {
@@ -140,13 +147,9 @@ impl Output {
     }
 
     /// Choose where a program the command runs writes its stdout: here with text output,
-    /// or stderr with JSON output, which keeps stdout for the envelope. The program
-    /// draws on its own, so the live widget is settled first, outside any session.
+    /// or stderr with JSON output, which keeps stdout for the envelope. On a terminal the
+    /// program writes among a session's lines, so the live widget is settled first.
     pub fn child_stdout(&self) -> Stdio {
-        debug_assert!(
-            !self.screen.session_open(),
-            "a program runs inside a session"
-        );
         self.screen.settle();
         match self.screen.format() {
             Format::Human => Stdio::inherit(),

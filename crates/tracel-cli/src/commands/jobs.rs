@@ -4,7 +4,6 @@ use std::time::{Duration, Instant};
 use clap::{Args, Subcommand};
 use serde::Serialize;
 use tracel_client::ClientError;
-use tracel_client::console::Client;
 use tracel_client::console::job::response::{
     ExecutionContextResponse, JobLogResponse, JobResponse, MoneyResponse, ProjectJobsResponse,
 };
@@ -12,13 +11,15 @@ use tracel_client::console::job::response::{
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
-use crate::helpers::{Resource, map_resource_error, resolve_namespace_project};
+use crate::helpers::{
+    FinalStatus, final_status, follow_logs, job_invocation, missing_job, poll_job, read_job,
+    require_completed, resolve_namespace_project,
+};
 use crate::tools::tracel_config::TracelProject;
 use crate::ui::{
-    Declined, Details, Human, Layout, Outcome, Render, Table, Terminal, Unanswered, list_summary,
+    Declined, Details, Human, Layout, Outcome, Render, Table, Unanswered, elapsed, list_summary,
+    short_digest, when,
 };
-
-const FOLLOW_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Args, Debug)]
 pub struct JobsArgs {
@@ -32,6 +33,7 @@ impl JobsArgs {
             JobsCommands::Logs(args) if args.follow => {
                 Layout::flow(format!("Follow the logs of job {}", args.num))
             }
+            JobsCommands::Logs(_) => Layout::Text,
             JobsCommands::Cancel(args) => Layout::flow(format!("Cancel job {}", args.num)),
             JobsCommands::Wait(args) => Layout::flow(format!("Wait for job {}", args.num)),
             _ => Layout::Read,
@@ -41,73 +43,67 @@ impl JobsArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum JobsCommands {
-    /// List jobs in the selected project, newest first.
+    /// List the project's jobs, newest first
     List,
-    /// Show a job by its project-scoped number.
+    /// Show a job
     Get(GetArgs),
-    /// Read job logs, optionally following until the job finishes.
+    /// Show a job's logs
     Logs(LogsArgs),
-    /// Cancel a new, queued, or running job.
+    /// Cancel a job
     Cancel(CancelArgs),
-    /// Wait until a job finishes; exit 9 when it fails or is cancelled.
+    /// Wait for a job to finish
     Wait(WaitArgs),
 }
 
 #[derive(Args, Debug)]
 pub struct GetArgs {
-    /// Project-scoped job number.
+    /// Job number
     #[arg(value_parser = clap::value_parser!(i32).range(1..))]
     pub num: i32,
 }
 
 #[derive(Args, Debug)]
 pub struct LogsArgs {
-    /// Project-scoped job number.
+    /// Job number
     #[arg(value_parser = clap::value_parser!(i32).range(1..))]
     pub num: i32,
-    /// Byte offset in the log file to read from (default: 0).
+    /// Read from this byte of the logs
     #[arg(long, value_name = "BYTE")]
     pub start: Option<u64>,
-    /// Poll every 2 seconds until finished; JSON output is NDJSON log and end events.
+    /// Keep reading until it finishes
     #[arg(long)]
     pub follow: bool,
 }
 
 #[derive(Args, Debug)]
 pub struct CancelArgs {
-    /// Project-scoped job number.
+    /// Job number
     #[arg(value_parser = clap::value_parser!(i32).range(1..))]
     pub num: i32,
-    /// Cancel without asking for confirmation.
+    /// Cancel without asking
     #[arg(long, short = 'y')]
     pub yes: bool,
 }
 
 #[derive(Args, Debug)]
 pub struct WaitArgs {
-    /// Project-scoped job number.
+    /// Job number
     #[arg(value_parser = clap::value_parser!(i32).range(1..))]
     pub num: i32,
-    /// Stop waiting after this many seconds (default: no limit).
+    /// Stop waiting after this many seconds
     #[arg(long, value_name = "SECONDS")]
     pub timeout: Option<u64>,
-    /// Seconds between status checks.
+    /// Check the job every this many seconds
     #[arg(long, value_name = "SECONDS", default_value_t = 5, value_parser = clap::value_parser!(u64).range(1..))]
     pub interval: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FinalStatus {
-    Completed,
-    Unsuccessful,
-}
-
-/// How a job ended, from the server's status, or `None` while the status can still change.
-fn final_status(status: &str) -> Option<FinalStatus> {
-    match status {
-        "completed" => Some(FinalStatus::Completed),
-        "failed" | "cancelled" => Some(FinalStatus::Unsuccessful),
-        _ => None,
+/// Name what a job with `job_command` runs: the job, for one `tracel run <job> --remote`
+/// queued, or else the command.
+fn command(job_command: &str) -> String {
+    match job_invocation(job_command) {
+        Some((name, _)) => name,
+        None => job_command.to_string(),
     }
 }
 
@@ -126,10 +122,10 @@ impl Render for ProjectJobsResponse {
             [
                 job.job_num.to_string(),
                 job.status.clone(),
-                job.job_command.clone(),
-                job.created_at.clone(),
-                job.started_at.clone().unwrap_or_default(),
-                job.completed_at.clone().unwrap_or_default(),
+                command(&job.job_command),
+                when(&job.created_at),
+                job.started_at.as_deref().map(when).unwrap_or_default(),
+                job.completed_at.as_deref().map(when).unwrap_or_default(),
             ]
         }))
         .write(out)
@@ -148,19 +144,8 @@ impl Render for ProjectJobsResponse {
 impl Render for JobResponse {
     fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
         let details = Details::new()
-            .field("Job", self.job_num)
-            .field(
-                "Project",
-                format!(
-                    "{}/{}",
-                    self.job_project.namespace_name, self.job_project.project_name
-                ),
-            )
-            .field("Status", &self.status)
-            .field("Status message", &self.status_message)
-            .field("Command", &self.job_command)
-            .field("Code version", &self.job_project_version)
-            .optional("Compute provider ID", self.compute_provider_id);
+            .field("Command", command(&self.job_command))
+            .field("Code version", short_digest(&self.job_project_version));
         let details = match &self.execution_context {
             Some(ExecutionContextResponse::Managed {
                 compute_provider_name,
@@ -189,15 +174,37 @@ impl Render for JobResponse {
             ),
             None => details,
         };
-        details
-            .field("Created at", &self.created_at)
-            .optional("Started at", self.started_at.as_ref())
-            .optional("Completed at", self.completed_at.as_ref())
-            .write(out)
+        let details = details.optional("Ran", ran(self));
+        match job_invocation(&self.job_command) {
+            Some((_, input)) => details.section("Input", &input),
+            None => details,
+        }
+        .write(out)
     }
 
     fn summary(&self) -> Option<String> {
-        Some(format!("Job {} is {}.", self.job_num, self.status))
+        Some(state(self))
+    }
+}
+
+/// Say when `job` started and for how long it ran, or has run so far.
+fn ran(job: &JobResponse) -> Option<String> {
+    let started = job.started_at.as_deref()?;
+    let completed = job.completed_at.as_deref();
+    let elapsed = elapsed(started, completed)?;
+    let so_far = if completed.is_some() { "" } else { " so far" };
+    Some(format!("{}, {elapsed}{so_far}", when(started)))
+}
+
+/// Say how `job` is going, or how it ended.
+fn state(job: &JobResponse) -> String {
+    let num = job.job_num;
+    match job.status.as_str() {
+        "completed" => format!("Job {num} completed."),
+        "failed" => format!("Job {num} failed."),
+        "cancelled" => format!("Job {num} was cancelled."),
+        "pending_cancellation" => format!("Job {num} is stopping."),
+        status => format!("Job {num} is {status}."),
     }
 }
 
@@ -205,192 +212,45 @@ fn money(money: &MoneyResponse) -> String {
     format!("{} {}", money.amount, money.currency)
 }
 
-/// One page of logs, ending with where the next page starts when there is one.
-impl Render for JobLogResponse {
+/// A page of job `num`'s logs, closed by the command that reads the next one when there
+/// is more.
+#[derive(Serialize)]
+#[serde(transparent)]
+struct LogPage {
+    #[serde(skip)]
+    num: i32,
+    page: JobLogResponse,
+}
+
+impl Render for LogPage {
     fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
-        out.write_all(self.logs.as_bytes())?;
-        if !self.logs.is_empty() && !self.logs.ends_with('\n') {
+        let logs = &self.page.logs;
+        out.write_all(logs.as_bytes())?;
+        if !logs.is_empty() && !logs.ends_with('\n') {
             writeln!(out)?;
-        }
-        if self.has_more {
-            let footer = out.dim(format!(
-                "Showing bytes {} to {} of {}; read on with --start {}.",
-                self.start, self.end, self.total_size, self.end
-            ));
-            writeln!(out, "{footer}")?;
         }
         Ok(())
     }
-}
 
-/// An event of `logs --follow`. As JSON, a page of logs gains `"type": "log"`.
-#[derive(Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum LogEvent<'a> {
-    Log(&'a JobLogResponse),
-    End {
-        status: &'a str,
-        /// Whether the logs so far end inside a line, which the text then ends.
-        #[serde(skip)]
-        mid_line: bool,
-    },
-}
-
-impl Render for LogEvent<'_> {
-    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
-        match self {
-            Self::Log(page) => out.write_all(page.logs.as_bytes()),
-            Self::End { mid_line: true, .. } => writeln!(out),
-            Self::End { .. } => Ok(()),
-        }
+    fn summary(&self) -> Option<String> {
+        self.page.has_more.then(|| {
+            format!(
+                "More: `tracel jobs logs {} --start {}`.",
+                self.num, self.page.end
+            )
+        })
     }
-}
-
-fn missing_job(error: ClientError, project: &TracelProject, num: i32) -> anyhow::Error {
-    map_resource_error(error, &project.namespace, &project.name, Resource::Job(num))
-}
-
-fn read_job(client: &Client, project: &TracelProject, num: i32) -> anyhow::Result<JobResponse> {
-    client
-        .get_job(&project.namespace, &project.name, num)
-        .map_err(|error| missing_job(error, project, num))
 }
 
 fn cancel_error(error: ClientError, project: &TracelProject, num: i32) -> anyhow::Error {
     if error.is_conflict() {
         return CliError::new(
             ErrorKind::Conflict,
-            format!("Job {num} can only be cancelled while new, queued, or running."),
+            format!("Job {num} is no longer running, so it can't be cancelled."),
         )
-        .with_hint(format!("Show its status with `tracel jobs get {num}`."))
         .into();
     }
     missing_job(error, project, num)
-}
-
-/// Write a job's logs from byte offset `start` until the job is completed, failed, or
-/// cancelled, and return the job as last read.
-fn follow_logs(
-    client: &Client,
-    context: &CliContext,
-    project: &TracelProject,
-    num: i32,
-    mut start: u64,
-) -> anyhow::Result<JobResponse> {
-    let output = context.output();
-    // The job is read before the logs, so logs read after a final status are complete.
-    let mut job = read_job(client, project, num)?;
-    let mut mid_line = false;
-    loop {
-        let page = client
-            .get_job_logs(&project.namespace, &project.name, num, Some(start))
-            .map_err(|error| missing_job(error, project, num))?;
-        if !page.logs.is_empty() {
-            output.event(&LogEvent::Log(&page))?;
-            mid_line = !page.logs.ends_with('\n');
-        }
-        let previous = start;
-        start = page.end.max(previous);
-        if page.has_more {
-            if start == previous {
-                anyhow::bail!("Log response has more data but no advancing position.");
-            }
-            // Drain a backlog right away; wait only once caught up.
-            continue;
-        }
-        if final_status(&job.status).is_some() {
-            output.event(&LogEvent::End {
-                status: &job.status,
-                mid_line,
-            })?;
-            return Ok(job);
-        }
-        std::thread::sleep(FOLLOW_INTERVAL);
-        job = read_job(client, project, num)?;
-    }
-}
-
-/// Follow a job's logs from the start like `jobs logs --follow`, then fail like `jobs wait`
-/// unless the job completed.
-pub fn follow_job(
-    client: &Client,
-    context: &CliContext,
-    project: &TracelProject,
-    num: i32,
-) -> anyhow::Result<JobResponse> {
-    let job = follow_logs(client, context, project, num, 0)?;
-    if final_status(&job.status) == Some(FinalStatus::Completed) {
-        return Ok(job);
-    }
-    Err(job_failed(&job).into())
-}
-
-fn job_failed(job: &JobResponse) -> CliError {
-    let num = job.job_num;
-    let message = if job.status_message.is_empty() {
-        format!("Job {num} ended with status {}.", job.status)
-    } else {
-        format!(
-            "Job {num} ended with status {}: {}",
-            job.status, job.status_message
-        )
-    };
-    CliError::new(ErrorKind::JobFailed, message)
-        .with_hint(format!("Read the logs with `tracel jobs logs {num}`."))
-}
-
-/// Poll a job until its status is final. The spinner is left for the caller to settle
-/// when the job completed.
-fn wait_for_job(
-    client: &Client,
-    terminal: &Terminal,
-    project: &TracelProject,
-    num: i32,
-    timeout: Option<Duration>,
-    interval: Duration,
-) -> anyhow::Result<JobResponse> {
-    let started = Instant::now();
-    let spinner = terminal.spinner(format!("Waiting for job {num}"));
-    let mut last_status = None;
-    let result = (|| -> anyhow::Result<JobResponse> {
-        loop {
-            let job = read_job(client, project, num)?;
-            if final_status(&job.status).is_some() {
-                return Ok(job);
-            }
-            if last_status.as_ref() != Some(&job.status) {
-                spinner.set_message(format!("Job {num} is {}.", job.status));
-                last_status = Some(job.status.clone());
-            }
-            let pause = match timeout {
-                Some(timeout) => {
-                    let remaining = timeout.saturating_sub(started.elapsed());
-                    if remaining.is_zero() {
-                        return Err(CliError::new(
-                            ErrorKind::Timeout,
-                            format!(
-                                "Job {num} is still {} after {} seconds.",
-                                job.status,
-                                timeout.as_secs()
-                            ),
-                        )
-                        .with_hint(format!(
-                            "Call `tracel jobs wait {num}` again; the job has not finished."
-                        ))
-                        .into());
-                    }
-                    interval.min(remaining)
-                }
-                None => interval,
-            };
-            std::thread::sleep(pause);
-        }
-    })();
-    let job = result?;
-    if final_status(&job.status) == Some(FinalStatus::Completed) {
-        return Ok(job);
-    }
-    Err(job_failed(&job).into())
 }
 
 pub fn handle_command(args: JobsArgs, context: CliContext) -> anyhow::Result<Outcome> {
@@ -403,17 +263,20 @@ pub fn handle_command(args: JobsArgs, context: CliContext) -> anyhow::Result<Out
         JobsCommands::Get(args) => Ok(read_job(&client()?, &project, args.num)?.into()),
         JobsCommands::Logs(args) if args.follow => {
             let start = args.start.unwrap_or(0);
-            let job = follow_logs(&client()?, &context, &project, args.num, start)?;
-            context.terminal().outro(&format!(
-                "Job {} ended with status {}.",
-                job.job_num, job.status
-            ));
+            let job = follow_logs(&client()?, context.output(), &project, args.num, start)?;
+            context.terminal().outro(&state(&job));
             Ok(Outcome::streamed())
         }
-        JobsCommands::Logs(args) => Ok(client()?
-            .get_job_logs(&project.namespace, &project.name, args.num, args.start)
-            .map_err(|error| missing_job(error, &project, args.num))?
-            .into()),
+        JobsCommands::Logs(args) => {
+            let page = client()?
+                .get_job_logs(&project.namespace, &project.name, args.num, args.start)
+                .map_err(|error| missing_job(error, &project, args.num))?;
+            Ok(LogPage {
+                num: args.num,
+                page,
+            }
+            .into())
+        }
         JobsCommands::Cancel(args) => Ok(Outcome::data(cancel(args, &context, &project)?)),
         JobsCommands::Wait(args) => Ok(Outcome::data(wait(args, &context, &project)?)),
     }
@@ -428,10 +291,7 @@ fn cancel(
     let (terminal, num) = (context.terminal(), args.num);
     if !args.yes {
         let confirmed = terminal.confirm(
-            &format!(
-                "Cancel job {num} in {}/{}? A running job is stopped.",
-                project.namespace, project.name
-            ),
+            "Cancel it? A running job is stopped.",
             false,
             Unanswered::new(
                 format!("Cancelling job {num} needs confirmation."),
@@ -447,7 +307,10 @@ fn cancel(
         .cancel_job(&project.namespace, &project.name, num)
         .map_err(|error| cancel_error(error, project, num))?;
     let job = read_job(&client, project, num)?;
-    terminal.outro(&format!("Job {num} is {}.", job.status));
+    terminal.outro(&match final_status(&job.status) {
+        Some(FinalStatus::Cancelled) => format!("Cancelled job {num}."),
+        _ => format!("Job {num} is stopping."),
+    });
     Ok(job)
 }
 
@@ -457,203 +320,162 @@ fn wait(
     context: &CliContext,
     project: &TracelProject,
 ) -> anyhow::Result<JobResponse> {
-    let terminal = context.terminal();
+    let (terminal, num) = (context.terminal(), args.num);
     let client = get_client_and_login_if_needed(context)?;
-    let job = wait_for_job(
+    let deadline = args
+        .timeout
+        .map(|timeout| Instant::now() + Duration::from_secs(timeout));
+    let spinner = terminal.spinner(format!("Waiting for job {num}"));
+    let mut status = String::new();
+    let job = poll_job(
         &client,
-        terminal,
         project,
-        args.num,
-        args.timeout.map(Duration::from_secs),
+        num,
         Duration::from_secs(args.interval),
-    )?;
-    terminal.outro(&format!("Job {} completed.", args.num));
+        deadline,
+        |job| {
+            if job.status != status {
+                status.clone_from(&job.status);
+                spinner.set_message(format!("Waiting for job {num}, which is {status}"));
+            }
+            Ok(())
+        },
+    );
+    spinner.clear();
+    let job = job?;
+    waited(&job, args.timeout)?;
+    terminal.outro(&state(&job));
     Ok(job)
+}
+
+/// Decide what waiting for a job comes to, with `job` as last read: it passes when the job
+/// completed, fails with `JOB_FAILED` when it failed or was cancelled, and with `TIMEOUT`
+/// when it is still going after `timeout` seconds.
+fn waited(job: &JobResponse, timeout: Option<u64>) -> Result<(), CliError> {
+    let num = job.job_num;
+    if final_status(&job.status).is_none() {
+        return Err(CliError::new(
+            ErrorKind::Timeout,
+            format!(
+                "Job {num} is still {} after {} seconds.",
+                job.status,
+                timeout.unwrap_or_default()
+            ),
+        )
+        .with_hint(format!("Wait for it again with `tracel jobs wait {num}`.")));
+    }
+    require_completed(job)
+        .map_err(|error| error.with_hint(format!("Read its logs with `tracel jobs logs {num}`.")))
 }
 
 #[cfg(test)]
 mod tests {
-    use clap::{CommandFactory, Parser};
     use serde_json::json;
 
     use super::*;
-    use crate::cli::{CliArgs, Commands};
+    use crate::test_support::{plain, report};
 
-    fn parse_command(arguments: &[&str]) -> JobsArgs {
-        let args = CliArgs::try_parse_from(arguments).unwrap();
-        let Some(Commands::Jobs(args)) = args.command else {
-            panic!("Expected jobs command");
-        };
-        args
+    fn job(status: &str, command: &str, completed_at: Option<&str>) -> JobResponse {
+        serde_json::from_value(json!({
+            "job_num": 14,
+            "job_project": {"namespace_name": "test", "project_name": "demo"},
+            "job_project_version": "67c31f69845e9a1e",
+            "job_command": command,
+            "status": status,
+            "status_message": "",
+            "created_at": "2026-10-13T15:00:00Z",
+            "started_at": "2026-10-13T15:02:00Z",
+            "completed_at": completed_at,
+        }))
+        .unwrap()
     }
 
     #[test]
-    fn only_completed_failed_and_cancelled_are_final() {
-        assert_eq!(final_status("completed"), Some(FinalStatus::Completed));
-        for status in ["failed", "cancelled"] {
-            assert_eq!(final_status(status), Some(FinalStatus::Unsuccessful));
-        }
-        for status in [
-            "new",
-            "queued",
-            "running",
-            "pending_cancellation",
-            "",
-            "Completed",
-            "unknown",
+    fn waiting_passes_only_for_a_completed_job() {
+        let ended = Some("2026-10-13T15:03:05Z");
+        for (status, expected) in [
+            ("completed", None),
+            ("failed", Some((ErrorKind::JobFailed, 9, "Job 14 failed."))),
+            (
+                "cancelled",
+                Some((ErrorKind::JobFailed, 9, "Job 14 was cancelled.")),
+            ),
+            (
+                "running",
+                Some((
+                    ErrorKind::Timeout,
+                    10,
+                    "Job 14 is still running after 60 seconds.",
+                )),
+            ),
         ] {
-            assert_eq!(final_status(status), None);
+            let failure = waited(&job(status, "train", ended), Some(60))
+                .err()
+                .map(|error| {
+                    let error = anyhow::Error::from(error);
+                    let (kind, code, hint) = report(&error);
+                    assert!(hint, "{status}");
+                    (kind, code, error.to_string())
+                });
+            let expected = expected.map(|(kind, code, message)| (kind, code, message.to_string()));
+            assert_eq!(failure, expected, "{status}");
         }
     }
 
     #[test]
-    fn command_definitions_are_valid_and_numbers_are_positive() {
-        CliArgs::command().debug_assert();
-        assert!(matches!(
-            parse_command(&["tracel", "jobs", "list"]).command,
-            JobsCommands::List
-        ));
-        let JobsCommands::Get(args) = parse_command(&["tracel", "jobs", "get", "12"]).command
-        else {
-            panic!("Expected get command");
-        };
-        assert_eq!(args.num, 12);
-        for subcommand in ["get", "logs", "cancel", "wait"] {
-            for value in ["0", "-1", "latest"] {
-                assert!(CliArgs::try_parse_from(["tracel", "jobs", subcommand, value]).is_err());
-            }
-            assert!(CliArgs::try_parse_from(["tracel", "jobs", subcommand]).is_err());
-        }
-        assert!(CliArgs::try_parse_from(["tracel", "jobs", "list", "--page", "0"]).is_err());
-    }
-
-    #[test]
-    fn logs_read_from_a_byte_offset_and_can_follow() {
-        let args = parse_command(&["tracel", "jobs", "logs", "12"]);
-        let JobsCommands::Logs(args) = args.command else {
-            panic!("Expected logs command");
-        };
-        assert_eq!(args.num, 12);
-        assert_eq!(args.start, None);
-        assert!(!args.follow);
-
-        let args = parse_command(&[
-            "tracel", "jobs", "logs", "12", "--start", "4096", "--follow", "--json",
-        ]);
-        let JobsCommands::Logs(args) = args.command else {
-            panic!("Expected logs command");
-        };
-        assert_eq!(args.start, Some(4096));
-        assert!(args.follow);
-        assert!(
-            CliArgs::try_parse_from(["tracel", "jobs", "logs", "12", "--start", "-1"]).is_err()
-        );
-    }
-
-    fn page(logs: &str, has_more: bool) -> JobLogResponse {
-        JobLogResponse {
-            logs: logs.into(),
-            start: 0,
-            end: logs.len() as u64,
-            total_size: 4096,
-            has_more,
+    fn a_job_tracel_run_queued_by_name_shows_its_name() {
+        for (queued, shown) in [
+            (r#"train '{"epochs":2}'"#, "train"),
+            ("train --epochs 2", "train --epochs 2"),
+        ] {
+            assert_eq!(command(queued), shown);
         }
     }
 
-    fn text(render: &impl Render) -> String {
-        let mut text = Vec::new();
-        render.render(&mut Human::plain(&mut text, None)).unwrap();
-        String::from_utf8(text).unwrap()
+    #[test]
+    fn a_job_ran_from_its_start_until_it_ended_or_so_far() {
+        let started = when("2026-10-13T15:02:00Z");
+        let job = job("completed", "train", Some("2026-10-13T15:03:05Z"));
+        assert_eq!(ran(&job), Some(format!("{started}, 1 min 5 s")));
+
+        let running = JobResponse {
+            completed_at: None,
+            ..job.clone()
+        };
+        assert!(ran(&running).unwrap().ends_with(" so far"));
+
+        let queued = JobResponse {
+            started_at: None,
+            ..job
+        };
+        assert_eq!(ran(&queued), None);
     }
 
     #[test]
-    fn a_log_page_ends_its_line_and_says_where_the_next_one_starts() {
-        assert_eq!(text(&page("", false)), "");
-        assert_eq!(text(&page("epoch 1\nepoch 2", false)), "epoch 1\nepoch 2\n");
+    fn a_log_page_ends_its_line_and_says_how_to_read_on() {
+        let page = |logs: &str, has_more| LogPage {
+            num: 12,
+            page: JobLogResponse {
+                logs: logs.into(),
+                start: 0,
+                end: logs.len() as u64,
+                total_size: 4096,
+                has_more,
+            },
+        };
+        assert_eq!(plain(&page("", false)), "");
         assert_eq!(
-            text(&page("epoch 1\n", true)),
-            "epoch 1\nShowing bytes 0 to 8 of 4096; read on with --start 8.\n"
+            plain(&page("epoch 1\nepoch 2", false)),
+            "epoch 1\nepoch 2\n"
         );
-    }
-
-    #[test]
-    fn followed_logs_are_typed_events() {
-        let page = page("epoch 1\nepo", true);
+        assert_eq!(page("epoch 1\n", false).summary(), None);
         assert_eq!(
-            serde_json::to_value(LogEvent::Log(&page)).unwrap(),
-            json!({
-                "type": "log",
-                "logs": "epoch 1\nepo",
-                "start": 0,
-                "end": 11,
-                "total_size": 4096,
-                "has_more": true,
-            })
+            page("epoch 1\n", true).summary().as_deref(),
+            Some("More: `tracel jobs logs 12 --start 8`.")
         );
-        for mid_line in [false, true] {
-            let end = LogEvent::End {
-                status: "completed",
-                mid_line,
-            };
-            assert_eq!(
-                serde_json::to_value(&end).unwrap(),
-                json!({"type": "end", "status": "completed"})
-            );
-            assert_eq!(text(&end), if mid_line { "\n" } else { "" });
-        }
-        assert_eq!(text(&LogEvent::Log(&page)), "epoch 1\nepo");
-    }
-
-    #[test]
-    fn cancel_confirmation_can_be_skipped() {
-        for (arguments, yes) in [
-            (vec!["tracel", "jobs", "cancel", "12"], false),
-            (vec!["tracel", "jobs", "cancel", "12", "--yes"], true),
-            (vec!["tracel", "jobs", "cancel", "12", "-y"], true),
-        ] {
-            let JobsCommands::Cancel(args) = parse_command(&arguments).command else {
-                panic!("Expected cancel command");
-            };
-            assert_eq!(args.num, 12);
-            assert_eq!(args.yes, yes);
-        }
-    }
-
-    #[test]
-    fn wait_defaults_to_no_timeout_and_a_five_second_interval() {
-        let JobsCommands::Wait(args) = parse_command(&["tracel", "jobs", "wait", "12"]).command
-        else {
-            panic!("Expected wait command");
-        };
-        assert_eq!(args.num, 12);
-        assert_eq!(args.timeout, None);
-        assert_eq!(args.interval, 5);
-
-        let JobsCommands::Wait(args) = parse_command(&[
-            "tracel",
-            "jobs",
-            "wait",
-            "12",
-            "--timeout",
-            "0",
-            "--interval",
-            "1",
-        ])
-        .command
-        else {
-            panic!("Expected wait command");
-        };
-        assert_eq!(args.timeout, Some(0));
-        assert_eq!(args.interval, 1);
-        for (flag, value) in [
-            ("--interval", "0"),
-            ("--interval", "-1"),
-            ("--timeout", "-1"),
-            ("--timeout", "soon"),
-        ] {
-            assert!(
-                CliArgs::try_parse_from(["tracel", "jobs", "wait", "12", flag, value]).is_err()
-            );
-        }
+        assert_eq!(
+            serde_json::to_value(page("epoch 1\n", true)).unwrap(),
+            json!({"logs": "epoch 1\n", "start": 0, "end": 8, "total_size": 4096, "has_more": true})
+        );
     }
 }

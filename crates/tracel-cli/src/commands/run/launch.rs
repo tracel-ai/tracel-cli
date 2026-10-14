@@ -14,7 +14,7 @@ use crate::error::{CliError, ErrorKind};
 /// How often a running program and the signals are checked.
 const TICK: Duration = Duration::from_millis(50);
 
-/// Where a job run records its experiment.
+/// Where a job run records its experiments.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Target {
@@ -23,7 +23,7 @@ pub enum Target {
 }
 
 impl Target {
-    /// The value of `TRACEL_TARGET`.
+    /// Name the target as `TRACEL_TARGET` does.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Console => "console",
@@ -32,9 +32,9 @@ impl Target {
     }
 }
 
-/// Where to record a run: the Console when a project is linked and a credential is
-/// available, unless `offline` is asked for. Also returns why the run is offline when it was
-/// not asked to be.
+/// Choose where to record a run: the Tracel Console when a project is linked and a
+/// credential is available, unless `offline` is asked for. Also says why the run is
+/// offline when that wasn't asked for.
 pub fn select_target(
     offline: bool,
     linked: bool,
@@ -46,15 +46,15 @@ pub fn select_target(
     if !linked {
         return (
             Target::Offline,
-            Some(
-                "Running offline: no Tracel Console project is linked (run `tracel init` or pass --project).",
-            ),
+            Some("Recording offline: no project is linked. Link one with `tracel init`."),
         );
     }
     if !logged_in {
         return (
             Target::Offline,
-            Some("Running offline: not logged in (run `tracel login` or set TRACEL_API_KEY)."),
+            Some(
+                "Recording offline: you aren't logged in. Log in with `tracel login`, or set TRACEL_API_KEY.",
+            ),
         );
     }
     (Target::Console, None)

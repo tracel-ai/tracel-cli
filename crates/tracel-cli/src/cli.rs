@@ -89,7 +89,7 @@ impl CliArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Run the workspace locally, or on a compute provider
+    /// Run a job locally or on a compute provider
     Run(commands::run::RunArgs),
     /// Upload a code version of the workspace
     Package(commands::package::PackageArgs),
@@ -214,17 +214,19 @@ pub fn cli_main() {
         fail_early(&error.into(), format.unwrap_or(auto));
     }
 
-    // Help is text whatever the output format or TRACEL_ENV say, as clap's own help is, so it
-    // comes before the environment is resolved and ignores the format.
+    // `run --help` is clap's text whatever the format or TRACEL_ENV say, so it comes
+    // before the environment is resolved.
     if let Some(Commands::Run(run)) = &args.command
         && run.help
     {
         let (output, terminal) =
             ui::channels(Format::Human, args.no_input, Layout::Bare, Place::default());
-        if let Err(error) = commands::run::help(run, CliArgs::command(), &terminal)
-            .and_then(|help| output.finish(help.into()))
-        {
-            fail(&error, &output, &terminal);
+        match commands::run::help(run, CliArgs::command(), &terminal) {
+            // A reader that closes early (`tracel run --help | head`) is not an error.
+            Ok(mut help) => {
+                let _ = help.print_long_help();
+            }
+            Err(error) => fail(&error, &output, &terminal),
         }
         return;
     }

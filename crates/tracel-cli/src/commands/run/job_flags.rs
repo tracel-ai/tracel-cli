@@ -1,10 +1,11 @@
-//! The job's own flags on `tracel run <JOB>`, such as `--epochs 5`: those of the job's command
-//! line, which [`job_command`] builds from the job's definition.
+//! The job's own flags on `tracel run <job>`, such as `--epochs 5`: those of the job's
+//! command line, which [`job_command`] builds from the job's definition. Only a job whose
+//! input has a JSON schema has flags.
 //!
-//! `tracel run` reads its command line before it knows the job's definition, so each long flag
-//! it does not take itself is taken as one of the job's, and read with the job's command line
-//! once the job is described. `tracel run` keeps its own flags, so a job field whose flag has
-//! the name of one of them is set with `--set` instead.
+//! `tracel run` reads its command line before it knows the job's definition, so each long
+//! flag it doesn't take itself is taken as one of the job's, and read with the job's
+//! command line once the job is described. `tracel run` keeps its own flags, so a job
+//! field whose flag has the name of one of them is set with `--set` instead.
 
 use std::ffi::OsString;
 
@@ -19,11 +20,10 @@ use crate::error::{CliError, ErrorKind};
 /// The help heading of the job's flags in `tracel run <JOB> --help`.
 const HEADING: &str = "Job options";
 
-/// `tracel` whose `tracel run` also takes, as flags of its JOB, the long flags among `args` that
-/// it does not take itself.
+/// Make `tracel run` take, as flags of its job, the long flags among `args` that it
+/// doesn't take itself.
 pub fn with_job_flags(tracel: Command, args: &[OsString]) -> Command {
-    let run = run_command(&tracel);
-    let taken = long_flags(&run);
+    let taken = run_flags(&tracel);
     let mut names: Vec<&str> = Vec::new();
     let flags = args
         .iter()
@@ -34,7 +34,7 @@ pub fn with_job_flags(tracel: Command, args: &[OsString]) -> Command {
     for name in flags {
         if !name.is_empty()
             && !name.starts_with('-')
-            && !taken.contains(&name)
+            && !taken.iter().any(|taken| taken == name)
             && !names.contains(&name)
         {
             names.push(name);
@@ -43,8 +43,8 @@ pub fn with_job_flags(tracel: Command, args: &[OsString]) -> Command {
     tracel.mut_subcommand("run", |run| run.args(names.into_iter().map(job_flag)))
 }
 
-/// The job's flags in `matches`, those of `tracel run` that [`with_job_flags`] added, as
-/// arguments of the job's command line.
+/// Read the job's flags in `matches`, those [`with_job_flags`] added, as arguments of the
+/// job's command line.
 pub fn job_flags(matches: &ArgMatches) -> Vec<String> {
     let mut arguments = Vec::new();
     for flag in matches.ids().map(|id| id.as_str()) {
@@ -65,9 +65,9 @@ pub fn job_flags(matches: &ArgMatches) -> Vec<String> {
     arguments
 }
 
-/// `input` with the job's flags `flags` set, as the job's command line `<JOB> <input> <flags>`
-/// sets them: each flag sets one field, an object it gives is overlaid onto the field's, and
-/// `null` is kept.
+/// Set the job's flags `flags` on `input`, as the job's command line `<job> <input>
+/// <flags>` sets them: each flag sets one field, an object it gives is laid over the
+/// field's, and `null` is kept. A job whose input has no schema has no flags.
 pub fn apply(
     definition: &JobDefinition,
     input: Value,
@@ -102,16 +102,15 @@ pub fn apply(
         .map_err(|error| CliError::new(ErrorKind::Usage, error.to_string()))
 }
 
-/// `tracel` whose `tracel run` is that of the job `definition`, for `tracel run <JOB> --help`:
-/// with the job's flags, but those `tracel run` takes itself.
+/// Make `tracel run` that of the job `definition`, for `tracel run <job> --help`: with the
+/// job's flags, but those `tracel run` takes itself.
 pub fn job_help(tracel: Command, definition: &JobDefinition) -> Command {
-    let run = run_command(&tracel);
-    let taken = long_flags(&run);
+    let taken = run_flags(&tracel);
     let flags: Vec<Arg> = job_command(definition)
         .get_arguments()
         .filter_map(|arg| {
             let long = arg.get_long()?;
-            (!taken.contains(&long)).then(|| {
+            (!taken.iter().any(|taken| taken == long)).then(|| {
                 arg.clone()
                     .id(format!("--{long}"))
                     .required_unless_present(Resettable::Reset)
@@ -134,7 +133,8 @@ pub fn job_help(tracel: Command, definition: &JobDefinition) -> Command {
     })
 }
 
-/// The `tracel run` command of `tracel`, built, so it has its help flag and the global flags.
+/// Find the `tracel run` command of `tracel`, built, so it has its help flag and the
+/// global flags.
 pub fn run_command(tracel: &Command) -> Command {
     let mut tracel = tracel.clone();
     tracel.build();
@@ -144,13 +144,16 @@ pub fn run_command(tracel: &Command) -> Command {
         .clone()
 }
 
-/// The long flags `run` takes, with their aliases.
-fn long_flags(run: &Command) -> Vec<&str> {
-    run.get_arguments()
+/// List the long flags `tracel run` takes, with their aliases.
+fn run_flags(tracel: &Command) -> Vec<String> {
+    run_command(tracel)
+        .get_arguments()
         .flat_map(|arg| {
             arg.get_long()
                 .into_iter()
                 .chain(arg.get_all_aliases().unwrap_or_default())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
         })
         .collect()
 }
@@ -160,8 +163,9 @@ fn flag_name(flag: &str) -> &str {
     flag.split_once('=').map_or(flag, |(name, _)| name)
 }
 
-/// The argument of `--<name>`, one of the job's flags: given no value, or one, which may be a
-/// negative number, as the job's flags take. It needs a JOB, which `--list` cannot be given.
+/// Make the argument of `--<name>`, one of the job's flags: given no value, or one, which
+/// may be a negative number, as the job's flags take. It needs a job, which `--list`
+/// can't be given.
 fn job_flag(name: &str) -> Arg {
     Arg::new(format!("--{name}"))
         .long(name.to_string())
@@ -175,7 +179,8 @@ fn job_flag(name: &str) -> Arg {
         .hide(true)
 }
 
-/// The message of clap's `error`, without its usage: its lines, trimmed, joined by `; `.
+/// Write the message of clap's `error` without its usage: its lines, trimmed, joined by
+/// `; `.
 fn message(error: &clap::Error) -> String {
     let rendered = error.to_string();
     let message = rendered.split("\nUsage:").next().unwrap_or_default().trim();

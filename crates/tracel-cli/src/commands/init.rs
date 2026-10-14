@@ -119,11 +119,12 @@ fn link(args: InitArgs, context: &CliContext, client: &Client) -> anyhow::Result
     let url = context.web_console().join(&namespace.project_path(&name))?;
     let shown = format!("{}/{}", project.namespace, project.name);
     let link = terminal.format_url(&url);
-    terminal.outro(&if created {
+    let outcome = if created {
         format!("Created and linked {shown} at {link}.")
     } else {
         format!("Linked to {shown} at {link}.")
-    });
+    };
+    terminal.next_steps(&outcome, &["tracel run --list".to_string()]);
 
     Ok(ProjectLinked {
         namespace: project.namespace,

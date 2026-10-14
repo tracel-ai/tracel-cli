@@ -82,9 +82,9 @@ pub fn package_workspace(
     })
 }
 
-/// The code version digest of the workspace, without packaging it: the digest of the files a
-/// source package holds. Binary packages use it too, so every package of the same source, in
-/// either mode and for any target, belongs to one code version.
+/// Compute the code version digest of the workspace without packaging it: the digest of
+/// the files a source package holds. Binary packages use it too, so every package of the
+/// same source, in either mode and for any target, belongs to one code version.
 pub fn workspace_digest(workspace: &WorkspaceInfo) -> anyhow::Result<String> {
     source_digest(&list_workspace_files(&canonical_root(workspace)?)?)
 }
@@ -96,8 +96,8 @@ fn canonical_root(workspace: &WorkspaceInfo) -> anyhow::Result<PathBuf> {
         .context("Can't find the workspace root")
 }
 
-/// The code version digest of a source package: SHA-256 over the sorted `path:sha256` lines
-/// of the packaged files (see [`manifest_digest`]).
+/// Compute the code version digest of a source package: SHA-256 over the sorted
+/// `path:sha256` lines of the packaged files (see [`manifest_digest`]).
 fn source_digest(files: &BTreeMap<String, PathBuf>) -> anyhow::Result<String> {
     let mut lines = Vec::with_capacity(files.len());
     for (name, file_path) in files {
@@ -110,14 +110,15 @@ fn source_digest(files: &BTreeMap<String, PathBuf>) -> anyhow::Result<String> {
     Ok(manifest_digest(lines))
 }
 
-/// Lists the files to package as a map from their `/`-separated path relative to
+/// List the files to package as a map from their `/`-separated path relative to
 /// `workspace_root` to their full path. `workspace_root` must be canonical.
 ///
 /// Ignore files apply with or without a git repository: `.gitignore` and `.ignore` in the
-/// workspace and its parent directories, `.git/info/exclude`, and git's global excludes file.
-/// [`EXCLUDED`] paths are never packaged. Hidden files are packaged in a git repository unless
-/// ignored, and skipped outside one. Links to files are packaged as the files they point to;
-/// links to directories are not followed. Fails with a usage error when no file is left.
+/// workspace and its parent directories, `.git/info/exclude`, and git's global excludes
+/// file. [`EXCLUDED`] paths are never packaged. Hidden files are packaged in a git
+/// repository unless ignored, and skipped outside one. Links to files are packaged as the
+/// files they point to; links to directories are not followed. Fails with a usage error
+/// when no file is left.
 fn list_workspace_files(workspace_root: &Path) -> anyhow::Result<BTreeMap<String, PathBuf>> {
     let in_git_repository = workspace_root
         .ancestors()
@@ -162,10 +163,10 @@ fn list_workspace_files(workspace_root: &Path) -> anyhow::Result<BTreeMap<String
     Ok(files)
 }
 
-/// Writes `files` to a zip archive in path order, under their workspace-relative names so the
-/// workspace root is the archive root, and returns their total size. Entries have a fixed
-/// timestamp and keep only the executable bit of their permissions, so the same files always
-/// produce the same archive.
+/// Write `files` to a zip archive in path order, under their workspace-relative names so
+/// the workspace root is the archive root, and return their total size. Entries have a
+/// fixed timestamp and keep only the executable bit of their permissions, so the same files
+/// always make the same archive.
 fn write_zip_archive(files: &BTreeMap<String, PathBuf>, dst: File) -> anyhow::Result<u64> {
     let mut zip = ZipWriter::new(dst);
     let mut uncompressed_size = 0;

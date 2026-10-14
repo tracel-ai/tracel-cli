@@ -17,14 +17,14 @@ use crate::tools::fs::file_sha256_and_size;
 use crate::tools::workspace::WorkspaceInfo;
 use crate::ui::Terminal;
 
-/// The crate a package depends on to register jobs.
+/// The crate a package depends on to define jobs.
 const SDK_CRATE: &str = "tracel";
 /// How long a program has to write its job definitions.
 const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(10);
-/// The hint for definitions this CLI cannot read.
+/// The hint for definitions this CLI can't read.
 const SAME_PROTOCOL: &str = "Use a tracel CLI and a tracel crate that support the same protocol.";
 
-/// The job named `name` among `definitions`.
+/// Find the job named `name` among `definitions`.
 pub fn find_job<'a>(
     definitions: &'a DefinitionsFile,
     name: &str,
@@ -32,18 +32,16 @@ pub fn find_job<'a>(
     if let Some(job) = definitions.jobs.iter().find(|job| job.name == name) {
         return Ok(job);
     }
-    let message = if definitions.jobs.is_empty() {
-        format!("Unknown job '{name}': the program registers no jobs.")
-    } else {
-        let names: Vec<&str> = definitions
-            .jobs
-            .iter()
-            .map(|job| job.name.as_str())
-            .collect();
-        format!("Unknown job '{name}'. Valid values: {}.", names.join(", "))
+    let names: Vec<&str> = definitions
+        .jobs
+        .iter()
+        .map(|job| job.name.as_str())
+        .collect();
+    let message = match names.as_slice() {
+        [] => format!("No job '{name}'. The program defines no jobs."),
+        names => format!("No job '{name}'. Jobs: {}.", names.join(", ")),
     };
-    Err(CliError::new(ErrorKind::Usage, message)
-        .with_hint("List the jobs with `tracel run --list`."))
+    Err(CliError::new(ErrorKind::Usage, message))
 }
 
 /// Say why the definitions the program `name` wrote can't be read.
@@ -59,7 +57,7 @@ fn unreadable_definitions(name: &str, error: ParseError) -> CliError {
     CliError::new(ErrorKind::Internal, message).with_hint(SAME_PROTOCOL)
 }
 
-/// A workspace package, as job discovery sees it.
+/// A workspace package, as finding the jobs sees it.
 #[derive(Clone, Debug)]
 pub struct PackageBinaries {
     pub package: String,
@@ -89,9 +87,9 @@ pub fn package_binaries(metadata: &Metadata) -> Vec<PackageBinaries> {
         .collect()
 }
 
-/// The binary whose jobs `tracel run` runs: the one of the packages that depend on the
-/// `tracel` crate, or `bin` among them. Like `cargo run`, a package's `default-run` picks one
-/// of its binaries.
+/// Choose the binary whose jobs `tracel run` runs: the one of the packages that depend on
+/// the `tracel` crate, or `bin` among them. As with `cargo run`, a package's `default-run`
+/// picks one of its binaries.
 pub fn choose_binary(packages: &[PackageBinaries], bin: Option<&str>) -> Result<Binary, CliError> {
     let candidates: Vec<Binary> = packages
         .iter()
@@ -105,7 +103,7 @@ pub fn choose_binary(packages: &[PackageBinaries], bin: Option<&str>) -> Result<
         .collect();
     if candidates.is_empty() {
         let message = if packages.iter().any(|package| package.uses_sdk) {
-            "No package that depends on the `tracel` crate has a binary target, so there are no jobs to run."
+            "No package that depends on the `tracel` crate has a binary, so there are no jobs to run."
         } else {
             "No package in this workspace depends on the `tracel` crate, so there are no jobs to run."
         };
@@ -142,10 +140,11 @@ pub fn choose_binary(packages: &[PackageBinaries], bin: Option<&str>) -> Result<
             names.join(", ")
         ),
     )
-    .with_hint("Pass --bin <NAME> to choose one."))
+    .with_hint("Pass --bin <name> to choose one."))
 }
 
-/// The cached definitions in `contents` when they were written for the binary with `sha256`.
+/// Read the cached definitions in `contents` when they were written for the binary with
+/// `sha256`.
 pub fn cached_definitions(contents: &str, sha256: &str) -> Option<DefinitionsFile> {
     #[derive(Deserialize)]
     struct Cache {
@@ -202,7 +201,7 @@ pub fn describe(
     let definitions = match cached {
         Some(definitions) => definitions,
         None => {
-            let definitions = run_describe(&program, &binary.name, DESCRIBE_TIMEOUT)?;
+            let definitions = run_describe(&program, &binary.name)?;
             if let Err(error) = write_cache(&cache, &sha256, &definitions) {
                 terminal.warning(&format!(
                     "Can't cache the job definitions in {}: {error:#}",
@@ -230,7 +229,7 @@ fn build(terminal: &Terminal, binary: &Binary) -> anyhow::Result<PathBuf> {
 }
 
 /// Run `program` with `TRACEL_DESCRIBE` set, and read the definitions it writes.
-fn run_describe(program: &Path, name: &str, timeout: Duration) -> anyhow::Result<DefinitionsFile> {
+fn run_describe(program: &Path, name: &str) -> anyhow::Result<DefinitionsFile> {
     let directory = tempfile::tempdir().context("Can't create a temporary directory")?;
     let path = directory.path().join("jobs.json");
     let mut child = Command::new(program)
@@ -243,14 +242,14 @@ fn run_describe(program: &Path, name: &str, timeout: Duration) -> anyhow::Result
         .with_context(|| format!("Can't run {}", program.display()))?;
 
     let started = Instant::now();
-    let Some(status) = wait_until(&mut child, || started.elapsed() >= timeout)? else {
+    let Some(status) = wait_until(&mut child, || started.elapsed() >= DESCRIBE_TIMEOUT)? else {
         let _ = child.kill();
         let _ = child.wait();
         return Err(CliError::new(
             ErrorKind::Timeout,
             format!(
                 "`{name}` didn't list its jobs within {} seconds.",
-                timeout.as_secs()
+                DESCRIBE_TIMEOUT.as_secs()
             ),
         )
         .with_hint(
@@ -267,14 +266,13 @@ fn run_describe(program: &Path, name: &str, timeout: Duration) -> anyhow::Result
             ErrorKind::Internal,
             format!("`{name}` {ended} instead of listing its jobs."),
         )
-        .with_hint("Its error is above.")
         .into());
     }
     read_definitions(&path, name)
 }
 
-/// The definitions the program `name` wrote to `path`, when they follow the protocol this CLI
-/// reads.
+/// Read the definitions the program `name` wrote to `path`, when they follow the
+/// protocol this CLI reads.
 fn read_definitions(path: &Path, name: &str) -> anyhow::Result<DefinitionsFile> {
     let json = match std::fs::read(path) {
         Ok(json) => json,
@@ -364,7 +362,7 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Usage);
         assert_eq!(
             error.to_string(),
-            "Unknown job 'train'. Valid values: toy-training, wordtok."
+            "No job 'train'. Jobs: toy-training, wordtok."
         );
         let empty = DefinitionsFile {
             jobs: Vec::new(),

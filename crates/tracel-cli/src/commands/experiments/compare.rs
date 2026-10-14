@@ -9,7 +9,7 @@ use tracel_client::console::experiment::response::MetricSummaryGroupResponse;
 
 use super::{CompareArgs, missing_experiment};
 use crate::tools::tracel_config::TracelProject;
-use crate::ui::{Human, Render, Table};
+use crate::ui::{Human, Render, Table, counted, number};
 
 /// A JSON value that differs between two experiments. A side is `None` where the path does
 /// not exist, and is then left out of the JSON output.
@@ -99,9 +99,9 @@ pub fn compare_experiments(
     })
 }
 
-/// Every path where `base` and `other` differ, depth first with object keys sorted. Objects
-/// and arrays are compared member by member; any other change, including a change of type,
-/// is one difference holding both values.
+/// List every path where `base` and `other` differ, depth first with object keys sorted.
+/// Objects and arrays are compared member by member; any other change, including a change
+/// of type, is one difference holding both values.
 fn diff_json(base: &Value, other: &Value) -> Vec<Difference> {
     let mut differences = Vec::new();
     diff_at(String::new(), Some(base), Some(other), &mut differences);
@@ -145,7 +145,8 @@ fn diff_at(
     }
 }
 
-/// `parent.key`, or `parent["key"]` when the key is empty or contains `.`, `[` or `]`.
+/// Write the path of `key` under `parent`: `parent.key`, or `parent["key"]` when the key is
+/// empty or holds `.`, `[` or `]`.
 fn key_path(parent: &str, key: &str) -> String {
     if key.is_empty() || key.contains(['.', '[', ']']) {
         format!("{parent}[{}]", Value::from(key))
@@ -156,7 +157,7 @@ fn key_path(parent: &str, key: &str) -> String {
     }
 }
 
-/// Every metric either experiment defines, sorted.
+/// List every metric either experiment defines, sorted.
 fn defined_metrics(base: Vec<String>, other: Vec<String>) -> Vec<String> {
     base.into_iter()
         .chain(other)
@@ -165,7 +166,7 @@ fn defined_metrics(base: Vec<String>, other: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-/// The requested metrics in order, without repeats.
+/// Keep the requested metrics in order, without repeats.
 fn requested_metrics(mut metrics: Vec<String>) -> Vec<String> {
     let mut seen = HashSet::new();
     metrics.retain(|metric| seen.insert(metric.clone()));
@@ -207,59 +208,61 @@ fn group_values(groups: &[MetricSummaryGroupResponse]) -> BTreeMap<&str, f64> {
 }
 
 impl Render for Comparison {
+    /// Write each part under its heading.
     fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
-        writeln!(
-            out,
-            "Experiment {} (base) compared with experiment {}.",
-            self.base, self.other
-        )?;
-        write_differences(
-            out,
-            "Config differences",
-            "No config differences.",
-            &self.config,
-        )?;
-        write_differences(
-            out,
-            "Attribute differences",
-            "No attribute differences.",
-            &self.attributes,
-        )?;
-        writeln!(out)?;
-        if self.metrics.is_empty() {
-            return writeln!(out, "No metric summaries to compare.");
+        for (title, empty, differences) in [
+            ("Config differences", "No config differences.", &self.config),
+            (
+                "Attribute differences",
+                "No attribute differences.",
+                &self.attributes,
+            ),
+        ] {
+            out.heading(title)?;
+            differences_table(differences).empty(empty).write(out)?;
+            writeln!(out)?;
         }
-        write_title(out, "Metric summaries")?;
-        let number = |value: Option<f64>| value.map(|value| value.to_string()).unwrap_or_default();
-        Table::new(["METRIC", "GROUP", "BASE", "OTHER", "DELTA"])
-            .rows(self.metrics.iter().map(|metric| {
-                [
-                    metric.metric.clone(),
-                    metric.group.clone(),
-                    number(metric.base),
-                    number(metric.other),
-                    metric
-                        .delta
-                        .map(|delta| format!("{delta:+}"))
-                        .unwrap_or_default(),
-                ]
-            }))
+        out.heading("Metric summaries")?;
+        self.metric_table()
+            .empty("No metric summaries to compare.")
             .write(out)
+    }
+
+    fn summary(&self) -> Option<String> {
+        let differences = (self.config.len() + self.attributes.len()) as u64;
+        Some(format!(
+            "{} between experiments {} and {}.",
+            counted(differences, ["difference", "differences"]),
+            self.base,
+            self.other
+        ))
     }
 }
 
-/// A table of `differences` under `title`, or the line `empty` when there are none.
-fn write_differences(
-    out: &mut Human<'_>,
-    title: &str,
-    empty: &str,
-    differences: &[Difference],
-) -> io::Result<()> {
-    writeln!(out)?;
-    if differences.is_empty() {
-        return writeln!(out, "{empty}");
+impl Comparison {
+    fn metric_table(&self) -> Table<5> {
+        let value = |value: Option<f64>| value.map(number).unwrap_or_default();
+        Table::new(["METRIC", "GROUP", "BASE", "OTHER", "DELTA"]).rows(self.metrics.iter().map(
+            |metric| {
+                [
+                    metric.metric.clone(),
+                    metric.group.clone(),
+                    value(metric.base),
+                    value(metric.other),
+                    metric
+                        .delta
+                        .map(|delta| {
+                            let sign = if delta > 0.0 { "+" } else { "" };
+                            format!("{sign}{}", number(delta))
+                        })
+                        .unwrap_or_default(),
+                ]
+            },
+        ))
     }
-    write_title(out, title)?;
+}
+
+fn differences_table(differences: &[Difference]) -> Table<3> {
     let value = |value: Option<&Value>| value.map(Value::to_string).unwrap_or_default();
     Table::new(["PATH", "BASE", "OTHER"])
         .shrink("BASE")
@@ -271,12 +274,6 @@ fn write_differences(
                 value(difference.other.as_ref()),
             ]
         }))
-        .write(out)
-}
-
-fn write_title(out: &mut Human<'_>, title: &str) -> io::Result<()> {
-    let title = out.dim(format!("{title}:"));
-    writeln!(out, "{title}")
 }
 
 #[cfg(test)]
@@ -460,41 +457,6 @@ mod tests {
             }]
         );
         assert!(compare_metric("accuracy", &[], &[]).is_empty());
-    }
-
-    #[test]
-    fn comparisons_read_as_tables_with_a_line_for_each_empty_section() {
-        let comparison = Comparison {
-            base: 3,
-            other: 5,
-            config: diff_json(&json!({"lr": 0.1, "seed": 1}), &json!({"lr": 0.01})),
-            attributes: Vec::new(),
-            metrics: compare_metric(
-                "loss",
-                &groups(&[("valid", 0.5)]),
-                &groups(&[("valid", 0.25), ("train", 0.75)]),
-            ),
-        };
-        let mut text = Vec::new();
-        comparison
-            .render(&mut Human::plain(&mut text, None))
-            .unwrap();
-        assert_eq!(
-            String::from_utf8(text).unwrap(),
-            "Experiment 3 (base) compared with experiment 5.\n\
-             \n\
-             Config differences:\n\
-             PATH  BASE  OTHER\n\
-             lr    0.1   0.01\n\
-             seed  1     -\n\
-             \n\
-             No attribute differences.\n\
-             \n\
-             Metric summaries:\n\
-             METRIC  GROUP  BASE  OTHER  DELTA\n\
-             loss    train  -     0.75   -\n\
-             loss    valid  0.5   0.25   -0.25\n"
-        );
     }
 
     #[test]

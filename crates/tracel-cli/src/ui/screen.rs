@@ -32,6 +32,8 @@ impl Terminals {
 pub enum Delivery {
     /// One box on the terminal, its text fitted to the columns inside the box.
     Box(Option<usize>),
+    /// Stdout, on the terminal: the text as it is, then its summary on stderr.
+    Text,
     /// Stdout, which carries nothing else: an envelope, or plain text ending with the
     /// summary.
     Stdout,
@@ -97,6 +99,7 @@ impl Screen {
                 columns(&console::Term::stderr())
                     .map(|columns| columns.saturating_sub(usize::from(BOX_PADDING))),
             ),
+            Layout::Text if self.shares_stdout() => Delivery::Text,
             _ => Delivery::Stdout,
         }
     }
@@ -177,6 +180,14 @@ impl Screen {
     pub fn outro(&self, outcome: &str) {
         if self.session.swap(false, Ordering::Relaxed) {
             self.draw(|| cliclack::outro(outcome));
+        }
+    }
+
+    /// End a flow's session with the commands to run next, one per line. Nothing when
+    /// no session is open.
+    pub fn next_steps(&self, commands: &str) {
+        if self.session.swap(false, Ordering::Relaxed) {
+            self.draw(|| cliclack::outro_note("Next steps", commands));
         }
     }
 

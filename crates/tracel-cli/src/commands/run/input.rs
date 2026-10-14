@@ -13,7 +13,7 @@ pub enum Segment {
     Index(usize),
 }
 
-/// A `--set <PATH>=<VALUE>`: the value is JSON, or a string when it does not parse as JSON.
+/// A `--set <PATH>=<VALUE>`: the value is JSON, or a string when it isn't JSON.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Assignment {
     pub path: Vec<Segment>,
@@ -50,7 +50,7 @@ fn parse_path(path: &str) -> Result<Vec<Segment>, String> {
                 .ok_or_else(|| format!("missing ']' in path '{path}'"))?;
             let index = after[..end]
                 .parse()
-                .map_err(|_| format!("'[{}]' is not an array index", &after[..end]))?;
+                .map_err(|_| format!("'[{}]' isn't an array index", &after[..end]))?;
             segments.push(Segment::Index(index));
             rest = &after[end + 1..];
         }
@@ -63,7 +63,7 @@ fn parse_path(path: &str) -> Result<Vec<Segment>, String> {
     }
 }
 
-/// A path as `--set` takes it; the whole input is `(root)`.
+/// Write a path as `--set` takes it; the whole input is `(root)`.
 pub fn display_path(segments: &[Segment]) -> String {
     if segments.is_empty() {
         return "(root)".to_string();
@@ -94,8 +94,8 @@ fn type_name(value: &Value) -> &'static str {
 }
 
 impl Assignment {
-    /// Set the value at the path in `input`, creating missing objects and arrays on the way.
-    /// An index may be one past the end of an array, which appends.
+    /// Set the value at the path in `input`, creating missing objects and arrays on the
+    /// way. An index may be one past the end of an array, which appends.
     pub fn apply(&self, input: &mut Value) -> Result<(), CliError> {
         let mut current = input;
         for (depth, segment) in self.path.iter().enumerate() {
@@ -103,7 +103,7 @@ impl Assignment {
                 CliError::new(
                     ErrorKind::Usage,
                     format!(
-                        "Invalid --set {}: {reason}.",
+                        "Can't set {}: {reason}.",
                         display_path(&self.path[..=depth])
                     ),
                 )
@@ -155,8 +155,9 @@ impl Assignment {
     }
 }
 
-/// Apply `patch` to `target` with JSON merge patch (RFC 7386): an object patch replaces the
-/// fields it names and removes the ones it sets to `null`; any other patch replaces the target.
+/// Apply `patch` to `target` with JSON merge patch (RFC 7386): an object patch replaces
+/// the fields it names and removes the ones it sets to `null`; any other patch replaces
+/// the target.
 pub fn merge_patch(target: &mut Value, patch: &Value) {
     let Value::Object(fields) = patch else {
         *target = patch.clone();
@@ -182,23 +183,20 @@ pub fn read_config(path: &Path) -> Result<Value, CliError> {
     let contents = std::fs::read_to_string(path).map_err(|error| {
         CliError::new(
             ErrorKind::Usage,
-            format!("Cannot read config file '{}': {error}", path.display()),
+            format!("Can't read config file '{}': {error}", path.display()),
         )
     })?;
     serde_json::from_str(&contents).map_err(|error| {
         CliError::new(
             ErrorKind::Usage,
-            format!(
-                "Config file '{}' is not valid JSON: {error}",
-                path.display()
-            ),
+            format!("Config file '{}' isn't JSON: {error}", path.display()),
         )
     })
 }
 
-/// The input the job `definition` runs with, each step winning over the ones before: `start`,
-/// then each config merge-patched onto it in order, then the job's flags `job_flags` set as the
-/// job's command line sets them, then each assignment set.
+/// Resolve the input the job `definition` runs with, each step winning over the ones
+/// before: `start`, then each config merge-patched onto it in order, then the job's flags
+/// `job_flags` set as the job's command line sets them, then each assignment.
 pub fn resolve(
     definition: &JobDefinition,
     start: Value,
@@ -224,8 +222,8 @@ pub struct Violation {
     pub message: String,
 }
 
-/// Where `input` breaks `schema`, or why `schema` cannot be used. References outside the
-/// schema are not fetched.
+/// Find where `input` breaks `schema`, or why `schema` can't be used. References outside
+/// the schema are not fetched.
 pub fn violations(schema: &Value, input: &Value) -> Result<Vec<Violation>, String> {
     let validator = jsonschema::validator_for(schema).map_err(|error| error.to_string())?;
     Ok(validator
@@ -249,7 +247,7 @@ pub fn violations(schema: &Value, input: &Value) -> Result<Vec<Violation>, Strin
         .collect())
 }
 
-/// The error for an input that breaks the schema of `job`.
+/// Build the error for an input that breaks the schema of `job`.
 pub fn invalid_input(job: &str, violations: &[Violation]) -> CliError {
     let details = violations
         .iter()
@@ -258,9 +256,9 @@ pub fn invalid_input(job: &str, violations: &[Violation]) -> CliError {
         .join("; ");
     CliError::new(
         ErrorKind::Usage,
-        format!("Invalid input for job '{job}': {details}."),
+        format!("The input for job '{job}' is invalid: {details}."),
     )
-    .with_hint("Change it with --set <PATH>=<VALUE>; `tracel run --list --json` shows the job's input schema.")
+    .with_hint(format!("See its flags with `tracel run {job} --help`."))
 }
 
 #[cfg(test)]
@@ -374,20 +372,17 @@ mod tests {
         for (argument, message) in [
             (
                 "epochs.max=3",
-                "Invalid --set epochs.max: epochs is a number, not an object.",
+                "Can't set epochs.max: epochs is a number, not an object.",
             ),
             (
                 "layers.size=3",
-                "Invalid --set layers.size: layers is an array, not an object.",
+                "Can't set layers.size: layers is an array, not an object.",
             ),
             (
                 "epochs[0]=3",
-                "Invalid --set epochs[0]: epochs is a number, not an array.",
+                "Can't set epochs[0]: epochs is a number, not an array.",
             ),
-            (
-                "layers[3]=1",
-                "Invalid --set layers[3]: layers has 1 items.",
-            ),
+            ("layers[3]=1", "Can't set layers[3]: layers has 1 items."),
         ] {
             let error = set(&mut input, argument).unwrap_err();
             assert_eq!(error.kind, ErrorKind::Usage);
@@ -606,7 +601,7 @@ mod tests {
         assert_eq!(
             error.to_string(),
             format!(
-                "Invalid input for job 'train': {}: {}.",
+                "The input for job 'train' is invalid: {}: {}.",
                 found[0].path, found[0].message
             )
         );

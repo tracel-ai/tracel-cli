@@ -1,16 +1,26 @@
-use std::borrow::Cow;
-
 use anyhow::Context;
 use serde::Serialize;
 
-use super::RunArgs;
-use crate::commands::jobs::follow_job;
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::commands::package::{Mode, PackageArgs, build_package};
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
-use crate::helpers::{require_workspace_project, validate_project_exists_on_server};
-use crate::ui::{Declined, Human, Outcome, Render, Unanswered};
+use crate::helpers::{follow_job, require_workspace_project, validate_project_exists_on_server};
+use crate::ui::{Declined, Human, Outcome, Render, Terminal, Unanswered, short_digest};
+
+/// A job `tracel run --remote` queues on a compute provider group.
+pub struct RemoteRun<'a> {
+    pub group: &'a str,
+    /// The command the job runs the program with.
+    pub command: String,
+    pub packaging: PackageArgs,
+    /// Queue it without asking.
+    pub yes: bool,
+    /// Package it and say what would be queued, without uploading or queuing anything.
+    pub dry_run: bool,
+    /// Follow its logs until it finishes.
+    pub follow: bool,
+}
 
 /// A queued job: the data of `run --remote`, and its first NDJSON item with `--follow`.
 #[derive(Serialize)]
@@ -49,59 +59,61 @@ struct DryRun {
     command: String,
 }
 
-/// Package the workspace like `tracel package` with `packaging`, then queue it as a job on
-/// `group` that runs the program with `command`.
-pub fn handle_command(
-    group: &str,
-    command: String,
-    packaging: &PackageArgs,
-    args: &RunArgs,
-    context: &CliContext,
-) -> anyhow::Result<Outcome> {
-    packaging.check(context.terminal())?;
-    let terminal = context.terminal();
+/// Say what queueing a job on `group` needs when the user can't confirm it.
+fn queueing(group: &str) -> Unanswered {
+    Unanswered::new(
+        format!("Queueing a job on '{group}' needs confirmation."),
+        "Pass --yes to queue it without asking.",
+    )
+}
 
-    let (project, source) = require_workspace_project(context)?;
-    let tracel_project = project.get_project();
-    let arguments = if command.is_empty() {
-        "no arguments".to_string()
-    } else {
-        format!("arguments `{command}`")
-    };
-    let description = format!(
-        "a job in {}/{} on compute provider group '{group}' with {arguments}",
-        tracel_project.namespace, tracel_project.name
-    );
-    if !args.yes && !args.dry_run {
+/// Fail before any slow work when a run on `group` needs answers the user can't give:
+/// a packaging mode, or, when it `asks`, whether to queue the job.
+pub fn check(
+    group: &str,
+    packaging: &PackageArgs,
+    asks: bool,
+    terminal: &Terminal,
+) -> anyhow::Result<()> {
+    packaging.check(terminal)?;
+    if asks {
         terminal.require_confirmation(queueing(group))?;
     }
+    Ok(())
+}
 
-    if args.dry_run {
-        let package = build_package(context, &project, packaging)?;
+/// Package the workspace as `tracel package` does, then queue it as a job, once the user
+/// agrees, since a job may incur costs.
+pub fn queue(run: RemoteRun, context: &CliContext) -> anyhow::Result<Outcome> {
+    let terminal = context.terminal();
+    let group = run.group;
+    let (project, source) = require_workspace_project(context)?;
+    let linked = project.get_project();
+
+    if run.dry_run {
+        let package = build_package(context, &project, &run.packaging)?;
         terminal.info(&format!(
-            "Would queue {description}, running code version {}.",
-            package.digest
+            "Would queue it on {group} with code version {}.",
+            short_digest(&package.digest)
         ));
         terminal.outro("Dry run: nothing was uploaded or queued.");
         return Ok(Outcome::data(DryRun {
-            namespace: tracel_project.namespace.clone(),
-            project: tracel_project.name.clone(),
+            namespace: linked.namespace.clone(),
+            project: linked.name.clone(),
             group: group.to_string(),
             mode: package.mode,
             digest: package.digest,
-            command,
+            command: run.command,
         }));
     }
 
     let client = get_client_and_login_if_needed(context)?;
-    validate_project_exists_on_server(tracel_project, &source, &client)?;
-    let package = build_package(context, &project, packaging)?;
-    if !args.yes {
+    validate_project_exists_on_server(linked, &source, &client)?;
+    let package = build_package(context, &project, &run.packaging)?;
+    let digest = short_digest(&package.digest).to_string();
+    if !run.yes {
         let confirmed = terminal.confirm(
-            &format!(
-                "Queue {description}, running code version {}? It may incur costs.",
-                package.digest
-            ),
+            &format!("Queue it on {group} with code version {digest}? It may incur costs."),
             false,
             queueing(group),
         )?;
@@ -113,89 +125,56 @@ pub fn handle_command(
     let version = package.publish(context, &client, &project)?;
     let queued = client
         .queue_job(
-            &tracel_project.namespace,
-            &tracel_project.name,
+            &linked.namespace,
+            &linked.name,
             group,
             &version.digest,
-            &command,
+            &run.command,
         )
-        .with_context(|| format!("Can't queue a job on compute provider group '{group}'"))?;
+        .with_context(|| format!("Can't queue a job on '{group}'"))?;
     let job = QueuedJob {
         job_num: queued.job_num,
         job_id: queued.job_id,
         group: group.to_string(),
         digest: version.digest,
         version_id: version.version_id,
-        command,
+        command: run.command,
         uploaded: version.uploaded,
     };
-    if args.follow {
+    if run.follow {
         context.output().event(&QueuedEvent { job: &job })?;
     }
 
     let Some(num) = job.job_num else {
-        terminal.step(&format!("Queued job {} on {group}", job.job_id));
-        if args.follow {
+        let queued = format!("Queued a job with code version {digest}.");
+        if run.follow {
+            terminal.success(&queued);
             return Err(CliError::new(
                 ErrorKind::Internal,
-                format!(
-                    "Job {} was queued, but the server did not return its number to follow it.",
-                    job.job_id
-                ),
+                "The Tracel Console didn't send the job's number, so it can't be followed.",
             )
-            .with_hint(
-                "Find the job with `tracel jobs list`, then run `tracel jobs logs <NUM> --follow`.",
-            )
+            .with_hint("Find it with `tracel jobs list`, then follow it with `tracel jobs logs <number> --follow`.")
             .into());
         }
-        terminal.info("Find its number with `tracel jobs list`.");
-        terminal.outro("Job queued.");
+        terminal.next_steps(&queued, &["tracel jobs list".to_string()]);
         return Ok(Outcome::data(job));
     };
 
-    if args.follow {
-        terminal.step(&format!("Queued job {num} on {group}"));
-        follow_job(&client, context, tracel_project, num)?;
+    let queued = format!("Queued job {num} with code version {digest}.");
+    if run.follow {
+        terminal.success(&queued);
+        follow_job(&client, context.output(), linked, num)?;
         terminal.outro(&format!("Job {num} completed."));
         return Ok(Outcome::streamed());
     }
-
-    terminal.info(&format!(
-        "Follow its logs with `tracel jobs logs {num} --follow`, or wait for it with `tracel jobs wait {num}`."
-    ));
-    terminal.outro(&format!("Queued job {num} on {group}."));
+    terminal.next_steps(
+        &queued,
+        &[
+            format!("tracel jobs logs {num} --follow"),
+            format!("tracel jobs wait {num}"),
+        ],
+    );
     Ok(Outcome::data(job))
-}
-
-/// What queueing a job says when the user can't confirm it.
-fn queueing(group: &str) -> Unanswered {
-    Unanswered::new(
-        format!("Queueing a job on '{group}' needs confirmation."),
-        "Pass --yes to queue it without asking.",
-    )
-}
-
-/// The job command that gives the program `arguments` unchanged.
-///
-/// The compute provider splits the command into words with shell quoting rules (quotes,
-/// backslashes, and `#` comments, without expansions), so every argument the split would
-/// change is single-quoted.
-pub fn job_command(arguments: &[String]) -> String {
-    arguments
-        .iter()
-        .map(|argument| quote(argument))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn quote(argument: &str) -> Cow<'_, str> {
-    let unchanged = !argument.is_empty()
-        && !argument.starts_with('#')
-        && !argument.contains([' ', '\t', '\n', '\'', '"', '\\']);
-    if unchanged {
-        return Cow::Borrowed(argument);
-    }
-    Cow::Owned(format!("'{}'", argument.replace('\'', r"'\''")))
 }
 
 #[cfg(test)]
@@ -203,15 +182,6 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-
-    fn command(arguments: &[&str]) -> String {
-        job_command(
-            &arguments
-                .iter()
-                .map(|argument| argument.to_string())
-                .collect::<Vec<_>>(),
-        )
-    }
 
     #[test]
     fn the_queued_job_is_the_data_and_the_first_followed_event() {
@@ -239,40 +209,6 @@ mod tests {
             serde_json::to_value(QueuedEvent { job: &job }).unwrap(),
             event
         );
-        assert_eq!(serde_json::to_value(&job).unwrap(), data);
-    }
-
-    #[test]
-    fn plain_arguments_are_joined_unchanged() {
-        assert_eq!(command(&[]), "");
-        assert_eq!(
-            command(&["train", "--epochs", "10", "--lr=0.01"]),
-            "train --epochs 10 --lr=0.01"
-        );
-        assert_eq!(
-            command(&["$HOME", "*.rs", "~/data", "a#b", "x|y;z", "--name=é"]),
-            "$HOME *.rs ~/data a#b x|y;z --name=é"
-        );
-    }
-
-    #[test]
-    fn arguments_the_split_would_change_are_single_quoted() {
-        for (argument, quoted) in [
-            ("", "''"),
-            ("my run", "'my run'"),
-            ("tab\there", "'tab\there'"),
-            ("two\nlines", "'two\nlines'"),
-            ("#tag", "'#tag'"),
-            (r#"say "hi""#, r#"'say "hi"'"#),
-            (r"C:\data", r"'C:\data'"),
-            ("it's", r"'it'\''s'"),
-            ("'", r"''\'''"),
-        ] {
-            assert_eq!(command(&[argument]), quoted, "{argument:?}");
-        }
-        assert_eq!(
-            command(&["--name", "my run", "", "--tag", "it's"]),
-            r"--name 'my run' '' --tag 'it'\''s'"
-        );
+        assert_eq!(serde_json::to_value(job).unwrap(), data);
     }
 }

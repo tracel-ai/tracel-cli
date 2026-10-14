@@ -31,6 +31,25 @@ pub fn log_time(text: &str) -> String {
     local(text, &Local, TO_THE_SECOND)
 }
 
+/// Say how long it was from the RFC 3339 time `start` to `end`, or to now without one,
+/// such as "3 min 20 s". None when a time doesn't parse.
+pub fn elapsed(start: &str, end: Option<&str>) -> Option<String> {
+    let start = DateTime::parse_from_rfc3339(start).ok()?;
+    let end = match end {
+        Some(end) => DateTime::parse_from_rfc3339(end).ok()?.to_utc(),
+        None => Utc::now(),
+    };
+    Some(span((end - start.to_utc()).num_seconds().max(0)))
+}
+
+fn span(seconds: i64) -> String {
+    match seconds {
+        seconds if seconds < 60 => format!("{seconds} s"),
+        seconds if seconds < 3600 => format!("{} min {} s", seconds / 60, seconds % 60),
+        seconds => format!("{} h {} min", seconds / 3600, seconds % 3600 / 60),
+    }
+}
+
 const TO_THE_MINUTE: &str = "%Y-%m-%d %H:%M";
 const TO_THE_SECOND: &str = "%Y-%m-%d %H:%M:%S";
 

@@ -147,7 +147,7 @@ fn build_binary_package(
 
         let linker = if is_host {
             context.terminal().warning(&format!(
-                "The binary runs only on {} compute providers.",
+                "Only {} compute providers can run this build.",
                 target::pretty_name(os, arch)
             ));
             None

@@ -3,6 +3,7 @@ use std::io::{self, Write};
 
 use serde::Serialize;
 use serde_json::Value;
+use url::Url;
 
 /// The narrowest a shrinkable table column gets, ellipsis included.
 const MIN_COLUMN_WIDTH: usize = 4;
@@ -34,11 +35,6 @@ impl Human<'_> {
         self.width
     }
 
-    /// Whether the text may be colored.
-    pub fn color(&self) -> bool {
-        self.styled
-    }
-
     fn styled(&self, text: impl Display, style: console::Style) -> String {
         if self.styled {
             style.force_styling(true).apply_to(text).to_string()
@@ -53,6 +49,16 @@ impl Human<'_> {
 
     pub fn dim(&self, text: impl Display) -> String {
         self.styled(text, console::Style::new().dim())
+    }
+
+    /// Show `url` as cliclack shows links when the text is styled, and plain otherwise.
+    /// Not for table cells, whose widths don't skip a hyperlink's escapes.
+    pub fn link(&self, url: &Url) -> String {
+        if self.styled {
+            terminal_link(url, console::Style::new().force_styling(true))
+        } else {
+            url.to_string()
+        }
     }
 
     /// Write a title for what follows, ending in a colon.
@@ -201,7 +207,7 @@ fn line<const N: usize>(cells: &[String; N], widths: &[usize; N]) -> String {
 }
 
 /// Labelled values, aligned, and sections that list the fields of a JSON value under a
-/// heading.
+/// heading. A value that is a web address is a link.
 #[derive(Default)]
 pub struct Details {
     entries: Vec<Entry>,
@@ -354,12 +360,21 @@ fn flatten(prefix: &str, value: &Value, fields: &mut Vec<(String, String)>) {
     }
 }
 
-/// Put a value on one line, with a dim "-" for nothing.
+/// Put a value on one line, with a dim "-" for nothing and a web address as a link.
 fn styled_cell(out: &Human<'_>, value: &str) -> String {
     match cell_text(value) {
         text if text == "-" => out.dim(text),
-        text => text,
+        text => match web_address(&text) {
+            Some(url) => out.link(&url),
+            None => text,
+        },
     }
+}
+
+/// Read `text` as an http or https URL, when it is one written as the URL writes itself.
+fn web_address(text: &str) -> Option<Url> {
+    let url = Url::parse(text).ok()?;
+    (matches!(url.scheme(), "http" | "https") && url.as_str() == text).then_some(url)
 }
 
 /// Cut `text` to `width` columns with an ellipsis, when it is wider.
@@ -375,6 +390,17 @@ fn truncate(text: &str, width: usize) -> String {
 fn cell_text(value: &str) -> String {
     let text = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if text.is_empty() { "-".into() } else { text }
+}
+
+/// Show `url` in `style`, blue and bold as cliclack shows links, and as a hyperlink
+/// (OSC 8) a click opens when the terminal on stderr renders them.
+pub fn terminal_link(url: &Url, style: console::Style) -> String {
+    let text = style.blue().bold().apply_to(url).to_string();
+    if supports_hyperlinks::on(supports_hyperlinks::Stream::Stderr) {
+        format!("\u{1b}]8;;{url}\u{1b}\\{text}\u{1b}]8;;\u{1b}\\")
+    } else {
+        text
+    }
 }
 
 #[cfg(test)]
