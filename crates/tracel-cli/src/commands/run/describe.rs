@@ -11,7 +11,8 @@ use tracel_job::{DefinitionsFile, JobDefinition, PROTOCOL, ParseError, TRACEL_DE
 
 use super::launch::wait_until;
 use crate::error::{CliError, ErrorKind};
-use crate::tools::cargo;
+use crate::tools::build_driver::BuildDriver;
+use crate::tools::cargo::{self, Binary};
 use crate::tools::fs::file_sha256_and_size;
 use crate::tools::workspace::WorkspaceInfo;
 use crate::ui::Terminal;
@@ -88,13 +89,6 @@ pub fn package_binaries(metadata: &Metadata) -> Vec<PackageBinaries> {
         .collect()
 }
 
-/// A binary target of a workspace package.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Binary {
-    pub package: String,
-    pub name: String,
-}
-
 /// The binary whose jobs `tracel run` runs: the one of the packages that depend on the
 /// `tracel` crate, or `bin` among them. Like `cargo run`, a package's `default-run` picks one
 /// of its binaries.
@@ -118,17 +112,8 @@ pub fn choose_binary(packages: &[PackageBinaries], bin: Option<&str>) -> Result<
         return Err(CliError::new(ErrorKind::Usage, message)
             .with_hint("Run the program with `tracel run -- <args>` instead."));
     }
-
-    let names: Vec<&str> = candidates
-        .iter()
-        .map(|binary| binary.name.as_str())
-        .collect();
     if let Some(bin) = bin {
-        return candidates
-            .iter()
-            .find(|binary| binary.name == bin)
-            .cloned()
-            .ok_or_else(|| cargo::invalid_bin(bin, &names));
+        return cargo::find_binary(&candidates, bin);
     }
     if let [binary] = candidates.as_slice() {
         return Ok(binary.clone());
@@ -146,6 +131,10 @@ pub fn choose_binary(packages: &[PackageBinaries], bin: Option<&str>) -> Result<
             return Ok(binary.clone());
         }
     }
+    let names: Vec<&str> = candidates
+        .iter()
+        .map(|binary| binary.name.as_str())
+        .collect();
     Err(CliError::new(
         ErrorKind::Usage,
         format!(
@@ -189,7 +178,7 @@ pub struct Described {
     pub definitions: DefinitionsFile,
 }
 
-/// Build the binary whose jobs `tracel run` runs, and read its job definitions.
+/// Build the binary whose jobs `tracel run` runs, in release, and read its job definitions.
 ///
 /// The definitions are cached in `target/tracel/jobs.json` under the SHA-256 of the binary,
 /// so the binary only runs again once it changes.
@@ -199,7 +188,7 @@ pub fn describe(
     bin: Option<&str>,
 ) -> anyhow::Result<Described> {
     let binary = choose_binary(&package_binaries(&workspace.metadata), bin)?;
-    let program = build(&binary)?;
+    let program = build(terminal, &binary)?;
     let (sha256, _) = file_sha256_and_size(&program)?;
     let cache = workspace
         .metadata
@@ -230,23 +219,14 @@ pub fn describe(
     })
 }
 
-fn build(binary: &Binary) -> anyhow::Result<PathBuf> {
-    let label = format!(
-        "cargo build --package {} --bin {}",
-        binary.package, binary.name
-    );
-    let mut command = cargo::command();
-    command
-        .arg("build")
-        .arg("--package")
-        .arg(&binary.package)
-        .arg("--bin")
-        .arg(&binary.name);
-    cargo::build_executables(command, &label)?
+fn build(terminal: &Terminal, binary: &Binary) -> anyhow::Result<PathBuf> {
+    let (command, label) = cargo::release_build(BuildDriver::Cargo, None, None, Some(binary));
+    let building = format!("Building {}", binary.name);
+    cargo::build(terminal, command, &label, &building)?
         .into_iter()
         .find(|(name, _)| *name == binary.name)
         .map(|(_, path)| path)
-        .ok_or_else(|| anyhow::anyhow!("`{label}` did not produce the binary {}", binary.name))
+        .with_context(|| format!("`{label}` made no binary '{}'", binary.name))
 }
 
 /// Run `program` with `TRACEL_DESCRIBE` set, and read the definitions it writes.

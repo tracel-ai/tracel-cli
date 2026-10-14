@@ -13,10 +13,11 @@ use tracel_client::console::project::request::{
 use super::{MODE_HINT, MODE_NEEDED, Mode, PackageArgs, check_targets_allowed};
 use crate::context::CliContext;
 use crate::tools::build_driver::{self, BuildDriver};
+use crate::tools::cargo::{self, Binary};
 use crate::tools::fs::file_sha256_and_size;
 use crate::tools::packager::{self, PackageEvent};
 use crate::tools::project_context::ProjectContext;
-use crate::tools::{cargo, target};
+use crate::tools::target;
 use crate::ui::Unanswered;
 
 /// A code version ready to upload: the digest of its content, its publish request, each
@@ -127,6 +128,11 @@ fn build_binary_package(
 
     let root = project.get_workspace_root();
     let drivers = build_driver::detect();
+    let bin = args
+        .bin
+        .as_deref()
+        .map(|name| cargo::find_binary(&cargo::binaries(&project.workspace_info.metadata), name))
+        .transpose()?;
     let mut binaries = Vec::new();
     let mut uploads = Vec::new();
 
@@ -154,7 +160,7 @@ fn build_binary_package(
             (!is_host).then_some(triple),
             driver,
             linker,
-            args.bin.as_deref(),
+            bin.as_ref(),
         )?;
         let (checksum, size) = file_sha256_and_size(&path)?;
         binaries.push(PublishBinaryRequest {
@@ -179,54 +185,31 @@ fn build_binary_package(
 }
 
 /// Build the release binary with `driver`, for `target` when cross-building, and return
-/// its path, asking which one when the build makes several.
+/// its path. A `bin` is the only binary built, as `tracel run` builds it, so the build
+/// `tracel run` made for this machine is reused; otherwise the user picks one when the
+/// build makes several.
 fn build_release_binary(
     context: &CliContext,
     target: Option<&str>,
     driver: BuildDriver,
     linker: Option<&str>,
-    bin: Option<&str>,
+    bin: Option<&Binary>,
 ) -> anyhow::Result<PathBuf> {
-    let cmd_label = match target {
-        Some(triple) => format!("{} --release --target {triple}", driver.label()),
-        None => format!("{} --release", driver.label()),
-    };
-    let mut command = cargo::command();
-    for arg in driver.subcommand_args() {
-        command.arg(arg);
-    }
-    command.arg("--release");
-    if let Some(triple) = target {
-        command.arg("--target").arg(triple);
-        if let Some(linker) = linker {
-            command
-                .arg("--config")
-                .arg(format!("target.{triple}.linker=\"{linker}\""));
-        }
-    }
+    let (command, label) = cargo::release_build(driver, target, linker, bin);
     let building = match target {
         Some(triple) => format!("Building for {triple}"),
         None => "Building the binary".to_string(),
     };
-    let spinner = context.terminal().spinner(&building);
-    let built = cargo::build_quietly(command, &cmd_label, |status| {
-        spinner.set_message(format!("{building}: {status}"));
-    });
-    spinner.clear();
-    let built = built?;
-    if !built.succeeded() {
-        built.show_output();
-    }
-    let executables = built.executables()?;
+    let executables = cargo::build(context.terminal(), command, &label, &building)?;
 
-    let names: Vec<&str> = executables.iter().map(|(name, _)| name.as_str()).collect();
     if let Some(bin) = bin {
         return executables
-            .iter()
-            .find(|(name, _)| name == bin)
-            .map(|(_, path)| path.clone())
-            .ok_or_else(|| cargo::invalid_bin(bin, &names).into());
+            .into_iter()
+            .find(|(name, _)| *name == bin.name)
+            .map(|(_, path)| path)
+            .with_context(|| format!("`{label}` made no binary '{}'", bin.name));
     }
+    let names: Vec<&str> = executables.iter().map(|(name, _)| name.as_str()).collect();
     match executables.len() {
         0 => anyhow::bail!("The build made no binary."),
         1 => Ok(executables[0].1.clone()),

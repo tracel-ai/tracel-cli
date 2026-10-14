@@ -20,7 +20,7 @@ pub struct PackageArgs {
     /// Build for this target triple; repeat for more
     #[arg(long = "target", value_name = "TRIPLE")]
     pub targets: Vec<String>,
-    /// Upload this binary when several are built
+    /// Binary to build, when there are several
     #[arg(long, value_name = "NAME")]
     pub bin: Option<String>,
     /// Install missing Rust targets without asking

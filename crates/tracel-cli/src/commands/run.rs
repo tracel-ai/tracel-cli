@@ -39,9 +39,7 @@ use launch::{Launch, Target, exit_error, launch, select_target};
         .requires("remote")
 ))]
 #[command(group(ArgGroup::new("selection").args(["job", "list", "remote"]).multiple(true)))]
-#[command(mut_arg("bin", |arg| arg
-    .requires("selection")
-    .help("Binary to run jobs from, and with --remote to upload, when there are several")))]
+#[command(mut_arg("bin", |arg| arg.requires("selection")))]
 #[command(disable_help_flag = true)]
 pub struct RunArgs {
     /// Job to run, as --list names it, followed by its own flags, which `tracel run <JOB> --help` lists
@@ -306,13 +304,11 @@ fn recorded_input(context: &CliContext, selector: &ExperimentSelector) -> anyhow
     Ok(experiment.config)
 }
 
-/// Run `cargo run` in the current directory, passing the arguments given after `--`.
-///
-/// `tracel run -- entrypoint` is equivalent to `cargo run -- entrypoint`: stdio is
-/// inherited and the program's exit code is the command's.
+/// Run `cargo run --release` with the arguments given after `--`: its output and exit
+/// code are the command's.
 fn run_locally(forwarded: &[String], context: &CliContext) -> anyhow::Result<()> {
     let mut cmd = cargo::command();
-    cmd.arg("run");
+    cmd.arg("run").arg("--release");
     cmd.envs(sdk_environment(context, context.project()));
 
     if !forwarded.is_empty() {
