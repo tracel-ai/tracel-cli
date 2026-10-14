@@ -3092,7 +3092,7 @@ dependencies = [
 [[package]]
 name = "tracel-client"
 version = "0.21.0"
-source = "git+https://github.com/tracel-ai/burn-central-client?rev=f517e38c4bcff597619990b8f3d1b166b1d070fc#f517e38c4bcff597619990b8f3d1b166b1d070fc"
+source = "git+https://github.com/tracel-ai/burn-central-client?rev=8b909baa569effcd4bf336a1256e23be25036f01#8b909baa569effcd4bf336a1256e23be25036f01"
 dependencies = [
  "directories",
  "reqwest",
@@ -3109,8 +3109,8 @@ dependencies = [
 
 [[package]]
 name = "tracel-job"
-version = "0.10.0"
-source = "git+https://github.com/tracel-ai/tracel?rev=fdfd0a33f2b630a71acd390bd4643610fc29657c#fdfd0a33f2b630a71acd390bd4643610fc29657c"
+version = "0.11.0"
+source = "git+https://github.com/tracel-ai/tracel?rev=84d5b9a3f6c9c1fee2c3401073a50c56bdc536b4#84d5b9a3f6c9c1fee2c3401073a50c56bdc536b4"
 dependencies = [
  "clap",
  "clap_complete",
