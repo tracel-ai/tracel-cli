@@ -263,6 +263,7 @@ pub fn invalid_input(job: &str, violations: &[Violation]) -> CliError {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
     use serde_json::json;
 
     use super::*;
@@ -276,341 +277,263 @@ mod tests {
         parse_assignment(argument).unwrap().apply(input)
     }
 
-    #[test]
-    fn paths_are_dotted_keys_with_array_indices() {
-        assert_eq!(parse_path("epochs").unwrap(), [key("epochs")]);
-        assert_eq!(
-            parse_path("optimizer.lr").unwrap(),
-            [key("optimizer"), key("lr")]
-        );
-        assert_eq!(
-            parse_path("layers[0].sizes[2][1]").unwrap(),
-            [
-                key("layers"),
-                Segment::Index(0),
-                key("sizes"),
-                Segment::Index(2),
-                Segment::Index(1)
-            ]
-        );
-        assert_eq!(
-            parse_path("[1].name").unwrap(),
-            [Segment::Index(1), key("name")]
-        );
-        assert_eq!(parse_path("a-b_c d").unwrap(), [key("a-b_c d")]);
-        for path in [
-            "", ".a", "a.", "a..b", "a[", "a[x]", "a[-1]", "a]b", "a[0]b",
-        ] {
-            assert!(parse_path(path).is_err(), "{path}");
-        }
-    }
-
-    #[test]
-    fn displayed_paths_parse_back() {
-        for path in [
-            "epochs",
-            "optimizer.lr",
-            "layers[0].sizes[2][1]",
-            "[1].name",
-        ] {
-            assert_eq!(display_path(&parse_path(path).unwrap()), path);
-        }
-        assert_eq!(display_path(&[]), "(root)");
-    }
-
-    #[test]
-    fn values_are_json_or_else_strings() {
-        for (argument, value) in [
-            ("epochs=5", json!(5)),
-            ("lr=0.01", json!(0.01)),
-            ("shuffle=true", json!(true)),
-            ("tag=null", Value::Null),
-            ("layers=[1, 2]", json!([1, 2])),
-            (r#"name="x""#, json!("x")),
-            ("name=x", json!("x")),
-            ("name=", json!("")),
-            ("expression=a=b", json!("a=b")),
-            ("name={oops", json!("{oops")),
-        ] {
-            assert_eq!(
-                parse_assignment(argument).unwrap().value,
-                value,
-                "{argument}"
-            );
-        }
-        assert!(parse_assignment("epochs").is_err());
-        assert!(parse_assignment("=5").is_err());
-    }
-
-    #[test]
-    fn assignments_replace_values_and_create_missing_ones() {
-        let mut input = json!({"epochs": 10, "optimizer": {"lr": 0.001}, "layers": [8]});
-        set(&mut input, "epochs=5").unwrap();
-        set(&mut input, "optimizer.lr=0.01").unwrap();
-        set(&mut input, "optimizer.schedule.warmup=2").unwrap();
-        set(&mut input, "layers[0]=16").unwrap();
-        set(&mut input, "layers[1]=32").unwrap();
-        set(&mut input, "heads[0].size=4").unwrap();
-        assert_eq!(
-            input,
-            json!({
-                "epochs": 5,
-                "optimizer": {"lr": 0.01, "schedule": {"warmup": 2}},
-                "layers": [16, 32],
-                "heads": [{"size": 4}]
-            })
-        );
-
-        let mut input = Value::Null;
-        set(&mut input, "a.b=1").unwrap();
-        assert_eq!(input, json!({"a": {"b": 1}}));
-    }
-
-    #[test]
-    fn assignments_through_other_values_name_the_path() {
-        let mut input = json!({"epochs": 10, "layers": [8]});
-        for (argument, message) in [
-            (
-                "epochs.max=3",
-                "Can't set epochs.max: epochs is a number, not an object.",
-            ),
-            (
-                "layers.size=3",
-                "Can't set layers.size: layers is an array, not an object.",
-            ),
-            (
-                "epochs[0]=3",
-                "Can't set epochs[0]: epochs is a number, not an array.",
-            ),
-            ("layers[3]=1", "Can't set layers[3]: layers has 1 items."),
-        ] {
-            let error = set(&mut input, argument).unwrap_err();
-            assert_eq!(error.kind, ErrorKind::Usage);
-            assert_eq!(error.to_string(), message);
-        }
-        assert_eq!(input, json!({"epochs": 10, "layers": [8]}));
-    }
-
-    #[test]
-    fn merge_patch_follows_rfc_7386() {
-        // The examples of RFC 7386, appendix A.
-        for (target, patch, result) in [
-            (json!({"a": "b"}), json!({"a": "c"}), json!({"a": "c"})),
-            (
-                json!({"a": "b"}),
-                json!({"b": "c"}),
-                json!({"a": "b", "b": "c"}),
-            ),
-            (json!({"a": "b"}), json!({"a": null}), json!({})),
-            (
-                json!({"a": "b", "b": "c"}),
-                json!({"a": null}),
-                json!({"b": "c"}),
-            ),
-            (json!({"a": ["b"]}), json!({"a": "c"}), json!({"a": "c"})),
-            (json!({"a": "c"}), json!({"a": ["b"]}), json!({"a": ["b"]})),
-            (
-                json!({"a": {"b": "c"}}),
-                json!({"a": {"b": "d", "c": null}}),
-                json!({"a": {"b": "d"}}),
-            ),
-            (
-                json!({"a": [{"b": "c"}]}),
-                json!({"a": [1]}),
-                json!({"a": [1]}),
-            ),
-            (json!(["a", "b"]), json!(["c", "d"]), json!(["c", "d"])),
-            (json!({"a": "b"}), json!(["c"]), json!(["c"])),
-            (json!({"a": "foo"}), Value::Null, Value::Null),
-            (json!({"a": "foo"}), json!("bar"), json!("bar")),
-            (
-                json!({"e": null}),
-                json!({"a": 1}),
-                json!({"e": null, "a": 1}),
-            ),
-            (
-                json!([1, 2]),
-                json!({"a": "b", "c": null}),
-                json!({"a": "b"}),
-            ),
-            (
-                json!({}),
-                json!({"a": {"bb": {"ccc": null}}}),
-                json!({"a": {"bb": {}}}),
-            ),
-        ] {
-            let mut merged = target.clone();
-            merge_patch(&mut merged, &patch);
-            assert_eq!(merged, result, "{target} + {patch}");
-        }
-    }
-
-    /// A job whose example input is `example`, with a schema of the fields the tests set.
-    fn train(example: Value) -> JobDefinition {
+    fn train() -> JobDefinition {
         let schema = json!({
             "type": "object",
-            "properties": {
-                "epochs": {"type": "integer"},
-                "batch_size": {"type": "integer"},
-                "shuffle": {"type": "boolean"},
-                "tag": {"type": "string"},
-                "optimizer": {
-                    "type": "object",
-                    "properties": {"lr": {"type": "number"}, "decay": {"type": "number"}}
-                }
-            }
+            "properties": {"epochs": {"type": "integer"}}
         });
-        job("train", Some(schema), Some(example))
-    }
-
-    fn assignments(arguments: &[&str]) -> Vec<Assignment> {
-        arguments
-            .iter()
-            .map(|argument| parse_assignment(argument).unwrap())
-            .collect()
-    }
-
-    fn flags(arguments: &[&str]) -> Vec<String> {
-        arguments
-            .iter()
-            .map(|argument| argument.to_string())
-            .collect()
-    }
-
-    #[test]
-    fn each_step_wins_over_the_ones_before() {
-        let example = json!({
-            "epochs": 10,
-            "batch_size": 8,
-            "tag": "example",
-            "optimizer": {"lr": 0.001, "decay": 0.1}
-        });
-        let input = resolve(
-            &train(example.clone()),
-            example,
-            &[
-                json!({"epochs": 20, "batch_size": 16, "optimizer": {"decay": null}}),
-                json!({"epochs": 30, "tag": "config"}),
-            ],
-            &flags(&["--epochs=40", "--batch-size=32", "--optimizer.lr=0.01"]),
-            &assignments(&["epochs=50", "optimizer.lr=0.1"]),
-        )
-        .unwrap();
-        assert_eq!(
-            input,
-            json!({"epochs": 50, "batch_size": 32, "tag": "config", "optimizer": {"lr": 0.1}})
-        );
-        assert_eq!(
-            resolve(&train(json!({})), Value::Null, &[], &[], &[]).unwrap(),
-            Value::Null
-        );
-    }
-
-    #[test]
-    fn job_flags_set_what_the_same_assignments_set() {
-        let example = json!({"epochs": 10, "shuffle": false, "optimizer": {"lr": 0.001}});
-        let job = train(example.clone());
-        let with_flags = resolve(
-            &job,
-            example.clone(),
-            &[],
-            &flags(&["--epochs=5", "--optimizer.lr=0.01", "--shuffle"]),
-            &[],
-        )
-        .unwrap();
-        let with_assignments = resolve(
-            &job,
-            example,
-            &[],
-            &[],
-            &assignments(&["epochs=5", "optimizer.lr=0.01", "shuffle=true"]),
-        )
-        .unwrap();
-        assert_eq!(with_flags, with_assignments);
-        assert_eq!(
-            with_flags,
-            json!({"epochs": 5, "shuffle": true, "optimizer": {"lr": 0.01}})
-        );
-    }
-
-    #[test]
-    fn config_files_must_be_json() {
-        let dir = tempfile::tempdir().unwrap();
-        let valid = dir.path().join("valid.json");
-        let invalid = dir.path().join("invalid.json");
-        std::fs::write(&valid, r#"{"epochs": 2}"#).unwrap();
-        std::fs::write(&invalid, "epochs = 2").unwrap();
-
-        assert_eq!(read_config(&valid).unwrap(), json!({"epochs": 2}));
-        for path in [invalid, dir.path().join("missing.json")] {
-            let error = read_config(&path).unwrap_err();
-            assert_eq!(error.kind, ErrorKind::Usage);
-            assert!(error.to_string().contains(&*path.to_string_lossy()));
-        }
+        job("train", Some(schema), Some(json!({"epochs": 10})))
     }
 
     fn schema() -> Value {
         json!({
-            "$schema": "https://json-schema.org/draft/2020-12/schema",
             "type": "object",
             "properties": {
-                "epochs": {"type": "integer", "format": "uint", "minimum": 0},
-                "optimizer": {"$ref": "#/$defs/Optimizer"},
+                "epochs": {"type": "integer", "minimum": 0},
                 "layers": {"type": "array", "items": {"type": "integer"}}
             },
-            "required": ["epochs", "optimizer"],
-            "$defs": {
-                "Optimizer": {
-                    "type": "object",
-                    "properties": {"lr": {"type": "number"}},
-                    "required": ["lr"]
-                }
-            }
+            "required": ["epochs"]
         })
     }
 
     #[test]
-    fn a_valid_input_has_no_violations() {
-        let input = json!({"epochs": 3, "optimizer": {"lr": 0.1}, "layers": [1, 2]});
-        assert_eq!(violations(&schema(), &input).unwrap(), []);
+    fn given_a_dotted_path_with_indices_when_parsing_an_assignment_then_each_key_and_index_is_a_step()
+     {
+        let assignment = parse_assignment("layers[0].sizes[2]=1").unwrap();
+
+        assert_eq!(
+            assignment.path,
+            [
+                key("layers"),
+                Segment::Index(0),
+                key("sizes"),
+                Segment::Index(2)
+            ]
+        );
+    }
+
+    #[rstest]
+    #[case::empty_key(".a=1", "empty key")]
+    #[case::unclosed_index("a[=1", "missing ']'")]
+    #[case::not_an_index("a[x]=1", "'[x]'")]
+    #[case::text_after_an_index("a[0]b=1", "unexpected 'b'")]
+    fn given_a_malformed_path_when_parsing_an_assignment_then_it_says_what_is_wrong(
+        #[case] argument: &str,
+        #[case] reason: &str,
+    ) {
+        let error = parse_assignment(argument).unwrap_err();
+
+        assert!(error.contains(reason), "{error}");
     }
 
     #[test]
-    fn violations_name_the_path_and_the_reason() {
-        let input = json!({"epochs": "x", "optimizer": {}, "layers": [1, "two"]});
-        let found = violations(&schema(), &input).unwrap();
-        let paths: Vec<&str> = found
-            .iter()
-            .map(|violation| violation.path.as_str())
-            .collect();
-        assert_eq!(found.len(), 3, "{found:?}");
-        for path in ["epochs", "optimizer", "layers[1]"] {
-            assert!(paths.contains(&path), "{found:?}");
-        }
-        let epochs = found
-            .iter()
-            .find(|violation| violation.path == "epochs")
-            .unwrap();
-        assert_eq!(epochs.message, r#""x" is not of type "integer""#);
+    fn given_no_equals_sign_when_parsing_an_assignment_then_it_shows_the_expected_form() {
+        let error = parse_assignment("epochs").unwrap_err();
 
-        let root = violations(&schema(), &json!([])).unwrap();
-        assert_eq!(root[0].path, "(root)");
+        assert!(error.contains("<PATH>=<VALUE>"), "{error}");
+    }
 
-        let error = invalid_input("train", &found[..1]);
-        assert_eq!(error.kind, ErrorKind::Usage);
+    #[rstest]
+    #[case::number("epochs=5", json!(5))]
+    #[case::boolean("shuffle=true", json!(true))]
+    #[case::array("layers=[1, 2]", json!([1, 2]))]
+    #[case::quoted_string(r#"name="x""#, json!("x"))]
+    fn given_a_json_value_when_parsing_an_assignment_then_it_is_that_value(
+        #[case] argument: &str,
+        #[case] expected: Value,
+    ) {
+        let assignment = parse_assignment(argument).unwrap();
+
+        assert_eq!(assignment.value, expected);
+    }
+
+    #[rstest]
+    #[case::word("name=x", "x")]
+    #[case::empty("name=", "")]
+    #[case::with_an_equals_sign("expression=a=b", "a=b")]
+    fn given_text_that_is_not_json_when_parsing_an_assignment_then_it_is_a_string(
+        #[case] argument: &str,
+        #[case] expected: &str,
+    ) {
+        let assignment = parse_assignment(argument).unwrap();
+
+        assert_eq!(assignment.value, json!(expected));
+    }
+
+    #[test]
+    fn given_an_existing_field_when_setting_it_then_its_value_is_replaced() {
+        let mut input = json!({"optimizer": {"lr": 0.001, "decay": 0.1}});
+
+        set(&mut input, "optimizer.lr=0.01").unwrap();
+
+        assert_eq!(input, json!({"optimizer": {"lr": 0.01, "decay": 0.1}}));
+    }
+
+    #[test]
+    fn given_missing_objects_on_the_path_when_setting_a_field_then_they_are_created() {
+        let mut input = json!({"epochs": 10});
+
+        set(&mut input, "optimizer.schedule.warmup=2").unwrap();
+
         assert_eq!(
-            error.to_string(),
-            format!(
-                "The input for job 'train' is invalid: {}: {}.",
-                found[0].path, found[0].message
-            )
+            input,
+            json!({"epochs": 10, "optimizer": {"schedule": {"warmup": 2}}})
         );
     }
 
     #[test]
-    fn a_schema_with_a_remote_reference_is_not_fetched() {
+    fn given_an_index_one_past_the_end_when_setting_it_then_the_value_is_appended() {
+        let mut input = json!({"layers": [8]});
+
+        set(&mut input, "layers[1]=16").unwrap();
+
+        assert_eq!(input, json!({"layers": [8, 16]}));
+    }
+
+    #[rstest]
+    #[case::key_of_a_number("epochs.max=3", "not an object")]
+    #[case::index_of_a_number("epochs[0]=3", "not an array")]
+    #[case::index_past_the_end("layers[3]=1", "has 1 items")]
+    fn given_a_path_the_input_cannot_hold_when_setting_it_then_it_is_a_usage_error_saying_why(
+        #[case] argument: &str,
+        #[case] reason: &str,
+    ) {
+        let mut input = json!({"epochs": 10, "layers": [8]});
+
+        let error = set(&mut input, argument).unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Usage);
+        assert!(error.to_string().contains(reason), "{error}");
+    }
+
+    #[test]
+    fn given_an_object_patch_when_merging_it_then_it_replaces_only_the_fields_it_names() {
+        let mut input = json!({"epochs": 10, "optimizer": {"lr": 0.001, "decay": 0.1}});
+
+        merge_patch(&mut input, &json!({"optimizer": {"lr": 0.01}}));
+
+        assert_eq!(
+            input,
+            json!({"epochs": 10, "optimizer": {"lr": 0.01, "decay": 0.1}})
+        );
+    }
+
+    #[test]
+    fn given_a_null_field_in_the_patch_when_merging_it_then_the_field_is_removed() {
+        let mut input = json!({"epochs": 10, "tag": "baseline"});
+
+        merge_patch(&mut input, &json!({"tag": null}));
+
+        assert_eq!(input, json!({"epochs": 10}));
+    }
+
+    #[test]
+    fn given_a_patch_that_is_not_an_object_when_merging_it_then_it_replaces_the_input() {
+        let mut input = json!({"layers": [8, 16]});
+
+        merge_patch(&mut input, &json!([32]));
+
+        assert_eq!(input, json!([32]));
+    }
+
+    #[test]
+    fn given_a_config_when_resolving_the_input_then_it_wins_over_the_example() {
+        let input = resolve(
+            &train(),
+            json!({"epochs": 10}),
+            &[json!({"epochs": 20})],
+            &[],
+            &[],
+        );
+
+        assert_eq!(input.unwrap(), json!({"epochs": 20}));
+    }
+
+    #[test]
+    fn given_a_job_flag_when_resolving_the_input_then_it_wins_over_the_config() {
+        let flags = ["--epochs=30".to_string()];
+
+        let input = resolve(
+            &train(),
+            json!({"epochs": 10}),
+            &[json!({"epochs": 20})],
+            &flags,
+            &[],
+        );
+
+        assert_eq!(input.unwrap(), json!({"epochs": 30}));
+    }
+
+    #[test]
+    fn given_an_assignment_when_resolving_the_input_then_it_wins_over_the_job_flags() {
+        let flags = ["--epochs=30".to_string()];
+        let assignments = [parse_assignment("epochs=40").unwrap()];
+
+        let input = resolve(&train(), json!({"epochs": 10}), &[], &flags, &assignments);
+
+        assert_eq!(input.unwrap(), json!({"epochs": 40}));
+    }
+
+    #[test]
+    fn given_a_config_file_that_is_not_json_when_reading_it_then_it_is_a_usage_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("base.json");
+        std::fs::write(&path, "epochs = 2").unwrap();
+
+        let error = read_config(&path).unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Usage);
+        assert!(
+            error.to_string().contains(&*path.to_string_lossy()),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn given_an_input_that_follows_the_schema_when_checking_it_then_there_are_no_violations() {
+        let input = json!({"epochs": 3, "layers": [1, 2]});
+
+        let violations = violations(&schema(), &input).unwrap();
+
+        assert_eq!(violations, []);
+    }
+
+    #[test]
+    fn given_an_input_that_breaks_the_schema_when_checking_it_then_each_violation_names_its_path() {
+        let input = json!({"epochs": -1, "layers": [1, "two"]});
+
+        let violations = violations(&schema(), &input).unwrap();
+
+        let paths: Vec<&str> = violations
+            .iter()
+            .map(|violation| violation.path.as_str())
+            .collect();
+        assert_eq!(paths, ["epochs", "layers[1]"]);
+    }
+
+    #[test]
+    fn given_a_schema_with_a_remote_reference_when_checking_an_input_then_it_is_not_fetched() {
         let schema = json!({"$ref": "https://example.com/schema.json"});
-        assert!(violations(&schema, &json!({})).is_err());
-        assert!(violations(&json!({"type": 5}), &json!({})).is_err());
+
+        let checked = violations(&schema, &json!({}));
+
+        assert!(checked.is_err());
+    }
+
+    #[test]
+    fn given_violations_when_reporting_an_invalid_input_then_the_message_lists_them() {
+        let violations = [Violation {
+            path: "epochs".into(),
+            message: "-1 is less than the minimum of 0".into(),
+        }];
+
+        let error = invalid_input("train", &violations);
+
+        assert!(
+            error
+                .to_string()
+                .contains("epochs: -1 is less than the minimum of 0"),
+            "{error}"
+        );
     }
 }

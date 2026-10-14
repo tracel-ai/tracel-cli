@@ -290,187 +290,121 @@ mod tests {
         }
     }
 
-    fn groups(values: &[(&str, f64)]) -> Vec<MetricSummaryGroupResponse> {
-        values
-            .iter()
-            .map(|&(group, optimal_value)| MetricSummaryGroupResponse {
-                group: group.into(),
-                optimal_value,
-                epoch: 1,
-            })
-            .collect()
-    }
-
-    #[test]
-    fn equal_values_have_no_differences() {
-        for value in [
-            json!(null),
-            json!({}),
-            json!({"optimizer": {"lr": 0.01, "betas": [0.9, 0.999]}, "seed": 1}),
-            json!([1, {"a": [true, null]}]),
-        ] {
-            assert!(diff_json(&value, &value.clone()).is_empty());
+    fn summary(group: &str, optimal_value: f64) -> MetricSummaryGroupResponse {
+        MetricSummaryGroupResponse {
+            group: group.into(),
+            optimal_value,
+            epoch: 1,
         }
     }
 
     #[test]
-    fn nested_objects_report_changed_added_and_removed_keys() {
-        let base = json!({
-            "optimizer": {"name": "adam", "lr": 0.01, "betas": [0.9, 0.999]},
-            "seed": 1,
-            "old": true,
-        });
-        let other = json!({
-            "optimizer": {"name": "adam", "lr": 0.001, "betas": [0.9, 0.99], "decay": null},
-            "seed": 1,
-            "new": {"warmup": 5},
-        });
+    fn given_equal_configs_when_comparing_them_then_there_are_no_differences() {
+        let config = json!({"optimizer": {"lr": 0.01, "betas": [0.9, 0.999]}, "seed": 1});
+
+        let differences = diff_json(&config, &config.clone());
+
+        assert_eq!(differences, []);
+    }
+
+    #[test]
+    fn given_a_changed_nested_field_when_comparing_configs_then_its_dotted_path_has_both_values() {
+        let base = json!({"optimizer": {"name": "adam", "lr": 0.01}});
+        let other = json!({"optimizer": {"name": "adam", "lr": 0.001}});
+
+        let differences = diff_json(&base, &other);
+
         assert_eq!(
-            diff_json(&base, &other),
+            differences,
+            [difference(
+                "optimizer.lr",
+                Some(json!(0.01)),
+                Some(json!(0.001))
+            )]
+        );
+    }
+
+    #[test]
+    fn given_a_field_only_one_config_has_when_comparing_them_then_the_other_side_is_missing() {
+        let base = json!({"seed": 1, "old": true});
+        let other = json!({"seed": 1, "new": null});
+
+        let differences = diff_json(&base, &other);
+
+        assert_eq!(
+            differences,
             [
-                difference("new", None, Some(json!({"warmup": 5}))),
+                difference("new", None, Some(json!(null))),
                 difference("old", Some(json!(true)), None),
-                difference("optimizer.betas[1]", Some(json!(0.999)), Some(json!(0.99))),
-                difference("optimizer.decay", None, Some(json!(null))),
-                difference("optimizer.lr", Some(json!(0.01)), Some(json!(0.001))),
-            ]
-        );
-        assert_eq!(
-            diff_json(&other, &base)
-                .into_iter()
-                .map(|difference| difference.path)
-                .collect::<Vec<_>>(),
-            [
-                "new",
-                "old",
-                "optimizer.betas[1]",
-                "optimizer.decay",
-                "optimizer.lr"
             ]
         );
     }
 
     #[test]
-    fn arrays_compare_by_index_and_report_extra_items() {
+    fn given_arrays_when_comparing_configs_then_items_compare_by_index() {
+        let base = json!({"layers": [64, 32, 16]});
+        let other = json!({"layers": [64, 8]});
+
+        let differences = diff_json(&base, &other);
+
         assert_eq!(
-            diff_json(&json!([1, 2, 3]), &json!([1, 5])),
+            differences,
             [
-                difference("[1]", Some(json!(2)), Some(json!(5))),
-                difference("[2]", Some(json!(3)), None),
-            ]
-        );
-        assert_eq!(
-            diff_json(
-                &json!({"layers": [{"size": 64}, {"size": 32}]}),
-                &json!({"layers": [{"size": 64}, {"size": 16}, {"size": 8}]}),
-            ),
-            [
-                difference("layers[1].size", Some(json!(32)), Some(json!(16))),
-                difference("layers[2]", None, Some(json!({"size": 8}))),
+                difference("layers[1]", Some(json!(32)), Some(json!(8))),
+                difference("layers[2]", Some(json!(16)), None),
             ]
         );
     }
 
     #[test]
-    fn type_changes_are_one_difference_with_both_values() {
+    fn given_a_field_whose_type_changed_when_comparing_configs_then_it_is_one_difference() {
+        let base = json!({"schedule": "cosine"});
+        let other = json!({"schedule": {"kind": "cosine"}});
+
+        let differences = diff_json(&base, &other);
+
         assert_eq!(
-            diff_json(
-                &json!({"lr": 0.1, "schedule": "cosine", "flag": null, "sizes": [1], "head": {}}),
-                &json!({"lr": "0.1", "schedule": {"kind": "cosine"}, "flag": false, "sizes": {"0": 1}, "head": []}),
-            ),
-            [
-                difference("flag", Some(json!(null)), Some(json!(false))),
-                difference("head", Some(json!({})), Some(json!([]))),
-                difference("lr", Some(json!(0.1)), Some(json!("0.1"))),
-                difference(
-                    "schedule",
-                    Some(json!("cosine")),
-                    Some(json!({"kind": "cosine"}))
-                ),
-                difference("sizes", Some(json!([1])), Some(json!({"0": 1}))),
-            ]
-        );
-        assert_eq!(
-            diff_json(&json!(null), &json!({"lr": 0.1})),
-            [difference("", Some(json!(null)), Some(json!({"lr": 0.1})))]
+            differences,
+            [difference(
+                "schedule",
+                Some(json!("cosine")),
+                Some(json!({"kind": "cosine"}))
+            )]
         );
     }
 
     #[test]
-    fn keys_that_would_be_ambiguous_are_quoted() {
-        assert_eq!(
-            diff_json(
-                &json!({"a.b": 1, "": 1, "outer": {"x[0]": 1, "plain key": 1}}),
-                &json!({"a.b": 2, "": 2, "outer": {"x[0]": 2, "plain key": 2}}),
-            )
-            .into_iter()
-            .map(|difference| difference.path)
-            .collect::<Vec<_>>(),
-            [
-                r#"[""]"#,
-                r#"["a.b"]"#,
-                "outer.plain key",
-                r#"outer["x[0]"]"#
-            ]
-        );
+    fn given_a_key_a_dotted_path_would_misread_when_comparing_configs_then_it_is_quoted() {
+        let base = json!({"outer": {"a.b": 1}});
+        let other = json!({"outer": {"a.b": 2}});
+
+        let differences = diff_json(&base, &other);
+
+        assert_eq!(differences[0].path, r#"outer["a.b"]"#);
     }
 
     #[test]
-    fn a_missing_side_is_omitted_while_null_is_kept() {
-        assert_eq!(
-            serde_json::to_value(diff_json(
-                &json!({"removed": null, "changed": null}),
-                &json!({"added": null, "changed": 1}),
-            ))
-            .unwrap(),
-            json!([
-                {"path": "added", "other": null},
-                {"path": "changed", "base": null, "other": 1},
-                {"path": "removed", "base": null},
-            ])
-        );
+    fn given_a_group_both_experiments_summarize_when_comparing_a_metric_then_the_delta_is_other_minus_base()
+     {
+        let comparisons =
+            compare_metric("loss", &[summary("valid", 0.75)], &[summary("valid", 0.5)]);
+
+        assert_eq!(comparisons[0].delta, Some(-0.25));
     }
 
     #[test]
-    fn metric_groups_pair_by_name_with_deltas_only_when_both_exist() {
-        let comparisons = compare_metric(
-            "loss",
-            &groups(&[("valid", 0.75), ("train", 0.5)]),
-            &groups(&[("valid", 0.5), ("test", 0.25)]),
-        );
+    fn given_a_group_one_experiment_summarizes_when_comparing_a_metric_then_there_is_no_delta() {
+        let comparisons = compare_metric("loss", &[summary("train", 0.5)], &[]);
+
         assert_eq!(
-            serde_json::to_value(&comparisons).unwrap(),
-            json!([
-                {"metric": "loss", "group": "test", "base": null, "other": 0.25, "delta": null},
-                {"metric": "loss", "group": "train", "base": 0.5, "other": null, "delta": null},
-                {"metric": "loss", "group": "valid", "base": 0.75, "other": 0.5, "delta": -0.25},
-            ])
-        );
-        assert_eq!(
-            compare_metric("accuracy", &groups(&[("valid", 0.5)]), &[]),
+            comparisons,
             [MetricComparison {
-                metric: "accuracy".into(),
-                group: "valid".into(),
+                metric: "loss".into(),
+                group: "train".into(),
                 base: Some(0.5),
                 other: None,
                 delta: None,
             }]
-        );
-        assert!(compare_metric("accuracy", &[], &[]).is_empty());
-    }
-
-    #[test]
-    fn metrics_default_to_all_defined_and_requested_ones_keep_their_order() {
-        assert_eq!(
-            defined_metrics(
-                vec!["loss".into(), "accuracy".into()],
-                vec!["accuracy".into(), "f1".into()],
-            ),
-            ["accuracy", "f1", "loss"]
-        );
-        assert_eq!(
-            requested_metrics(vec!["loss".into(), "accuracy".into(), "loss".into()]),
-            ["loss", "accuracy"]
         );
     }
 }

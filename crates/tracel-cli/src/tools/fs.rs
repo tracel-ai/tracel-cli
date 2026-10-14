@@ -145,4 +145,16 @@ mod tests {
             "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
         );
     }
+
+    #[test]
+    fn given_files_in_any_order_when_digesting_their_manifest_then_it_hashes_their_sorted_lines() {
+        let files = [("b.txt", "2"), ("a.txt", "1")];
+
+        let digest = manifest_digest(files);
+
+        assert_eq!(
+            digest,
+            "13bc76289088ec8bee58cab71493d13ba7ef87dbcf86bf361f84b918cbd0eb2e"
+        );
+    }
 }

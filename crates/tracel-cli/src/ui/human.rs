@@ -542,4 +542,25 @@ mod tests {
 
         assert_eq!(shown, expected);
     }
+
+    #[rstest]
+    #[case::localhost("http://localhost:9001/")]
+    #[case::console("https://console.tracel.ai/test/demo")]
+    fn given_a_web_url_written_as_it_writes_itself_when_reading_it_then_it_is_a_link(
+        #[case] text: &str,
+    ) {
+        let address = web_address(text);
+
+        assert!(address.is_some());
+    }
+
+    #[rstest]
+    #[case::rewritten_host("http://Example.com")]
+    #[case::other_scheme("ftp://example.com/")]
+    #[case::word("weights")]
+    fn given_other_text_when_reading_it_as_a_web_url_then_it_is_not_a_link(#[case] text: &str) {
+        let address = web_address(text);
+
+        assert!(address.is_none());
+    }
 }

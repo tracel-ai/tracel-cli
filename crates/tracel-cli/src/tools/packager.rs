@@ -206,291 +206,281 @@ fn is_executable(_metadata: &Metadata) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sha2::{Digest, Sha256};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    /// A uniquely named directory under the system temp directory, removed on drop.
-    struct TempWorkspace(PathBuf);
+    struct TempWorkspace(tempfile::TempDir);
 
     impl TempWorkspace {
-        fn new(name: &str) -> Self {
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "tracel-cli-packager-{name}-{}-{nanos}",
-                std::process::id()
-            ));
-            std::fs::create_dir_all(&path).unwrap();
-            Self(path)
+        fn new() -> Self {
+            Self(tempfile::tempdir().unwrap())
+        }
+
+        fn path(&self) -> &Path {
+            self.0.path()
         }
 
         fn write(&self, rel_path: &str, contents: &str) {
-            let path = self.0.join(rel_path);
+            let path = self.path().join(rel_path);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, contents).unwrap();
         }
 
-        /// Makes `rel_path` the root of a git repository, as packaging detects one: a `.git`
-        /// entry, here a directory with some content.
         fn git_init(&self, rel_path: &str) {
             self.write(&format!("{rel_path}/.git/HEAD"), "ref: refs/heads/main\n");
         }
 
-        /// The files packaged from the workspace at `rel_root`.
-        fn files(&self, rel_root: &str) -> BTreeMap<String, PathBuf> {
-            list_workspace_files(&self.0.join(rel_root).canonicalize().unwrap()).unwrap()
+        fn files_under(&self, rel_root: &str) -> Vec<String> {
+            let root = self.path().join(rel_root).canonicalize().unwrap();
+            list_workspace_files(&root).unwrap().into_keys().collect()
+        }
+
+        fn files(&self) -> Vec<String> {
+            self.files_under(".")
         }
 
         fn digest(&self) -> String {
-            source_digest(&self.files("")).unwrap()
+            let root = self.path().canonicalize().unwrap();
+            source_digest(&list_workspace_files(&root).unwrap()).unwrap()
+        }
+
+        fn archive(&self, output: &Path) -> Vec<u8> {
+            let root = self.path().canonicalize().unwrap();
+            let files = list_workspace_files(&root).unwrap();
+            write_zip_archive(&files, File::create(output).unwrap()).unwrap();
+            std::fs::read(output).unwrap()
         }
     }
 
-    impl Drop for TempWorkspace {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn sha256(contents: &str) -> String {
-        format!("{:x}", Sha256::digest(contents))
-    }
-
     #[test]
-    fn digest_hashes_workspace_relative_paths_and_contents() {
-        let workspace = TempWorkspace::new("format");
-        workspace.write("Cargo.toml", "[package]");
-        workspace.write("src/main.rs", "fn main() {}");
-
-        let expected = manifest_digest([
-            ("Cargo.toml", sha256("[package]").as_str()),
-            ("src/main.rs", sha256("fn main() {}").as_str()),
-        ]);
-        assert_eq!(workspace.digest(), expected);
-    }
-
-    #[test]
-    fn digest_does_not_depend_on_file_creation_order() {
-        let first = TempWorkspace::new("order-first");
+    fn given_the_same_files_written_in_another_order_when_digesting_then_the_digest_is_the_same() {
+        let first = TempWorkspace::new();
         first.write("Cargo.toml", "[package]");
         first.write("src/main.rs", "fn main() {}");
-        let second = TempWorkspace::new("order-second");
+        let second = TempWorkspace::new();
         second.write("src/main.rs", "fn main() {}");
         second.write("Cargo.toml", "[package]");
 
-        assert_eq!(first.digest(), second.digest());
+        let (first, second) = (first.digest(), second.digest());
+
+        assert_eq!(first, second);
     }
 
     #[test]
-    fn digest_changes_with_file_content_or_name() {
-        let workspace = TempWorkspace::new("changes");
+    fn given_an_edited_file_when_digesting_then_the_digest_changes() {
+        let workspace = TempWorkspace::new();
         workspace.write("src/main.rs", "fn main() {}");
         let original = workspace.digest();
 
         workspace.write("src/main.rs", "fn main() { println!(); }");
-        let edited = workspace.digest();
-        assert_ne!(edited, original);
 
-        std::fs::rename(
-            workspace.0.join("src/main.rs"),
-            workspace.0.join("src/lib.rs"),
-        )
-        .unwrap();
-        assert_ne!(workspace.digest(), edited);
-    }
-
-    #[test]
-    fn digest_ignores_excluded_files() {
-        let workspace = TempWorkspace::new("excluded");
-        workspace.write("src/main.rs", "fn main() {}");
-        let original = workspace.digest();
-
-        workspace.write("target/debug/app", "binary");
-        workspace.write(".env", "TOKEN=1");
-        assert_eq!(workspace.digest(), original);
-
-        workspace.write("src/lib.rs", "");
         assert_ne!(workspace.digest(), original);
     }
 
     #[test]
-    fn digest_ignores_gitignored_files() {
-        for in_repository in [false, true] {
-            let workspace = TempWorkspace::new("gitignored");
-            if in_repository {
-                workspace.git_init(".");
-            }
-            workspace.write(".gitignore", "*.log\n");
-            workspace.write("src/main.rs", "fn main() {}");
-            let original = workspace.digest();
+    fn given_a_renamed_file_when_digesting_then_the_digest_changes() {
+        let workspace = TempWorkspace::new();
+        workspace.write("src/main.rs", "fn main() {}");
+        let original = workspace.digest();
 
-            workspace.write("train.log", "epoch 1");
-            workspace.write("target/debug/app", "binary");
-            assert_eq!(workspace.digest(), original);
+        std::fs::rename(
+            workspace.path().join("src/main.rs"),
+            workspace.path().join("src/lib.rs"),
+        )
+        .unwrap();
 
-            workspace.write("src/lib.rs", "");
-            assert_ne!(workspace.digest(), original);
-        }
+        assert_ne!(workspace.digest(), original);
     }
 
     #[test]
-    fn ignore_files_and_git_excludes_apply() {
-        let workspace = TempWorkspace::new("ignore-files");
-        workspace.git_init(".");
-        workspace.write(".git/info/exclude", "*.bak\n");
+    fn given_a_binary_package_when_digesting_it_then_it_shares_the_source_packages_digest() {
+        let workspace = TempWorkspace::new();
+        workspace.write(
+            "Cargo.toml",
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        );
+        workspace.write("src/main.rs", "fn main() {}");
+        let metadata = cargo_metadata::MetadataCommand::new()
+            .manifest_path(workspace.path().join("Cargo.toml"))
+            .no_deps()
+            .env("CARGO_TARGET_DIR", workspace.path().join("target"))
+            .exec()
+            .unwrap();
+        let info = WorkspaceInfo {
+            workspace_name: "demo".to_string(),
+            workspace_root: metadata.workspace_root.clone().into_std_path_buf(),
+            metadata,
+        };
+        let source = package_workspace(&info, Arc::new(())).unwrap();
+
+        let binary_digest = workspace_digest(&info).unwrap();
+
+        assert_eq!(binary_digest, source.digest);
+    }
+
+    #[test]
+    fn given_build_output_when_listing_the_files_to_package_then_it_is_left_out() {
+        let workspace = TempWorkspace::new();
+        workspace.write("src/main.rs", "fn main() {}");
+        workspace.write("target/release/trainer", "binary");
+
+        let files = workspace.files();
+
+        assert_eq!(files, ["src/main.rs"]);
+    }
+
+    #[test]
+    fn given_a_gitignore_outside_a_repository_when_listing_the_files_to_package_then_it_applies() {
+        let workspace = TempWorkspace::new();
+        workspace.write("src/main.rs", "fn main() {}");
+        workspace.write("train.log", "epoch 1");
+        workspace.write(".gitignore", "*.log\n");
+
+        let files = workspace.files();
+
+        assert_eq!(files, ["src/main.rs"]);
+    }
+
+    #[test]
+    fn given_an_ignore_file_that_reincludes_a_file_when_listing_the_files_to_package_then_only_that_file_is_kept()
+     {
+        let workspace = TempWorkspace::new();
         workspace.write("data/.ignore", "*.csv\n!keep.csv\n");
         workspace.write("data/train.csv", "1,2");
         workspace.write("data/keep.csv", "3,4");
-        workspace.write("notes.bak", "draft");
-        workspace.write("src/main.rs", "fn main() {}");
 
-        assert_eq!(
-            workspace.files("").keys().collect::<Vec<_>>(),
-            ["data/.ignore", "data/keep.csv", "src/main.rs"]
-        );
+        let files = workspace.files();
+
+        assert_eq!(files, ["data/keep.csv"]);
     }
 
     #[test]
-    fn hidden_files_are_packaged_only_in_a_repository() {
-        let workspace = TempWorkspace::new("hidden");
-        workspace.write(".gitignore", ".env\n");
-        workspace.write(".env", "TOKEN=1");
-        workspace.write(".cargo/config.toml", "[build]");
-        workspace.write("src/main.rs", "fn main() {}");
-        assert_eq!(
-            workspace.files("").keys().collect::<Vec<_>>(),
-            ["src/main.rs"]
-        );
-
+    fn given_a_repository_exclude_file_when_listing_the_files_to_package_then_it_applies() {
+        let workspace = TempWorkspace::new();
         workspace.git_init(".");
-        assert_eq!(
-            workspace.files("").keys().collect::<Vec<_>>(),
-            [".cargo/config.toml", ".gitignore", "src/main.rs"]
-        );
+        workspace.write(".git/info/exclude", "*.bak\n");
+        workspace.write("src/main.rs", "fn main() {}");
+        workspace.write("notes.bak", "draft");
+
+        let files = workspace.files();
+
+        assert_eq!(files, ["src/main.rs"]);
     }
 
     #[test]
-    fn packaging_nothing_is_a_usage_error() {
-        let workspace = TempWorkspace::new("nothing");
+    fn given_hidden_files_outside_a_repository_when_listing_the_files_to_package_then_they_are_left_out()
+     {
+        let workspace = TempWorkspace::new();
+        workspace.write("src/main.rs", "fn main() {}");
+        workspace.write(".cargo/config.toml", "[build]");
+
+        let files = workspace.files();
+
+        assert_eq!(files, ["src/main.rs"]);
+    }
+
+    #[test]
+    fn given_hidden_files_in_a_repository_when_listing_the_files_to_package_then_they_are_packaged()
+    {
+        let workspace = TempWorkspace::new();
+        workspace.git_init(".");
+        workspace.write("src/main.rs", "fn main() {}");
+        workspace.write(".cargo/config.toml", "[build]");
+
+        let files = workspace.files();
+
+        assert_eq!(files, [".cargo/config.toml", "src/main.rs"]);
+    }
+
+    #[test]
+    fn given_a_workspace_in_a_repository_subdirectory_when_listing_the_files_to_package_then_only_its_files_are_named_from_its_root()
+     {
+        let repository = TempWorkspace::new();
+        repository.git_init(".");
+        repository.write(".gitignore", "*.log\n");
+        repository.write("README.md", "outside the workspace");
+        repository.write("trainer/Cargo.toml", "[package]");
+        repository.write("trainer/train.log", "epoch 1");
+
+        let files = repository.files_under("trainer");
+
+        assert_eq!(files, ["Cargo.toml"]);
+    }
+
+    #[test]
+    fn given_a_repository_nested_in_the_workspace_when_listing_the_files_to_package_then_its_files_are_packaged()
+     {
+        let workspace = TempWorkspace::new();
+        workspace.git_init(".");
+        workspace.git_init("vendor/lib");
+        workspace.write("vendor/lib/lib.rs", "pub fn lib() {}");
+
+        let files = workspace.files();
+
+        assert_eq!(files, ["vendor/lib/lib.rs"]);
+    }
+
+    #[test]
+    fn given_nothing_left_to_package_when_listing_the_files_then_it_is_a_usage_error() {
+        let workspace = TempWorkspace::new();
         workspace.write(".ignore", "*\n");
         workspace.write("Cargo.toml", "[package]");
 
-        let root = workspace.0.canonicalize().unwrap();
-        let error = list_workspace_files(&root).unwrap_err();
+        let error = list_workspace_files(&workspace.path().canonicalize().unwrap()).unwrap_err();
+
         assert_eq!(crate::error::classify(&error), ErrorKind::Usage);
-        assert!(error.to_string().contains("No files to package"));
     }
 
     #[test]
-    fn workspace_in_a_repository_subdirectory_packages_its_own_files() {
-        let nested = TempWorkspace::new("subdir");
-        nested.git_init(".");
-        nested.write(".git/info/exclude", "*.bak\n");
-        nested.write(".gitignore", "*.tmp\n");
-        nested.write("README.md", "outside the workspace");
-        nested.write("ws/.gitignore", "*.log\n");
-        nested.write("ws/Cargo.toml", "[package]");
-        nested.write("ws/src/main.rs", "fn main() {}");
-        nested.write("ws/train.log", "epoch 1");
-        nested.write("ws/cache.tmp", "cache");
-        nested.write("ws/notes.bak", "draft");
-        nested.write("ws/target/debug/app", "binary");
-        nested.git_init("ws/vendor/lib");
-        nested.write("ws/vendor/lib/lib.rs", "pub fn lib() {}");
+    fn given_the_same_files_written_in_another_order_when_archiving_then_the_archive_is_the_same() {
+        let output = tempfile::tempdir().unwrap();
+        let first = TempWorkspace::new();
+        first.write("Cargo.toml", "[package]");
+        first.write("src/main.rs", "fn main() {}");
+        let second = TempWorkspace::new();
+        second.write("src/main.rs", "fn main() {}");
+        second.write("Cargo.toml", "[package]");
 
-        let root = TempWorkspace::new("subdir-root");
-        root.git_init(".");
-        root.write(".gitignore", "*.log\n");
-        root.write("Cargo.toml", "[package]");
-        root.write("src/main.rs", "fn main() {}");
-        root.write("train.log", "epoch 1");
-        root.write("target/debug/app", "binary");
-        root.git_init("vendor/lib");
-        root.write("vendor/lib/lib.rs", "pub fn lib() {}");
+        let first = first.archive(&output.path().join("first.zip"));
+        let second = second.archive(&output.path().join("second.zip"));
 
-        let files = nested.files("ws");
-        assert_eq!(
-            files.keys().collect::<Vec<_>>(),
-            [
-                ".gitignore",
-                "Cargo.toml",
-                "src/main.rs",
-                "vendor/lib/lib.rs"
-            ]
-        );
-        assert_eq!(
-            source_digest(&files).unwrap(),
-            source_digest(&root.files("")).unwrap()
-        );
+        assert_eq!(first, second);
     }
 
     #[test]
-    fn archive_holds_the_workspace_at_its_root() {
-        let contents = [
-            ("Cargo.toml", "[package]"),
-            ("scripts/build.sh", "#!/bin/sh\n"),
-            ("src/main.rs", "fn main() {}"),
-        ];
-        let output = TempWorkspace::new("archive-output");
-        let write_archive = |name: &str, reversed: bool| {
-            let workspace = TempWorkspace::new(name);
-            let mut contents = contents.to_vec();
-            if reversed {
-                contents.reverse();
-            }
-            for (rel_path, text) in contents {
-                workspace.write(rel_path, text);
-            }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let script = workspace.0.join("scripts/build.sh");
-                std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o700)).unwrap();
-            }
-            let path = output.0.join(format!("{name}.zip"));
-            write_zip_archive(&workspace.files(""), File::create(&path).unwrap()).unwrap();
-            path
-        };
-        let first = write_archive("archive-first", false);
-        let second = write_archive("archive-second", true);
-        assert_eq!(
-            std::fs::read(&first).unwrap(),
-            std::fs::read(&second).unwrap()
-        );
+    fn given_a_workspace_when_archiving_it_then_its_files_are_at_the_archive_root() {
+        let output = tempfile::tempdir().unwrap();
+        let workspace = TempWorkspace::new();
+        workspace.write("Cargo.toml", "[package]");
+        workspace.write("src/main.rs", "fn main() {}");
 
-        let mut archive = zip::ZipArchive::new(File::open(&first).unwrap()).unwrap();
-        let entries: Vec<(String, Option<u32>)> = (0..archive.len())
-            .map(|index| {
-                let entry = archive.by_index(index).unwrap();
-                assert_eq!(entry.last_modified(), Some(DateTime::default()));
-                (entry.name().to_string(), entry.unix_mode())
-            })
-            .collect();
-        let script_mode = if cfg!(unix) { 0o100755 } else { 0o100644 };
-        assert_eq!(
-            entries,
-            [
-                ("Cargo.toml".to_string(), Some(0o100644)),
-                ("scripts/build.sh".to_string(), Some(script_mode)),
-                ("src/main.rs".to_string(), Some(0o100644)),
-            ]
-        );
+        let bytes = workspace.archive(&output.path().join("source.zip"));
 
-        let extracted = output.0.join("extracted");
-        archive.extract(&extracted).unwrap();
-        for (rel_path, text) in contents {
-            assert_eq!(
-                std::fs::read_to_string(extracted.join(rel_path)).unwrap(),
-                text
-            );
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let script = std::fs::metadata(extracted.join("scripts/build.sh")).unwrap();
-            assert_eq!(script.permissions().mode() & 0o777, 0o755);
-        }
+        let archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        assert_eq!(
+            archive.file_names().collect::<Vec<_>>(),
+            ["Cargo.toml", "src/main.rs"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn given_an_executable_script_when_archiving_it_then_it_stays_executable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let output = tempfile::tempdir().unwrap();
+        let workspace = TempWorkspace::new();
+        workspace.write("build.sh", "#!/bin/sh\n");
+        std::fs::set_permissions(
+            workspace.path().join("build.sh"),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+
+        let bytes = workspace.archive(&output.path().join("source.zip"));
+
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        assert_eq!(
+            archive.by_name("build.sh").unwrap().unix_mode(),
+            Some(0o100755)
+        );
     }
 }

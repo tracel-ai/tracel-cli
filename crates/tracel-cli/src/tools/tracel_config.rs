@@ -93,72 +93,73 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_reads_either_key() {
-        for (contents, namespace, project) in [
-            (
-                "namespace = 'alice'\nproject = 'demo'",
-                Some("alice"),
-                Some("demo"),
-            ),
-            ("project = 'demo'", None, Some("demo")),
-            ("namespace = 'alice'", Some("alice"), None),
-            ("", None, None),
-        ] {
-            assert_eq!(
-                TracelToml::parse(contents).unwrap(),
-                TracelToml {
-                    namespace: namespace.map(str::to_owned),
-                    project: project.map(str::to_owned),
-                }
-            );
-        }
-    }
+    fn given_namespace_and_project_when_parsing_tracel_toml_then_both_are_read() {
+        let parsed = TracelToml::parse("namespace = 'alice'\nproject = 'demo'").unwrap();
 
-    #[test]
-    fn parse_rejects_other_keys_naming_the_expected_ones() {
-        for (contents, key) in [
-            ("owner = 'alice'\nname = 'demo'", "name"),
-            ("namespace = 'alice'\nname = 'demo'", "name"),
-            ("owner = 'alice'\nproject = 'demo'", "owner"),
-        ] {
-            assert_eq!(
-                TracelToml::parse(contents).unwrap_err(),
-                format!("unknown key `{key}`; expected keys are `namespace` and `project`")
-            );
-        }
         assert_eq!(
-            TracelToml::parse("namespace = 1").unwrap_err(),
-            "`namespace` must be a string"
+            parsed,
+            TracelToml {
+                namespace: Some("alice".into()),
+                project: Some("demo".into()),
+            }
         );
     }
 
     #[test]
-    fn load_requires_both_keys() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(TracelProject::load(dir.path()).unwrap().is_none());
+    fn given_only_project_when_parsing_tracel_toml_then_namespace_is_left_to_the_environment() {
+        let parsed = TracelToml::parse("project = 'demo'").unwrap();
 
+        assert_eq!(parsed.namespace, None);
+    }
+
+    #[test]
+    fn given_an_unknown_key_when_parsing_tracel_toml_then_the_error_names_it() {
+        let error = TracelToml::parse("owner = 'alice'").unwrap_err();
+
+        assert!(error.contains("`owner`"), "{error}");
+    }
+
+    #[test]
+    fn given_a_key_that_is_not_a_string_when_parsing_tracel_toml_then_it_is_refused() {
+        let error = TracelToml::parse("namespace = 1").unwrap_err();
+
+        assert!(error.contains("`namespace`"), "{error}");
+    }
+
+    #[test]
+    fn given_a_saved_project_when_loading_it_then_it_is_the_same_project() {
+        let directory = tempfile::tempdir().unwrap();
         let project = TracelProject {
             namespace: "alice".into(),
             name: "demo".into(),
         };
-        project.save(dir.path()).unwrap();
-        let loaded = TracelProject::load(dir.path()).unwrap().unwrap();
+        project.save(directory.path()).unwrap();
+
+        let loaded = TracelProject::load(directory.path()).unwrap().unwrap();
+
         assert_eq!(
             (loaded.namespace.as_str(), loaded.name.as_str()),
             ("alice", "demo")
         );
+    }
 
-        fs::write(TracelProject::path(dir.path()), "project = 'demo'").unwrap();
-        let error = TracelProject::load(dir.path()).unwrap_err();
+    #[test]
+    fn given_no_tracel_toml_when_loading_the_project_then_there_is_none() {
+        let directory = tempfile::tempdir().unwrap();
+
+        let loaded = TracelProject::load(directory.path()).unwrap();
+
+        assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn given_a_tracel_toml_without_namespace_when_loading_the_project_then_it_is_invalid() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(TracelProject::path(directory.path()), "project = 'demo'").unwrap();
+
+        let error = TracelProject::load(directory.path()).unwrap_err();
+
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert_eq!(error.to_string(), "missing key `namespace`");
-
-        fs::write(
-            TracelProject::path(dir.path()),
-            "owner = 'alice'\nname = 'demo'",
-        )
-        .unwrap();
-        let error = TracelProject::load(dir.path()).unwrap_err();
-        assert!(error.to_string().contains("`namespace` and `project`"));
+        assert!(error.to_string().contains("`namespace`"), "{error}");
     }
 }

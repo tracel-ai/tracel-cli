@@ -407,7 +407,7 @@ mod tests {
 
     #[rstest]
     #[case::auth_token(&["auth", "token"])]
-    #[case::run(&["run", "--", "--epochs", "1"])]
+    #[case::program(&["run", "--", "--epochs", "1"])]
     fn given_a_command_whose_stdout_is_its_own_when_piped_then_its_output_stays_text(
         #[case] args: &[&str],
     ) {
@@ -416,9 +416,13 @@ mod tests {
         assert_eq!(format, Format::Human);
     }
 
-    #[test]
-    fn given_another_command_when_stdout_is_piped_then_its_output_is_json() {
-        let format = command(&["me"]).auto_format(false);
+    #[rstest]
+    #[case::me(&["me"])]
+    #[case::named_job(&["run", "train"])]
+    #[case::job_list(&["run", "--list"])]
+    #[case::remote_run(&["run", "--remote", "gpu"])]
+    fn given_another_command_when_stdout_is_piped_then_its_output_is_json(#[case] args: &[&str]) {
+        let format = command(args).auto_format(false);
 
         assert_eq!(format, Format::Json);
     }

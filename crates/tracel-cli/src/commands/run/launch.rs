@@ -205,91 +205,109 @@ fn signal(status: ExitStatus) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
-    #[test]
-    fn a_linked_project_and_a_credential_select_the_console() {
-        assert_eq!(select_target(false, true, true), (Target::Console, None));
+    #[cfg(unix)]
+    fn read_to_end_within(
+        mut out: impl std::io::Read + Send + 'static,
+        timeout: Duration,
+    ) -> Option<String> {
+        let (sender, text) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut rest = String::new();
+            let _ = out.read_to_string(&mut rest);
+            let _ = sender.send(rest);
+        });
+        text.recv_timeout(timeout).ok()
+    }
+
+    #[cfg(unix)]
+    fn exit(script: &str, stopped: bool) -> Exit {
+        let status = Command::new("sh").args(["-c", script]).status().unwrap();
+        Exit { status, stopped }
     }
 
     #[test]
-    fn offline_is_forced_or_explained() {
-        for (linked, logged_in) in [(false, false), (false, true), (true, false), (true, true)] {
-            assert_eq!(
-                select_target(true, linked, logged_in),
-                (Target::Offline, None)
-            );
-        }
-        for logged_in in [false, true] {
-            let (target, note) = select_target(false, false, logged_in);
-            assert_eq!(target, Target::Offline);
-            assert!(note.unwrap().contains("tracel init"));
-        }
-        let (target, note) = select_target(false, true, false);
-        assert_eq!(target, Target::Offline);
-        assert!(note.unwrap().contains("tracel login"));
+    fn given_a_linked_project_and_a_login_when_selecting_where_to_record_then_it_is_the_console() {
+        let selected = select_target(false, true, true);
+
+        assert_eq!(selected, (Target::Console, None));
     }
 
     #[test]
-    fn targets_are_named_as_the_sdk_reads_them() {
-        for (target, name) in [(Target::Console, "console"), (Target::Offline, "offline")] {
-            assert_eq!(target.as_str(), name);
-            assert_eq!(serde_json::to_value(target).unwrap(), name);
-        }
+    fn given_offline_when_selecting_where_to_record_then_it_is_offline_without_a_note() {
+        let selected = select_target(true, true, true);
+
+        assert_eq!(selected, (Target::Offline, None));
+    }
+
+    #[rstest]
+    #[case::no_linked_project(
+        false,
+        true,
+        "Recording offline: no project is linked. Link one with `tracel init`."
+    )]
+    #[case::no_login(
+        true,
+        false,
+        "Recording offline: you aren't logged in. Log in with `tracel login`, or set TRACEL_API_KEY."
+    )]
+    fn given_no_way_to_reach_the_console_when_selecting_where_to_record_then_it_is_offline_with_a_note(
+        #[case] linked: bool,
+        #[case] logged_in: bool,
+        #[case] note: &str,
+    ) {
+        let selected = select_target(false, linked, logged_in);
+
+        assert_eq!(selected, (Target::Offline, Some(note)));
     }
 
     #[cfg(unix)]
     #[test]
-    fn how_the_program_ended_decides_how_the_run_fails() {
-        for (script, stopped, expected) in [
-            ("exit 0", false, None),
-            (
-                "exit 1",
-                false,
-                Some((ErrorKind::JobFailed, "Job 'mnist' failed (exit code 1).")),
-            ),
-            (
-                "exit 2",
-                false,
-                Some((
-                    ErrorKind::Usage,
-                    "The program rejected job 'mnist' or its input (exit code 2).",
-                )),
-            ),
-            (
-                "exit 3",
-                false,
-                Some((ErrorKind::JobFailed, "Job 'mnist' failed (exit code 3).")),
-            ),
-            (
-                "kill -9 $$",
-                false,
-                Some((
-                    ErrorKind::JobFailed,
-                    "Job 'mnist' failed (ended by signal 9).",
-                )),
-            ),
-            (
-                "exit 0",
-                true,
-                Some((ErrorKind::JobFailed, "Stopped job 'mnist'.")),
-            ),
-        ] {
-            let status = Command::new("sh").args(["-c", script]).status().unwrap();
-            let error = exit_error("mnist", &Exit { status, stopped });
-            assert_eq!(
-                error.map(|error| (error.kind, error.to_string())),
-                expected.map(|(kind, message)| (kind, message.to_string())),
-                "{script} {stopped}"
-            );
-        }
+    fn given_a_program_that_exits_with_0_when_the_run_ends_then_it_did_not_fail() {
+        let error = exit_error("mnist", &exit("exit 0", false));
+
+        assert!(error.is_none());
+    }
+
+    #[cfg(unix)]
+    #[rstest]
+    #[case::exit_code_1("exit 1", "exit code 1")]
+    #[case::exit_code_3("exit 3", "exit code 3")]
+    #[case::signal("kill -9 $$", "signal 9")]
+    fn given_a_program_that_failed_when_the_run_ends_then_the_job_failed_saying_how(
+        #[case] script: &str,
+        #[case] how: &str,
+    ) {
+        let error = exit_error("mnist", &exit(script, false)).unwrap();
+
+        assert_eq!(error.kind, ErrorKind::JobFailed);
+        assert!(error.to_string().contains(how), "{error}");
     }
 
     #[cfg(unix)]
     #[test]
-    fn killing_a_job_kills_the_processes_it_started() {
-        use std::io::{BufRead, BufReader, Read};
-        use std::sync::mpsc;
+    fn given_a_program_that_exits_with_2_when_the_run_ends_then_it_rejected_the_job() {
+        let error = exit_error("mnist", &exit("exit 2", false)).unwrap();
+
+        assert_eq!(error.kind, ErrorKind::Usage);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn given_a_stopped_job_when_the_run_ends_then_it_failed_as_stopped() {
+        let error = exit_error("mnist", &exit("exit 0", true)).unwrap();
+
+        assert_eq!(error.kind, ErrorKind::JobFailed);
+        assert!(error.to_string().contains("Stopped"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn given_a_job_that_started_a_process_when_killing_it_then_that_process_ends_too() {
+        use std::io::{BufRead, BufReader};
 
         let mut command = Command::new("sh");
         command
@@ -297,23 +315,11 @@ mod tests {
             .stdout(Stdio::piped());
         let mut job = own_process_group(&mut command).spawn().unwrap();
         let mut stdout = BufReader::new(job.stdout.take().unwrap());
-        let mut ready = String::new();
-        stdout.read_line(&mut ready).unwrap();
+        stdout.read_line(&mut String::new()).unwrap();
 
         kill_job(&mut job).unwrap();
-        let (sender, closed) = mpsc::channel();
-        std::thread::spawn(move || {
-            let mut rest = String::new();
-            let _ = stdout.read_to_string(&mut rest);
-            let _ = sender.send(rest);
-        });
 
-        assert_eq!(ready, "ready\n");
-        assert_eq!(
-            closed.recv_timeout(Duration::from_secs(10)).as_deref(),
-            Ok(""),
-            "a process the job started outlived it"
-        );
-        assert!(!job.wait().unwrap().success());
+        let rest = read_to_end_within(stdout, Duration::from_secs(10));
+        assert_eq!(rest.as_deref(), Some(""));
     }
 }

@@ -67,6 +67,8 @@ where
 mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
+    use rstest::rstest;
+
     use super::*;
 
     #[test]
@@ -90,6 +92,28 @@ mod tests {
         let time = local("yesterday", &Utc, TO_THE_MINUTE);
 
         assert_eq!(time, "yesterday");
+    }
+
+    #[rstest]
+    #[case::seconds("2026-10-13T15:02:45Z", "45 s")]
+    #[case::minutes("2026-10-13T15:05:20Z", "3 min 20 s")]
+    #[case::hours("2026-10-13T17:07:59Z", "2 h 5 min")]
+    #[case::end_before_start("2026-10-13T15:01:00Z", "0 s")]
+    fn given_a_start_and_an_end_when_saying_how_long_it_took_then_it_reads_in_its_two_largest_units(
+        #[case] end: &str,
+        #[case] expected: &str,
+    ) {
+        let took = elapsed("2026-10-13T15:02:00Z", Some(end));
+
+        assert_eq!(took.as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn given_a_start_that_is_not_a_time_when_saying_how_long_it_took_then_there_is_nothing_to_say()
+    {
+        let took = elapsed("soon", Some("2026-10-13T15:01:00Z"));
+
+        assert_eq!(took, None);
     }
 
     #[test]

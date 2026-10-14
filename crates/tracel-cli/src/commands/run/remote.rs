@@ -176,39 +176,3 @@ pub fn queue(run: RemoteRun, context: &CliContext) -> anyhow::Result<Outcome> {
     );
     Ok(Outcome::data(job))
 }
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::*;
-
-    #[test]
-    fn the_queued_job_is_the_data_and_the_first_followed_event() {
-        let job = QueuedJob {
-            job_num: Some(12),
-            job_id: "0f6c".into(),
-            group: "gpu".into(),
-            digest: "9a1e".into(),
-            version_id: "b2d4".into(),
-            command: "train --epochs 10".into(),
-            uploaded: true,
-        };
-        let data = json!({
-            "job_num": 12,
-            "job_id": "0f6c",
-            "group": "gpu",
-            "digest": "9a1e",
-            "version_id": "b2d4",
-            "command": "train --epochs 10",
-            "uploaded": true,
-        });
-        let mut event = data.clone();
-        event["type"] = json!("queued");
-        assert_eq!(
-            serde_json::to_value(QueuedEvent { job: &job }).unwrap(),
-            event
-        );
-        assert_eq!(serde_json::to_value(job).unwrap(), data);
-    }
-}

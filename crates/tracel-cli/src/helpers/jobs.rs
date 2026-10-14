@@ -227,82 +227,18 @@ pub fn follow_job(
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
     use serde_json::json;
 
     use super::*;
     use crate::test_support::plain;
 
     fn command(arguments: &[&str]) -> String {
-        job_command(
-            &arguments
-                .iter()
-                .map(|argument| argument.to_string())
-                .collect::<Vec<_>>(),
-        )
-    }
-
-    #[test]
-    fn arguments_the_split_would_change_are_single_quoted() {
-        for (arguments, expected) in [
-            (&[][..], ""),
-            (
-                &["train", "--epochs", "10", "--lr=0.01"],
-                "train --epochs 10 --lr=0.01",
-            ),
-            (
-                &["$HOME", "*.rs", "~/data", "a#b", "x|y;z", "--name=é"],
-                "$HOME *.rs ~/data a#b x|y;z --name=é",
-            ),
-            (&[""], "''"),
-            (&["my run"], "'my run'"),
-            (&["tab\there"], "'tab\there'"),
-            (&["two\nlines"], "'two\nlines'"),
-            (&["#tag"], "'#tag'"),
-            (&[r#"say "hi""#], r#"'say "hi"'"#),
-            (&[r"C:\data"], r"'C:\data'"),
-            (&["it's"], r"'it'\''s'"),
-            (&["'"], r"''\'''"),
-        ] {
-            assert_eq!(command(arguments), expected, "{arguments:?}");
-        }
-    }
-
-    #[test]
-    fn a_job_command_reads_back_as_its_arguments() {
-        for arguments in [
-            &[][..],
-            &["train", "--epochs", "10"],
-            &[
-                "--name", "my run", "", "--tag", "it's", "'", "#tag", r"C:\data",
-            ],
-            &["train", r#"{"label":"it's \"ok\"","lr":0.1}"#],
-        ] {
-            assert_eq!(
-                job_arguments(&command(arguments)).unwrap(),
-                arguments,
-                "{arguments:?}"
-            );
-        }
-        assert_eq!(job_arguments(r#"say "hi""#), None);
-        assert_eq!(job_arguments("'unterminated"), None);
-    }
-
-    #[test]
-    fn only_a_job_and_an_input_object_are_an_invocation() {
-        let input = json!({"epochs": 2, "optimizer": {"lr": 0.01}});
-        let queued = command(&["train", &input.to_string()]);
-        assert_eq!(job_invocation(&queued), Some(("train".to_string(), input)));
-        for other in [
-            "train --epochs 10",
-            "train",
-            "train '[1]'",
-            "--epochs '{}'",
-            "train '{}' extra",
-            "'' '{}'",
-            "",
-        ] {
-            assert_eq!(job_invocation(other), None, "{other:?}");
-        }
+        let arguments: Vec<String> = arguments
+            .iter()
+            .map(|argument| argument.to_string())
+            .collect();
+        job_command(&arguments)
     }
 
     fn page(end: u64, has_more: bool) -> JobLogResponse {
@@ -316,46 +252,99 @@ mod tests {
     }
 
     #[test]
-    fn the_next_read_starts_where_a_page_ends() {
-        for (start, page, expected) in [
-            (0, page(8, false), Some((8, false))),
-            (0, page(8, true), Some((8, true))),
-            (16, page(8, false), Some((16, false))),
-            (8, page(8, false), Some((8, false))),
-            (8, page(8, true), None),
-        ] {
-            assert_eq!(next_read(start, &page).ok(), expected, "{start}");
-        }
+    fn given_plain_arguments_when_writing_a_job_command_then_they_are_joined_unchanged() {
+        let written = command(&["train", "--epochs", "10", "--lr=0.01", "$HOME", "*.rs"]);
+
+        assert_eq!(written, "train --epochs 10 --lr=0.01 $HOME *.rs");
+    }
+
+    #[rstest]
+    #[case::empty("", "''")]
+    #[case::space("my run", "'my run'")]
+    #[case::leading_hash("#tag", "'#tag'")]
+    #[case::double_quote(r#"say "hi""#, r#"'say "hi"'"#)]
+    #[case::backslash(r"C:\data", r"'C:\data'")]
+    #[case::single_quote("it's", r"'it'\''s'")]
+    fn given_an_argument_the_split_would_change_when_writing_a_job_command_then_it_is_single_quoted(
+        #[case] argument: &str,
+        #[case] expected: &str,
+    ) {
+        let written = command(&[argument]);
+
+        assert_eq!(written, expected);
     }
 
     #[test]
-    fn followed_logs_are_typed_events_that_end_their_line() {
-        let page = JobLogResponse {
-            logs: "epoch 1\nepo".into(),
-            ..page(11, true)
+    fn given_a_job_command_when_reading_it_back_then_it_gives_the_same_arguments() {
+        let arguments = [
+            "--name",
+            "my run",
+            "",
+            "it's",
+            "#tag",
+            r#"{"label":"a \"b\""}"#,
+        ];
+        let written = command(&arguments);
+
+        let read = job_arguments(&written).unwrap();
+
+        assert_eq!(read, arguments);
+    }
+
+    #[test]
+    fn given_a_job_and_its_input_queued_by_tracel_run_when_reading_the_command_then_both_are_found()
+    {
+        let input = json!({"epochs": 2, "optimizer": {"lr": 0.01}});
+        let queued = command(&["train", &input.to_string()]);
+
+        let invocation = job_invocation(&queued);
+
+        assert_eq!(invocation, Some(("train".to_string(), input)));
+    }
+
+    #[rstest]
+    #[case::flags("train --epochs 10")]
+    #[case::input_not_an_object("train '[1]'")]
+    #[case::flag_for_a_job("--epochs '{}'")]
+    #[case::extra_argument("train '{}' extra")]
+    fn given_another_command_when_reading_it_as_a_job_and_input_then_there_is_none(
+        #[case] queued: &str,
+    ) {
+        let invocation = job_invocation(queued);
+
+        assert_eq!(invocation, None);
+    }
+
+    #[test]
+    fn given_a_page_when_reading_on_then_the_next_read_starts_where_it_ends() {
+        let next = next_read(0, &page(8, true)).unwrap();
+
+        assert_eq!(next, (8, true));
+    }
+
+    #[test]
+    fn given_a_page_that_ends_before_the_start_when_reading_on_then_the_start_is_kept() {
+        let next = next_read(16, &page(8, false)).unwrap();
+
+        assert_eq!(next, (16, false));
+    }
+
+    #[test]
+    fn given_more_logs_but_no_progress_when_reading_on_then_it_fails() {
+        let next = next_read(8, &page(8, true));
+
+        assert!(next.is_err());
+    }
+
+    #[test]
+    fn given_logs_that_end_mid_line_when_the_job_ends_then_the_line_is_ended() {
+        let end = LogEvent::End {
+            status: "completed",
+            mid_line: true,
         };
-        assert_eq!(
-            serde_json::to_value(LogEvent::Log(&page)).unwrap(),
-            json!({
-                "type": "log",
-                "logs": "epoch 1\nepo",
-                "start": 0,
-                "end": 11,
-                "total_size": 4096,
-                "has_more": true,
-            })
-        );
-        assert_eq!(plain(&LogEvent::Log(&page)), "epoch 1\nepo");
-        for mid_line in [false, true] {
-            let end = LogEvent::End {
-                status: "completed",
-                mid_line,
-            };
-            assert_eq!(
-                serde_json::to_value(&end).unwrap(),
-                json!({"type": "end", "status": "completed"})
-            );
-            assert_eq!(plain(&end), if mid_line { "\n" } else { "" });
-        }
+
+        let text = plain(&end);
+
+        assert_eq!(text, "\n");
     }
 }

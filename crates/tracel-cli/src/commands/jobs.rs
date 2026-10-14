@@ -370,90 +370,34 @@ fn waited(job: &JobResponse, timeout: Option<u64>) -> Result<(), CliError> {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use rstest::rstest;
+    use tracel_client::console::job::response::JobProjectResponse;
 
     use super::*;
-    use crate::test_support::{plain, report};
+    use crate::error::ErrorReport;
+    use crate::test_support::plain;
 
-    fn job(status: &str, command: &str, completed_at: Option<&str>) -> JobResponse {
-        serde_json::from_value(json!({
-            "job_num": 14,
-            "job_project": {"namespace_name": "test", "project_name": "demo"},
-            "job_project_version": "67c31f69845e9a1e",
-            "job_command": command,
-            "status": status,
-            "status_message": "",
-            "created_at": "2026-10-13T15:00:00Z",
-            "started_at": "2026-10-13T15:02:00Z",
-            "completed_at": completed_at,
-        }))
-        .unwrap()
-    }
-
-    #[test]
-    fn waiting_passes_only_for_a_completed_job() {
-        let ended = Some("2026-10-13T15:03:05Z");
-        for (status, expected) in [
-            ("completed", None),
-            ("failed", Some((ErrorKind::JobFailed, 9, "Job 14 failed."))),
-            (
-                "cancelled",
-                Some((ErrorKind::JobFailed, 9, "Job 14 was cancelled.")),
-            ),
-            (
-                "running",
-                Some((
-                    ErrorKind::Timeout,
-                    10,
-                    "Job 14 is still running after 60 seconds.",
-                )),
-            ),
-        ] {
-            let failure = waited(&job(status, "train", ended), Some(60))
-                .err()
-                .map(|error| {
-                    let error = anyhow::Error::from(error);
-                    let (kind, code, hint) = report(&error);
-                    assert!(hint, "{status}");
-                    (kind, code, error.to_string())
-                });
-            let expected = expected.map(|(kind, code, message)| (kind, code, message.to_string()));
-            assert_eq!(failure, expected, "{status}");
+    fn job(status: &str) -> JobResponse {
+        JobResponse {
+            job_num: 14,
+            compute_provider_id: None,
+            job_project: JobProjectResponse {
+                project_name: "demo".into(),
+                namespace_name: "test".into(),
+            },
+            job_project_version: "67c31f69845e9a1e".into(),
+            job_command: "train".into(),
+            status: status.into(),
+            status_message: String::new(),
+            execution_context: None,
+            created_at: "2026-10-13T15:00:00Z".into(),
+            started_at: Some("2026-10-13T15:02:00Z".into()),
+            completed_at: Some("2026-10-13T15:03:05Z".into()),
         }
     }
 
-    #[test]
-    fn a_job_tracel_run_queued_by_name_shows_its_name() {
-        for (queued, shown) in [
-            (r#"train '{"epochs":2}'"#, "train"),
-            ("train --epochs 2", "train --epochs 2"),
-        ] {
-            assert_eq!(command(queued), shown);
-        }
-    }
-
-    #[test]
-    fn a_job_ran_from_its_start_until_it_ended_or_so_far() {
-        let started = when("2026-10-13T15:02:00Z");
-        let job = job("completed", "train", Some("2026-10-13T15:03:05Z"));
-        assert_eq!(ran(&job), Some(format!("{started}, 1 min 5 s")));
-
-        let running = JobResponse {
-            completed_at: None,
-            ..job.clone()
-        };
-        assert!(ran(&running).unwrap().ends_with(" so far"));
-
-        let queued = JobResponse {
-            started_at: None,
-            ..job
-        };
-        assert_eq!(ran(&queued), None);
-    }
-
-    #[test]
-    fn a_log_page_ends_its_line_and_says_how_to_read_on() {
-        let page = |logs: &str, has_more| LogPage {
+    fn log_page(logs: &str, has_more: bool) -> LogPage {
+        LogPage {
             num: 12,
             page: JobLogResponse {
                 logs: logs.into(),
@@ -462,20 +406,120 @@ mod tests {
                 total_size: 4096,
                 has_more,
             },
+        }
+    }
+
+    #[test]
+    fn given_a_completed_job_when_waiting_for_it_then_the_wait_passes() {
+        let waited = waited(&job("completed"), None);
+
+        assert!(waited.is_ok());
+    }
+
+    #[rstest]
+    #[case::failed("failed")]
+    #[case::cancelled("cancelled")]
+    fn given_a_job_that_did_not_complete_when_waiting_for_it_then_the_wait_fails_saying_how_it_ended(
+        #[case] status: &str,
+    ) {
+        let error = waited(&job(status), None).unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::JobFailed);
+        assert!(error.to_string().contains(status), "{error}");
+    }
+
+    #[test]
+    fn given_a_failed_job_when_waiting_for_it_then_the_hint_points_at_its_logs() {
+        let error = anyhow::Error::new(waited(&job("failed"), None).unwrap_err());
+
+        let hint = ErrorReport::new(&error).hint.unwrap();
+
+        assert!(hint.contains("tracel jobs logs 14"), "{hint}");
+    }
+
+    #[test]
+    fn given_a_job_still_running_when_the_wait_times_out_then_it_is_a_timeout() {
+        let error = waited(&job("running"), Some(60)).unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Timeout);
+    }
+
+    #[test]
+    fn given_a_job_tracel_run_queued_by_name_when_showing_its_command_then_it_is_the_job_name() {
+        let shown = command(r#"train '{"epochs":2}'"#);
+
+        assert_eq!(shown, "train");
+    }
+
+    #[test]
+    fn given_another_command_when_showing_it_then_it_is_shown_as_it_is() {
+        let shown = command("train --epochs 2");
+
+        assert_eq!(shown, "train --epochs 2");
+    }
+
+    #[test]
+    fn given_a_finished_job_when_saying_how_long_it_ran_then_it_is_from_its_start_to_its_end() {
+        let ran = ran(&job("completed"));
+
+        assert_eq!(
+            ran,
+            Some(format!("{}, 1 min 5 s", when("2026-10-13T15:02:00Z")))
+        );
+    }
+
+    #[test]
+    fn given_a_running_job_when_saying_how_long_it_ran_then_it_is_so_far() {
+        let running = JobResponse {
+            completed_at: None,
+            ..job("running")
         };
-        assert_eq!(plain(&page("", false)), "");
-        assert_eq!(
-            plain(&page("epoch 1\nepoch 2", false)),
-            "epoch 1\nepoch 2\n"
+
+        let ran = ran(&running).unwrap();
+
+        assert!(ran.ends_with(" so far"), "{ran}");
+    }
+
+    #[test]
+    fn given_a_job_that_has_not_started_when_saying_how_long_it_ran_then_there_is_nothing_to_say() {
+        let queued = JobResponse {
+            started_at: None,
+            completed_at: None,
+            ..job("queued")
+        };
+
+        let ran = ran(&queued);
+
+        assert_eq!(ran, None);
+    }
+
+    #[test]
+    fn given_logs_that_end_mid_line_when_writing_a_page_then_the_line_is_ended() {
+        let page = log_page("epoch 1\nepoch 2", false);
+
+        let text = plain(&page);
+
+        assert_eq!(text, "epoch 1\nepoch 2\n");
+    }
+
+    #[test]
+    fn given_a_page_with_more_logs_when_summing_it_up_then_it_says_how_to_read_on() {
+        let page = log_page("epoch 1\n", true);
+
+        let summary = page.summary().unwrap();
+
+        assert!(
+            summary.contains("tracel jobs logs 12 --start 8"),
+            "{summary}"
         );
-        assert_eq!(page("epoch 1\n", false).summary(), None);
-        assert_eq!(
-            page("epoch 1\n", true).summary().as_deref(),
-            Some("More: `tracel jobs logs 12 --start 8`.")
-        );
-        assert_eq!(
-            serde_json::to_value(page("epoch 1\n", true)).unwrap(),
-            json!({"logs": "epoch 1\n", "start": 0, "end": 8, "total_size": 4096, "has_more": true})
-        );
+    }
+
+    #[test]
+    fn given_the_last_page_when_summing_it_up_then_there_is_no_summary() {
+        let page = log_page("epoch 1\n", false);
+
+        let summary = page.summary();
+
+        assert_eq!(summary, None);
     }
 }

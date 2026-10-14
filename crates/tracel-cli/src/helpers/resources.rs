@@ -195,6 +195,12 @@ mod tests {
         "'images'",
         "tracel datasets list"
     )]
+    #[case::job(
+        ApiErrorCode::ComputeProviderJob,
+        Resource::Job(12),
+        "job 12",
+        "tracel jobs list"
+    )]
     fn given_the_console_says_what_is_missing_when_mapping_the_error_then_it_names_it_and_how_to_list_them(
         #[case] code: ApiErrorCode,
         #[case] resource: Resource<'static>,

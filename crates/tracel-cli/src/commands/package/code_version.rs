@@ -324,7 +324,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_the_files_the_console_asks_for_are_uploaded() {
+    fn given_upload_urls_for_some_files_when_choosing_what_to_upload_then_only_those_files_are_uploaded()
+     {
         let uploads = vec![
             (
                 "x86_64-unknown-linux-gnu".to_string(),

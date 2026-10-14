@@ -4,7 +4,6 @@ use serde_json::Value;
 use tracel_job::JobDefinition;
 
 use crate::cli::{CliArgs, Commands};
-use crate::error::{ErrorKind, ErrorReport, classify};
 use crate::ui::{self, Format, Human, Layout, Place, Render, Terminal};
 
 /// Parse `tracel` with `args`, as the shell would pass them.
@@ -18,12 +17,6 @@ pub fn command(args: &[&str]) -> Commands {
         .unwrap_or_else(|error| panic!("{args:?} don't parse: {error}"))
         .command
         .unwrap_or_else(|| panic!("{args:?} name no command"))
-}
-
-/// What a failure reports: its kind, its exit code, and whether it has a hint.
-pub fn report(error: &anyhow::Error) -> (ErrorKind, i32, bool) {
-    let report = ErrorReport::new(error);
-    (classify(error), report.exit_code, report.hint.is_some())
 }
 
 /// The plain text of a result, without its summary.

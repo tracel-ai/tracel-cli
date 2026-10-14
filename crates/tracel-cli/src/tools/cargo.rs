@@ -228,4 +228,76 @@ mod tests {
 
         assert_eq!(status, None);
     }
+
+    fn trainer() -> Binary {
+        Binary {
+            package: "trainer".to_string(),
+            name: "train".to_string(),
+        }
+    }
+
+    fn args(command: &Command) -> Vec<&str> {
+        command
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn given_a_binary_when_making_its_release_build_then_only_that_binary_is_built() {
+        let (command, _) = release_build(BuildDriver::Cargo, None, None, Some(&trainer()));
+
+        assert_eq!(
+            args(&command),
+            [
+                "build",
+                "--release",
+                "--package",
+                "trainer",
+                "--bin",
+                "train"
+            ]
+        );
+    }
+
+    #[test]
+    fn given_a_cross_target_and_its_linker_when_making_the_release_build_then_the_linker_is_set_for_that_target()
+     {
+        let target = "aarch64-unknown-linux-gnu";
+
+        let (command, _) = release_build(
+            BuildDriver::Cargo,
+            Some(target),
+            Some("aarch64-linux-gnu-gcc"),
+            None,
+        );
+
+        assert_eq!(
+            args(&command),
+            [
+                "build",
+                "--release",
+                "--target",
+                target,
+                "--config",
+                "target.aarch64-unknown-linux-gnu.linker=\"aarch64-linux-gnu-gcc\""
+            ]
+        );
+    }
+
+    #[test]
+    fn given_an_unknown_binary_when_finding_it_then_the_error_lists_the_binaries() {
+        let binaries = [
+            Binary {
+                package: "tools".to_string(),
+                name: "fmt-data".to_string(),
+            },
+            trainer(),
+        ];
+
+        let error = find_binary(&binaries, "serve").unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Usage);
+        assert!(error.to_string().contains("fmt-data, train"), "{error}");
+    }
 }

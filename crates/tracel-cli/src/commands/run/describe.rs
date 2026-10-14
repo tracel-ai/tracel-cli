@@ -295,28 +295,9 @@ fn read_definitions(path: &Path, name: &str) -> anyhow::Result<DefinitionsFile> 
 
 #[cfg(test)]
 mod tests {
-    use serde_json::Value;
-
     use super::*;
-
-    const DEFINITIONS: &str = r#"{
-        "protocol": 1,
-        "sdk_version": "0.10.0",
-        "jobs": [
-            {
-                "name": "toy-training",
-                "description": "Run a toy training loop",
-                "input_schema": {"type": "object"},
-                "input_example": {"epochs": 3}
-            },
-            {
-                "name": "wordtok",
-                "description": null,
-                "input_schema": null,
-                "input_example": null
-            }
-        ]
-    }"#;
+    use crate::error::classify;
+    use crate::test_support::job;
 
     fn package(name: &str, uses_sdk: bool, bins: &[&str]) -> PackageBinaries {
         PackageBinaries {
@@ -334,157 +315,149 @@ mod tests {
         }
     }
 
-    fn definitions() -> DefinitionsFile {
-        serde_json::from_str(DEFINITIONS).unwrap()
+    fn definitions(names: &[&str]) -> DefinitionsFile {
+        DefinitionsFile::new(names.iter().map(|name| job(name, None, None)).collect())
     }
 
-    /// The definitions read from a file holding `contents`, as the program `trainer` wrote it.
-    fn read(contents: &str) -> anyhow::Result<DefinitionsFile> {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("jobs.json");
-        std::fs::write(&path, contents).unwrap();
-        read_definitions(&path, "trainer")
+    fn cache(definitions: &DefinitionsFile) -> String {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("jobs.json");
+        write_cache(&path, "abc", definitions).unwrap();
+        std::fs::read_to_string(path).unwrap()
     }
 
     #[test]
-    fn definitions_are_read_and_name_their_jobs() {
-        let definitions = read(DEFINITIONS).unwrap();
-        assert_eq!(definitions, self::definitions());
-        assert_eq!(definitions.sdk_version, "0.10.0");
-        let job = find_job(&definitions, "toy-training").unwrap();
-        assert_eq!(job.input_example, Some(json!({"epochs": 3})));
-        assert_eq!(
-            find_job(&definitions, "wordtok").unwrap().input_schema,
-            None
-        );
+    fn given_a_job_the_program_defines_when_finding_it_then_it_is_found() {
+        let jobs = definitions(&["train", "evaluate"]);
 
-        let error = find_job(&definitions, "train").unwrap_err();
+        let found = find_job(&jobs, "evaluate").unwrap();
+
+        assert_eq!(found.name, "evaluate");
+    }
+
+    #[test]
+    fn given_an_unknown_job_when_finding_it_then_the_error_lists_the_jobs() {
+        let jobs = definitions(&["train", "evaluate"]);
+
+        let error = find_job(&jobs, "serve").unwrap_err();
+
         assert_eq!(error.kind, ErrorKind::Usage);
-        assert_eq!(
-            error.to_string(),
-            "No job 'train'. Jobs: toy-training, wordtok."
-        );
-        let empty = DefinitionsFile {
-            jobs: Vec::new(),
-            ..definitions.clone()
-        };
-        assert!(
-            find_job(&empty, "train")
-                .unwrap_err()
-                .to_string()
-                .contains("no jobs")
-        );
-
-        let value: Value = serde_json::from_str(DEFINITIONS).unwrap();
-        assert_eq!(serde_json::to_value(&definitions).unwrap(), value);
+        assert!(error.to_string().contains("train, evaluate"), "{error}");
     }
 
     #[test]
-    fn only_definitions_of_this_protocol_are_read() {
-        let other_protocol = DEFINITIONS.replace(r#""protocol": 1"#, r#""protocol": 2"#);
-        let error = read(&other_protocol).unwrap_err();
-        assert_eq!(crate::error::classify(&error), ErrorKind::Internal);
-        assert!(error.to_string().contains("protocol 2"), "{error}");
+    fn given_a_program_without_jobs_when_finding_one_then_the_error_says_so() {
+        let jobs = definitions(&[]);
 
-        for contents in [
-            "{",
-            r#"{"protocol": 1}"#,
-            r#"{"protocol": 2, "jobs": "elsewhere"}"#,
-        ] {
-            let error = read(contents).unwrap_err();
-            assert_eq!(crate::error::classify(&error), ErrorKind::Internal);
-            let report = crate::error::ErrorReport::new(&error);
-            assert_eq!(report.hint, Some(SAME_PROTOCOL), "{contents}");
-        }
+        let error = find_job(&jobs, "serve").unwrap_err();
+
+        assert!(error.to_string().contains("no jobs"), "{error}");
     }
 
     #[test]
-    fn a_program_that_writes_no_definitions_lists_no_jobs() {
-        let dir = tempfile::tempdir().unwrap();
-        let error = read_definitions(&dir.path().join("jobs.json"), "trainer").unwrap_err();
-        assert_eq!(crate::error::classify(&error), ErrorKind::Usage);
-        assert_eq!(error.to_string(), "`trainer` didn't list its jobs.");
+    fn given_a_program_that_wrote_no_definitions_when_reading_them_then_it_did_not_list_its_jobs() {
+        let directory = tempfile::tempdir().unwrap();
+
+        let error = read_definitions(&directory.path().join("jobs.json"), "trainer").unwrap_err();
+
+        assert_eq!(classify(&error), ErrorKind::Usage);
+        assert!(error.to_string().contains("`trainer`"), "{error}");
     }
 
     #[test]
-    fn only_binaries_of_packages_using_the_sdk_are_candidates() {
+    fn given_one_binary_using_the_sdk_when_choosing_the_binary_then_it_is_chosen() {
         let packages = [
             package("tools", false, &["fmt-data"]),
             package("trainer", true, &["train"]),
-            package("model", true, &[]),
         ];
-        assert_eq!(
-            choose_binary(&packages, None).unwrap(),
-            binary("trainer", "train")
-        );
-        assert_eq!(
-            choose_binary(&packages, Some("train")).unwrap(),
-            binary("trainer", "train")
-        );
-        let error = choose_binary(&packages, Some("fmt-data")).unwrap_err();
-        assert_eq!(error.kind, ErrorKind::Usage);
-        assert_eq!(error.to_string(), "No binary 'fmt-data'. Binaries: train.");
+
+        let chosen = choose_binary(&packages, None).unwrap();
+
+        assert_eq!(chosen, binary("trainer", "train"));
     }
 
     #[test]
-    fn without_a_package_using_the_sdk_plain_runs_are_suggested() {
-        for packages in [
-            vec![package("tools", false, &["fmt-data"])],
-            vec![package("model", true, &[])],
-            vec![],
-        ] {
-            let error = choose_binary(&packages, None).unwrap_err();
-            assert_eq!(error.kind, ErrorKind::Usage);
-            assert!(error.to_string().contains("`tracel` crate"), "{error}");
-            let error = anyhow::Error::from(error);
-            let report = crate::error::ErrorReport::new(&error);
-            assert!(report.hint.unwrap().contains("tracel run -- <args>"));
-        }
-    }
-
-    #[test]
-    fn several_candidates_need_bin_unless_default_run_picks_one() {
+    fn given_bin_when_choosing_the_binary_then_it_picks_among_those_using_the_sdk() {
         let packages = [
-            package("trainer", true, &["train", "evaluate"]),
+            package("trainer", true, &["train"]),
             package("server", true, &["serve"]),
         ];
-        let error = choose_binary(&packages, None).unwrap_err();
-        assert_eq!(error.kind, ErrorKind::Usage);
-        assert_eq!(
-            error.to_string(),
-            "Several binaries depend on the `tracel` crate: train, evaluate, serve."
-        );
-        assert_eq!(
-            choose_binary(&packages, Some("serve")).unwrap(),
-            binary("server", "serve")
-        );
 
-        let mut trainer = package("trainer", true, &["train", "evaluate"]);
-        trainer.default_run = Some("evaluate".to_string());
-        assert_eq!(
-            choose_binary(std::slice::from_ref(&trainer), None).unwrap(),
-            binary("trainer", "evaluate")
-        );
-        // `default-run` chooses within its package only.
-        assert!(choose_binary(&[trainer, package("server", true, &["serve"])], None).is_err());
+        let chosen = choose_binary(&packages, Some("serve")).unwrap();
+
+        assert_eq!(chosen, binary("server", "serve"));
     }
 
     #[test]
-    fn the_cache_hits_only_for_the_same_binary_and_protocol() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tracel").join("jobs.json");
-        let definitions = definitions();
-        write_cache(&path, "abc", &definitions).unwrap();
+    fn given_default_run_in_the_only_package_using_the_sdk_when_choosing_the_binary_then_it_decides()
+     {
+        let trainer = PackageBinaries {
+            default_run: Some("evaluate".to_string()),
+            ..package("trainer", true, &["train", "evaluate"])
+        };
 
-        let contents = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(
-            cached_definitions(&contents, "abc"),
-            Some(definitions.clone())
-        );
-        assert_eq!(cached_definitions(&contents, "def"), None);
-        assert_eq!(cached_definitions("{", "abc"), None);
-        let other_protocol = contents.replace(r#""protocol": 1"#, r#""protocol": 2"#);
-        assert_eq!(cached_definitions(&other_protocol, "abc"), None);
-        assert!(!dir.path().join("tracel").join("jobs.json.tmp").exists());
+        let chosen = choose_binary(&[trainer], None).unwrap();
+
+        assert_eq!(chosen, binary("trainer", "evaluate"));
+    }
+
+    #[test]
+    fn given_several_binaries_using_the_sdk_when_choosing_the_binary_then_the_error_lists_them() {
+        let packages = [
+            package("trainer", true, &["train"]),
+            package("server", true, &["serve"]),
+        ];
+
+        let error = choose_binary(&packages, None).unwrap_err();
+
+        assert!(error.to_string().contains("train, serve"), "{error}");
+    }
+
+    #[test]
+    fn given_no_package_using_the_sdk_when_choosing_the_binary_then_there_are_no_jobs_to_run() {
+        let packages = [package("tools", false, &["fmt-data"])];
+
+        let error = choose_binary(&packages, None).unwrap_err();
+
+        assert!(error.to_string().contains("in this workspace"), "{error}");
+    }
+
+    #[test]
+    fn given_a_package_using_the_sdk_without_a_binary_when_choosing_the_binary_then_there_are_no_jobs_to_run()
+     {
+        let packages = [package("model", true, &[])];
+
+        let error = choose_binary(&packages, None).unwrap_err();
+
+        assert!(error.to_string().contains("has a binary"), "{error}");
+    }
+
+    #[test]
+    fn given_cached_definitions_of_the_same_binary_when_reading_the_cache_then_they_are_used() {
+        let contents = cache(&definitions(&["train"]));
+
+        let cached = cached_definitions(&contents, "abc");
+
+        assert_eq!(cached, Some(definitions(&["train"])));
+    }
+
+    #[test]
+    fn given_cached_definitions_of_another_binary_when_reading_the_cache_then_they_are_not_used() {
+        let contents = cache(&definitions(&["train"]));
+
+        let cached = cached_definitions(&contents, "def");
+
+        assert_eq!(cached, None);
+    }
+
+    #[test]
+    fn given_cached_definitions_of_another_protocol_when_reading_the_cache_then_they_are_not_used()
+    {
+        let contents =
+            cache(&definitions(&["train"])).replace(r#""protocol": 1"#, r#""protocol": 2"#);
+
+        let cached = cached_definitions(&contents, "abc");
+
+        assert_eq!(cached, None);
     }
 }

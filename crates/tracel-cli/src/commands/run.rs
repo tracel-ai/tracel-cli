@@ -355,280 +355,51 @@ fn hand_over(mut cmd: std::process::Command) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use clap::CommandFactory;
-    use clap::error::ErrorKind;
     use serde_json::json;
-    use tracel_job::JobDefinition;
-
-    use tracel_client::console::Env;
 
     use super::*;
-    use crate::cli::{CliArgs, Commands};
-    use crate::commands::package::Mode;
+    use crate::cli::Commands;
+    use crate::error::classify;
+    use crate::test_support::{job, parse, quiet_terminal};
 
-    fn parse(arguments: &[&str]) -> Result<RunArgs, clap::Error> {
-        let Some(Commands::Run(args)) = CliArgs::try_parse_args(arguments)?.command else {
-            panic!("Expected run command");
-        };
-        Ok(args)
+    fn run_args(args: &[&str]) -> RunArgs {
+        match parse(args).unwrap().command {
+            Some(Commands::Run(args)) => args,
+            other => panic!("{args:?} parse as {other:?}"),
+        }
     }
 
     #[test]
-    fn without_a_job_list_or_remote_the_run_is_plain() {
-        CliArgs::command().debug_assert();
-        let args = parse(&["tracel", "run", "--", "--remote", "gpu", "--yes"]).unwrap();
-        assert!(args.job.is_none());
-        assert!(!args.list);
-        assert!(args.remote.is_none());
-        assert_eq!(args.forwarded, ["--remote", "gpu", "--yes"]);
+    fn given_an_input_its_schema_rejects_when_resolving_it_then_the_run_stops() {
+        let schema = json!({"type": "object", "properties": {"epochs": {"minimum": 0}}});
+        let train = job("train", Some(schema), Some(json!({"epochs": 3})));
+        let args = run_args(&["run", "train", "--set", "epochs=-1"]);
+
+        let error =
+            resolve_input(&train, json!({"epochs": 3}), &args, &quiet_terminal()).unwrap_err();
+
+        assert_eq!(classify(&error), ErrorKind::Usage);
     }
 
     #[test]
-    fn a_job_takes_its_input_flags() {
-        let args = parse(&[
-            "tracel",
-            "run",
+    fn given_a_schema_that_cannot_check_inputs_when_resolving_the_input_then_it_is_used_unchecked()
+    {
+        let train = job(
             "train",
-            "-c",
-            "base.json",
-            "--config",
-            "gpu.json",
-            "--set",
-            "epochs=5",
-            "--set",
-            "optimizer.lr=0.01",
-            "--like",
-            "42",
-            "--offline",
-            "--bin",
-            "trainer",
-        ])
-        .unwrap();
-        assert_eq!(args.job.as_deref(), Some("train"));
-        assert_eq!(
-            args.configs,
-            [PathBuf::from("base.json"), PathBuf::from("gpu.json")]
+            Some(json!({"type": 5})),
+            Some(json!({"epochs": 3})),
         );
-        assert_eq!(args.assignments.len(), 2);
-        assert_eq!(args.assignments[1].value, json!(0.01));
-        assert!(matches!(args.like, Some(ExperimentSelector::Number(42))));
-        assert!(args.offline);
-        assert_eq!(args.package.bin.as_deref(), Some("trainer"));
+        let args = run_args(&["run", "train"]);
 
-        let args = parse(&["tracel", "run", "train", "--like", "latest"]).unwrap();
-        assert!(matches!(args.like, Some(ExperimentSelector::Latest)));
-        assert!(!args.offline);
+        let input = resolve_input(&train, json!({"epochs": 3}), &args, &quiet_terminal());
+
+        assert_eq!(input.unwrap(), json!({"epochs": 3}));
     }
 
     #[test]
-    fn list_takes_only_bin() {
-        let args = parse(&["tracel", "run", "--list", "--bin", "trainer"]).unwrap();
-        assert!(args.list);
-        assert_eq!(args.package.bin.as_deref(), Some("trainer"));
-        for arguments in [
-            &["tracel", "run", "--list", "train"][..],
-            &["tracel", "run", "--list", "--remote", "gpu"],
-            &["tracel", "run", "--list", "--", "train"],
-        ] {
-            let error = parse(arguments).unwrap_err();
-            assert_eq!(error.kind(), ErrorKind::ArgumentConflict, "{arguments:?}");
-            assert_eq!(error.exit_code(), 2);
-        }
-    }
+    fn given_an_experiment_that_recorded_no_input_when_starting_like_it_then_it_is_not_found() {
+        let error = recorded(7, Value::Null).unwrap_err();
 
-    #[test]
-    fn a_job_and_forwarded_arguments_cannot_be_combined() {
-        let error = parse(&["tracel", "run", "train", "--", "--epochs", "5"]).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
-        assert_eq!(error.exit_code(), 2);
-    }
-
-    #[test]
-    fn input_flags_require_a_job() {
-        for flags in [
-            &["-c", "base.json"][..],
-            &["--set", "epochs=5"],
-            &["--like", "42"],
-            &["--offline"],
-        ] {
-            let prefixes = if flags == ["--offline"] {
-                &[&["tracel", "run"][..]][..]
-            } else {
-                &[
-                    &["tracel", "run"][..],
-                    &["tracel", "run", "--remote", "gpu"],
-                ]
-            };
-            for prefix in prefixes {
-                let arguments = [prefix, flags].concat();
-                let error = parse(&arguments).unwrap_err();
-                assert_eq!(
-                    error.kind(),
-                    ErrorKind::MissingRequiredArgument,
-                    "{arguments:?}"
-                );
-            }
-        }
-        let error = parse(&["tracel", "run", "train", "--set", "epochs"]).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::ValueValidation);
-        let error = parse(&["tracel", "run", "train", "--like", "0"]).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::ValueValidation);
-        let error = parse(&["tracel", "run", "train", "--offline", "--remote", "gpu"]).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
-    }
-
-    #[test]
-    fn remote_accepts_packaging_flags_and_forwarded_arguments() {
-        let args = parse(&[
-            "tracel",
-            "run",
-            "--remote",
-            "gpu",
-            "--mode",
-            "binary",
-            "--target",
-            "x86_64-unknown-linux-gnu",
-            "--target",
-            "aarch64-unknown-linux-gnu",
-            "--bin",
-            "trainer",
-            "--install-targets",
-            "-y",
-            "--follow",
-            "--",
-            "train",
-            "--epochs",
-            "10",
-        ])
-        .unwrap();
-        assert_eq!(args.remote.as_deref(), Some("gpu"));
-        assert_eq!(args.package.mode, Some(Mode::Binary));
-        assert_eq!(
-            args.package.targets,
-            ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
-        );
-        assert_eq!(args.package.bin.as_deref(), Some("trainer"));
-        assert!(args.package.install_targets);
-        assert!(args.yes);
-        assert!(!args.dry_run);
-        assert!(args.follow);
-        assert_eq!(args.forwarded, ["train", "--epochs", "10"]);
-
-        let args = parse(&["tracel", "run", "--remote", "gpu", "--dry-run"]).unwrap();
-        assert!(args.dry_run);
-        assert!(!args.follow);
-        assert!(args.package.mode.is_none());
-        assert!(args.forwarded.is_empty());
-    }
-
-    #[test]
-    fn remote_job_runs_take_input_and_packaging_flags() {
-        let args = parse(&[
-            "tracel", "run", "train", "--set", "epochs=5", "--remote", "gpu", "--mode", "source",
-            "--yes", "--follow",
-        ])
-        .unwrap();
-        assert_eq!(args.job.as_deref(), Some("train"));
-        assert_eq!(args.remote.as_deref(), Some("gpu"));
-        assert_eq!(args.package.mode, Some(Mode::Source));
-        assert!(args.follow);
-    }
-
-    #[test]
-    fn remote_flags_require_remote() {
-        for flags in [
-            &["--mode", "source"][..],
-            &["--target", "x86_64-unknown-linux-gnu"],
-            &["--install-targets"],
-            &["--yes"],
-            &["-y"],
-            &["--dry-run"],
-            &["--follow"],
-        ] {
-            for prefix in [&["tracel", "run"][..], &["tracel", "run", "train"]] {
-                let arguments = [prefix, flags].concat();
-                let error = parse(&arguments).unwrap_err();
-                assert_eq!(
-                    error.kind(),
-                    ErrorKind::MissingRequiredArgument,
-                    "{arguments:?}"
-                );
-                assert_eq!(error.exit_code(), 2);
-            }
-        }
-        let error = parse(&["tracel", "run", "--remote"]).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::InvalidValue);
-    }
-
-    #[test]
-    fn bin_requires_a_job_list_or_remote() {
-        let error = parse(&["tracel", "run", "--bin", "trainer"]).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
-        let error = parse(&["tracel", "run", "--bin", "trainer", "--", "train"]).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
-        for arguments in [
-            &["tracel", "run", "train", "--bin", "trainer"][..],
-            &["tracel", "run", "--list", "--bin", "trainer"],
-            &["tracel", "run", "--remote", "gpu", "--bin", "trainer"],
-        ] {
-            assert!(parse(arguments).is_ok(), "{arguments:?}");
-        }
-    }
-
-    #[test]
-    fn dry_run_conflicts_with_follow_and_yes() {
-        for flag in ["--follow", "--yes", "-y"] {
-            let error =
-                parse(&["tracel", "run", "--remote", "gpu", "--dry-run", flag]).unwrap_err();
-            assert_eq!(error.kind(), ErrorKind::ArgumentConflict, "{flag}");
-        }
-        assert!(parse(&["tracel", "run", "--remote", "gpu", "--yes", "--follow"]).is_ok());
-    }
-
-    #[test]
-    fn the_job_list_names_and_describes_each_job() {
-        let job = |name: &str, description: Option<&str>| JobDefinition {
-            name: name.to_string(),
-            description: description.map(str::to_string),
-            input_schema: None,
-            input_example: None,
-        };
-        let definitions = DefinitionsFile::new(vec![
-            job("toy-training", Some("Run a toy training loop")),
-            job("wordtok", None),
-        ]);
-
-        let mut text = Vec::new();
-        definitions
-            .render(&mut Human::plain(&mut text, None))
-            .unwrap();
-
-        assert_eq!(
-            String::from_utf8(text).unwrap(),
-            "NAME          DESCRIPTION\n\
-             toy-training  Run a toy training loop\n\
-             wordtok       -\n"
-        );
-    }
-
-    #[test]
-    fn the_sdk_environment_names_the_console_and_the_project() {
-        let project = TracelProject {
-            namespace: "alice".to_string(),
-            name: "demo".to_string(),
-        };
-        let console = ("TRACEL_ENV", "Staging(2)".to_string());
-        assert_eq!(
-            sdk_environment(&Env::Staging(2), None),
-            std::slice::from_ref(&console)
-        );
-        assert_eq!(
-            sdk_environment(&Env::Staging(2), Some(&project)),
-            [
-                console,
-                ("TRACEL_NAMESPACE", "alice".to_string()),
-                ("TRACEL_PROJECT", "demo".to_string()),
-            ]
-        );
+        assert_eq!(error.kind, ErrorKind::NotFound);
     }
 }

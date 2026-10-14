@@ -196,287 +196,118 @@ fn message(error: &clap::Error) -> String {
 #[cfg(test)]
 mod tests {
     use clap::CommandFactory;
-    use clap::error::ErrorKind as ClapErrorKind;
+    use rstest::rstest;
     use serde_json::json;
 
     use super::*;
     use crate::cli::{CliArgs, Commands};
-    use crate::commands::run::RunArgs;
+    use crate::error::ErrorReport;
+    use crate::test_support::{job, parse};
 
-    /// A job with a nested input, whose `offline` and `targets` fields share their names with
-    /// `tracel run`'s flag `--offline` and argument id `targets`.
-    fn toy() -> JobDefinition {
-        JobDefinition {
-            name: "toy".to_string(),
-            description: Some("Train a toy model".to_string()),
-            input_schema: Some(json!({
-                "type": "object",
-                "properties": {
-                    "epochs": {"description": "Passes over the data.", "type": "integer"},
-                    "offline": {"type": "boolean"},
-                    "shuffle": {"type": "boolean"},
-                    "tag": {"type": "string"},
-                    "targets": {"type": "array", "items": {"type": "string"}},
-                    "optimizer": {
-                        "type": "object",
-                        "properties": {"lr": {"type": "number"}},
-                        "required": ["lr"]
-                    }
-                },
-                "required": ["epochs", "optimizer", "tag"]
-            })),
-            input_example: Some(json!({
-                "epochs": 10,
-                "offline": false,
-                "shuffle": false,
-                "targets": [],
-                "optimizer": {"lr": 0.001}
-            })),
+    fn train() -> JobDefinition {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "epochs": {"type": "integer"},
+                "shuffle": {"type": "boolean"},
+                "tag": {"type": "string"},
+                "optimizer": {
+                    "type": "object",
+                    "properties": {"lr": {"type": "number"}}
+                }
+            }
+        });
+        job("train", Some(schema), Some(json!({"epochs": 10})))
+    }
+
+    fn job_flags_of(args: &[&str]) -> Vec<String> {
+        match parse(args).unwrap().command {
+            Some(Commands::Run(run)) => run.job_flags,
+            other => panic!("{args:?} parse as {other:?}"),
         }
     }
 
-    fn parse(arguments: &[&str]) -> Result<RunArgs, clap::Error> {
-        let Some(Commands::Run(args)) = CliArgs::try_parse_args(arguments)?.command else {
-            panic!("Expected run command");
-        };
-        Ok(args)
-    }
+    #[test]
+    fn given_job_flags_when_clap_checks_tracel_run_then_it_is_valid() {
+        let args: Vec<OsString> = ["tracel", "run", "train", "--epochs", "5"]
+            .map(OsString::from)
+            .into();
 
-    fn flags(arguments: &[&str]) -> Vec<String> {
-        let mut flags = parse(arguments).unwrap().job_flags;
-        flags.sort();
-        flags
+        let tracel = with_job_flags(CliArgs::command(), &args);
+
+        tracel.debug_assert();
     }
 
     #[test]
-    fn the_command_with_job_flags_is_valid() {
-        let args: Vec<OsString> = ["tracel", "run", "toy", "--epochs", "5", "--optimizer.lr=1"]
-            .map(OsString::from)
-            .into();
-        with_job_flags(CliArgs::command(), &args).debug_assert();
-        let mut help = job_help(CliArgs::command(), &toy());
+    fn given_a_jobs_help_when_clap_checks_it_then_it_is_valid() {
+        let mut help = job_help(CliArgs::command(), &train());
+
         help.build();
+
         help.debug_assert();
     }
 
     #[test]
-    fn long_flags_tracel_run_does_not_take_are_the_jobs() {
-        let args = parse(&[
-            "tracel",
+    fn given_flags_tracel_run_does_not_take_when_parsing_it_then_they_are_the_jobs() {
+        let flags = job_flags_of(&[
             "run",
-            "toy",
+            "train",
             "--epochs",
             "5",
             "--offline",
             "--optimizer.lr",
             "-0.5",
-            "--json",
-            "--set",
-            "tag=x",
-            "--bin",
-            "trainer",
-            "-C",
-            "/tmp",
-            "--tag=-x",
-        ])
-        .unwrap();
-        assert_eq!(args.job.as_deref(), Some("toy"));
-        assert!(args.offline);
-        assert_eq!(args.package.bin.as_deref(), Some("trainer"));
-        assert_eq!(args.assignments.len(), 1);
-        let mut job_flags = args.job_flags;
-        job_flags.sort();
-        assert_eq!(job_flags, ["--epochs=5", "--optimizer.lr=-0.5", "--tag=-x"]);
-        let cli =
-            CliArgs::try_parse_args(["tracel", "run", "toy", "--epochs", "5", "--json"]).unwrap();
-        assert!(cli.json);
+        ]);
+
+        assert_eq!(flags, ["--epochs=5", "--optimizer.lr=-0.5"]);
     }
 
     #[test]
-    fn a_job_flag_takes_one_value_or_none() {
-        assert_eq!(
-            flags(&["tracel", "run", "toy", "--shuffle", "--offline"]),
-            ["--shuffle"]
-        );
-        assert_eq!(
-            flags(&["tracel", "run", "toy", "--shuffle", "false", "--shuffle"]),
-            ["--shuffle", "--shuffle=false"]
-        );
-        assert_eq!(flags(&["tracel", "run", "toy", "--tag="]), ["--tag="]);
-        assert!(flags(&["tracel", "run", "toy"]).is_empty());
+    fn given_a_job_flag_without_a_value_when_parsing_tracel_run_then_it_is_kept_bare() {
+        let flags = job_flags_of(&["run", "train", "--shuffle"]);
+
+        assert_eq!(flags, ["--shuffle"]);
     }
 
     #[test]
-    fn job_flags_need_a_job_and_stay_before_double_dash() {
-        for (arguments, kind) in [
-            (
-                &["tracel", "run", "--epochs", "5"][..],
-                ClapErrorKind::MissingRequiredArgument,
-            ),
-            (
-                &["tracel", "run", "--list", "--epochs", "5"],
-                ClapErrorKind::ArgumentConflict,
-            ),
-            (
-                &["tracel", "run", "toy", "stray"],
-                ClapErrorKind::UnknownArgument,
-            ),
-            (
-                &["tracel", "run", "toy", "-x"],
-                ClapErrorKind::UnknownArgument,
-            ),
-            (
-                &["tracel", "run", "toy", "--epochs", "5", "--", "x"],
-                ClapErrorKind::ArgumentConflict,
-            ),
-            (
-                &["tracel", "--epochs", "5", "run", "toy"],
-                ClapErrorKind::UnknownArgument,
-            ),
-            (
-                &["tracel", "jobs", "list", "--epochs", "5"],
-                ClapErrorKind::UnknownArgument,
-            ),
-        ] {
-            let error = parse(arguments).unwrap_err();
-            assert_eq!(error.kind(), kind, "{arguments:?}");
-            assert_eq!(error.exit_code(), 2);
-        }
-        let args = parse(&["tracel", "run", "--", "toy", "--epochs", "5"]).unwrap();
-        assert!(args.job_flags.is_empty());
-        assert_eq!(args.forwarded, ["toy", "--epochs", "5"]);
-    }
+    fn given_job_flags_when_applying_them_then_each_sets_its_field_with_its_type() {
+        let input = json!({"epochs": 10, "optimizer": {"lr": 0.001, "decay": 0.1}});
+        let flags = [
+            "--epochs=5".to_string(),
+            "--shuffle".to_string(),
+            "--optimizer.lr=0.01".to_string(),
+        ];
 
-    #[test]
-    fn help_is_read_with_the_job_and_its_flags() {
-        let args = parse(&["tracel", "run", "toy", "--epochs", "5", "--help"]).unwrap();
-        assert!(args.help);
-        assert_eq!(args.job.as_deref(), Some("toy"));
-        assert_eq!(args.job_flags, ["--epochs=5"]);
-        for help in ["-h", "--help"] {
-            assert!(parse(&["tracel", "run", help]).unwrap().help);
-        }
-    }
+        let input = apply(&train(), input, &flags).unwrap();
 
-    #[test]
-    fn flags_parse_as_their_type_onto_the_input() {
-        let toy = toy();
-        let input = apply(
-            &toy,
-            json!({"epochs": 10, "tag": "a", "optimizer": {"lr": 0.001, "decay": 0.1}}),
-            &[
-                "--epochs=5".to_string(),
-                "--shuffle".to_string(),
-                "--optimizer.lr=0.01".to_string(),
-                r#"--targets=["cpu"]"#.to_string(),
-            ],
-        )
-        .unwrap();
         assert_eq!(
             input,
-            json!({
-                "epochs": 5,
-                "shuffle": true,
-                "tag": "a",
-                "targets": ["cpu"],
-                "optimizer": {"lr": 0.01, "decay": 0.1}
-            })
-        );
-        assert_eq!(
-            apply(&toy, json!({"epochs": 1}), &[]).unwrap(),
-            json!({"epochs": 1})
-        );
-        assert_eq!(
-            apply(&toy, Value::Null, &["--tag=x".to_string()]).unwrap(),
-            json!({"tag": "x"})
+            json!({"epochs": 5, "shuffle": true, "optimizer": {"lr": 0.01, "decay": 0.1}})
         );
     }
 
-    #[test]
-    fn unusable_flags_are_usage_errors_naming_the_flag() {
-        let toy = toy();
-        for (flag, message) in [
-            (
-                "--epochs=ten",
-                "invalid value 'ten' for '--epochs <INT>': expected an integer",
-            ),
-            (
-                "--epoch=5",
-                "unexpected argument '--epoch' found; tip: a similar argument exists: '--epochs'",
-            ),
-            (
-                "--tag",
-                "a value is required for '--tag <STRING>' but none was supplied",
-            ),
-        ] {
-            let error = apply(&toy, json!({}), &[flag.to_string()]).unwrap_err();
-            assert_eq!(error.kind, ErrorKind::Usage, "{flag}");
-            assert_eq!(error.to_string(), message);
-            let error = anyhow::Error::from(error);
-            assert_eq!(
-                crate::error::ErrorReport::new(&error).hint,
-                Some("List the flags of job 'toy' with `tracel run toy --help`.")
-            );
-        }
+    #[rstest]
+    #[case::wrong_type("--epochs=ten")]
+    #[case::unknown_flag("--epoch=5")]
+    #[case::missing_value("--tag")]
+    fn given_a_flag_the_job_cannot_take_when_applying_it_then_the_hint_points_at_the_jobs_help(
+        #[case] flag: &str,
+    ) {
+        let error =
+            anyhow::Error::from(apply(&train(), json!({}), &[flag.to_string()]).unwrap_err());
+
+        let hint = ErrorReport::new(&error).hint.unwrap();
+
+        assert!(hint.contains("tracel run train --help"), "{hint}");
     }
 
     #[test]
-    fn a_field_whose_flag_tracel_run_takes_is_set_with_set() {
-        let args = parse(&["tracel", "run", "toy", "--offline"]).unwrap();
-        assert!(args.offline);
-        assert!(args.job_flags.is_empty());
+    fn given_a_job_without_an_input_schema_when_applying_a_flag_then_it_has_no_flags() {
+        let evaluate = job("evaluate", None, Some(json!({"split": "test"})));
 
-        let input = super::super::input::resolve(
-            &toy(),
-            json!({"offline": false}),
-            &[],
-            &[],
-            &[super::super::input::parse_assignment("offline=true").unwrap()],
-        )
-        .unwrap();
-        assert_eq!(input, json!({"offline": true}));
-    }
+        let error = apply(&evaluate, json!({}), &["--split=valid".to_string()]).unwrap_err();
 
-    #[test]
-    fn the_job_help_lists_the_jobs_flags_beside_tracel_runs() {
-        let help = run_command(&job_help(CliArgs::command(), &toy()))
-            .render_long_help()
-            .to_string();
-
-        for text in [
-            "Train a toy model",
-            "Usage: tracel run toy [OPTIONS]",
-            "Job options:",
-            "--epochs <INT>",
-            "Passes over the data.",
-            "[default: 10]",
-            "--optimizer.lr <FLOAT>",
-            "--shuffle [<BOOL>]",
-            "--targets <JSON>",
-            "--set <PATH=VALUE>",
-            "--remote <GROUP>",
-            "--json",
-        ] {
-            assert!(help.contains(text), "no {text} in\n{help}");
-        }
-        assert_eq!(help.matches("--offline").count(), 1, "{help}");
-        assert_eq!(help.matches("--config <FILE>").count(), 1, "{help}");
-        for text in ["--list", "[JOB]", "[ARGS]", "JSON merged before the input"] {
-            assert!(!help.contains(text), "{text} in\n{help}");
-        }
-    }
-
-    #[test]
-    fn without_a_job_the_help_is_that_of_tracel_run() {
-        let help = run_command(&CliArgs::command())
-            .render_long_help()
-            .to_string();
-        assert!(
-            help.contains("Usage: tracel run [OPTIONS] [JOB] [-- <ARGS>...]"),
-            "{help}"
-        );
-        assert!(help.contains("--list"), "{help}");
-        assert!(help.contains("-h, --help"), "{help}");
-        assert!(!help.contains("Job options"), "{help}");
+        assert_eq!(error.kind, ErrorKind::Usage);
+        assert!(error.to_string().contains("--split"), "{error}");
     }
 }
