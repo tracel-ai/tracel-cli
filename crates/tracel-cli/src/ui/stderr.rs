@@ -8,6 +8,20 @@ use super::Format;
 use super::screen::Screen;
 use crate::error::{CliError, ErrorKind, ErrorReport};
 
+/// The columns cliclack's closing corner and the spaces after it take.
+const CLOSING_INDENT: usize = 3;
+
+/// A failure as its closing line shows it: the message, then the hint dimmed, every
+/// line after the first indented under the first.
+fn failure(message: &str, hint: Option<&str>) -> String {
+    let hint = hint
+        .into_iter()
+        .flat_map(str::lines)
+        .map(|line| console::style(line).for_stderr().dim().to_string());
+    let lines: Vec<String> = message.lines().map(str::to_string).chain(hint).collect();
+    lines.join(&format!("\n{}", " ".repeat(CLOSING_INDENT)))
+}
+
 /// A prompt the user answered no. The command stops there and ends on what it didn't
 /// do, such as "Nothing was linked.", as a normal outcome.
 #[derive(Debug, thiserror::Error)]
@@ -123,19 +137,17 @@ impl Terminal {
     }
 
     /// Report a failed command: its message and hint here, and its envelope on stdout
-    /// with JSON output. On a terminal both are one error, then a bare corner closes the
-    /// frame.
+    /// with JSON output. On a terminal the command ends on cliclack's red closing line,
+    /// with the hint under the message.
     pub fn error(&self, report: &ErrorReport<'_>) {
         self.screen.clear_live();
         if !self.is_human() {
             self.line(format_args!("error: {}", one_line(&report.message)));
         } else if self.is_styled() {
-            let text = match report.hint {
-                Some(hint) => format!("{}\n{hint}", report.message),
-                None => report.message.clone(),
-            };
-            self.screen.draw(|| cliclack::log::error(text));
-            self.screen.close_frame();
+            let wrap = |text: &str| cliclack::termwrap(text, CLOSING_INDENT as u16);
+            let hint = report.hint.map(wrap);
+            self.screen
+                .fail(&failure(&wrap(&report.message), hint.as_deref()));
         } else {
             self.line(format_args!("error: {}", report.message));
             if let Some(hint) = report.hint {
@@ -368,6 +380,18 @@ mod tests {
         for ci in ["1", "true", "yes", "FALSE", " "] {
             assert!(!allows_input(true, true, Format::Human, Some(ci), false));
         }
+    }
+
+    #[test]
+    fn a_failure_shows_its_hint_under_its_message() {
+        assert_eq!(failure("Job 'fail' failed.", None), "Job 'fail' failed.");
+        assert_eq!(
+            failure(
+                "No job 'nope'.\nJobs: train.",
+                Some("See them with `tracel run --list`.")
+            ),
+            "No job 'nope'.\n   Jobs: train.\n   See them with `tracel run --list`."
+        );
     }
 
     fn unlinking() -> Unanswered {

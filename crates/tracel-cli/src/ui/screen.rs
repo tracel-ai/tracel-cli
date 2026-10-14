@@ -180,10 +180,10 @@ impl Screen {
         }
     }
 
-    /// Close the frame an error was just drawn in with a bare corner.
-    pub fn close_frame(&self) {
+    /// End the command on its `failure`: cliclack's red closing line, in a session or not.
+    pub fn fail(&self, failure: &str) {
         self.session.store(false, Ordering::Relaxed);
-        self.draw(|| cliclack::outro(""));
+        self.draw(|| cliclack::outro_cancel(failure));
     }
 
     /// Settle the live widget, then draw with cliclack.
