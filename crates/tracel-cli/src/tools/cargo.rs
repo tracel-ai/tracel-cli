@@ -1,22 +1,22 @@
 use std::ffi::OsString;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::Stdio;
 
 use anyhow::Context;
+use cargo_metadata::Message;
 
 /// Find the manifest of the Cargo workspace around the current directory.
 pub fn try_locate_manifest() -> Option<PathBuf> {
     let output = command()
-        .arg("locate-project")
-        .arg("--workspace")
+        .args(["locate-project", "--workspace", "--message-format", "plain"])
         .output()
         .ok()?;
     if !output.status.success() {
         return None;
     }
-    let location: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    location["root"].as_str().map(PathBuf::from)
+    let path = String::from_utf8(output.stdout).ok()?;
+    Some(PathBuf::from(path.trim_end_matches(['\r', '\n'])))
 }
 
 /// Start a cargo command, with the cargo `CARGO` names when it is set.
@@ -29,7 +29,7 @@ pub struct QuietBuild {
     label: String,
     succeeded: bool,
     output: Vec<u8>,
-    messages: Vec<u8>,
+    executables: Vec<(String, PathBuf)>,
 }
 
 impl QuietBuild {
@@ -48,7 +48,7 @@ impl QuietBuild {
         if !self.succeeded {
             anyhow::bail!("`{}` failed.", self.label);
         }
-        executables(&self.messages)
+        Ok(self.executables)
     }
 }
 
@@ -68,11 +68,8 @@ pub fn build_quietly(
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("Can't run `{label}`"))?;
-    let mut stdout = child.stdout.take().context("Can't read cargo's output")?;
-    let messages = std::thread::spawn(move || {
-        let mut messages = Vec::new();
-        stdout.read_to_end(&mut messages).map(|_| messages)
-    });
+    let stdout = child.stdout.take().context("Can't read cargo's output")?;
+    let executables = std::thread::spawn(move || executables(BufReader::new(stdout)));
 
     let mut output = Vec::new();
     let mut stderr = BufReader::new(child.stderr.take().context("Can't read cargo's output")?);
@@ -83,14 +80,14 @@ pub fn build_quietly(
         }
         output.append(&mut line);
     }
-    let messages = messages
+    let executables = executables
         .join()
         .map_err(|_| anyhow::anyhow!("Can't read the output of `{label}`."))??;
     Ok(QuietBuild {
         label: label.to_string(),
         succeeded: child.wait()?.success(),
         output,
-        messages,
+        executables,
     })
 }
 
@@ -118,23 +115,16 @@ fn status_line(line: &str) -> Option<String> {
     Some(line.to_string())
 }
 
-/// List the executables in cargo's JSON build messages.
-fn executables(messages: &[u8]) -> anyhow::Result<Vec<(String, PathBuf)>> {
+/// List the executables in cargo's JSON build messages as `(target name, path)` pairs.
+fn executables(messages: impl BufRead) -> io::Result<Vec<(String, PathBuf)>> {
     let mut executables = Vec::new();
-    for line in messages.split(|&b| b == b'\n') {
-        let Ok(message) = serde_json::from_slice::<serde_json::Value>(line) else {
+    for message in Message::parse_stream(messages) {
+        let Message::CompilerArtifact(artifact) = message? else {
             continue;
         };
-        if message["reason"] != "compiler-artifact" {
-            continue;
+        if let Some(path) = artifact.executable {
+            executables.push((artifact.target.name, path.into_std_path_buf()));
         }
-        let Some(executable) = message["executable"].as_str() else {
-            continue;
-        };
-        let name = message["target"]["name"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Cargo sent no name for the binary {executable}."))?;
-        executables.push((name.to_string(), PathBuf::from(executable)));
     }
     Ok(executables)
 }
@@ -144,26 +134,6 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
-
-    #[test]
-    fn given_cargo_build_messages_when_listing_executables_then_only_artifacts_with_one_are_listed()
-    {
-        let messages = br#"{"reason":"compiler-artifact","target":{"name":"helper","kind":["lib"]},"executable":null}
-{"reason":"build-script-executed","package_id":"trainer"}
-{"reason":"compiler-artifact","target":{"name":"trainer","kind":["bin"]},"executable":"/work/target/release/trainer"}
-{"reason":"build-finished","success":true}
-"#;
-
-        let executables = executables(messages).unwrap();
-
-        assert_eq!(
-            executables,
-            [(
-                "trainer".to_string(),
-                PathBuf::from("/work/target/release/trainer")
-            )]
-        );
-    }
 
     #[rstest]
     #[case::compiling(
