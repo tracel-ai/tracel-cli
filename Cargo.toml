@@ -8,7 +8,7 @@ members = ["crates/*", "xtask"]
 
 [workspace.package]
 edition = "2024"
-version = "0.5.1"
+version = "0.6.0"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
 rust-version = "1.97.0"
@@ -53,7 +53,7 @@ tracel-artifact = { git = "https://github.com/tracel-ai/tracel", rev = "f52ee9e5
 tracel-job = { git = "https://github.com/tracel-ai/tracel", rev = "f52ee9e5c76153abf2ca750c31427d44dd86cc0b" }
 
 ## Crate
-tracel-cli = { version = "0.5.0", path = "crates/tracel-cli" }
+tracel-cli = { version = "0.6.0", path = "crates/tracel-cli" }
 
 ### For xtask crate ###
 tracel-xtask = { version = "=5.0.0" }

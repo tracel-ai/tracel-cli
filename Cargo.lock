@@ -3104,7 +3104,7 @@ dependencies = [
 
 [[package]]
 name = "tracel-cli"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "cargo_metadata",
@@ -3757,7 +3757,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "xtask"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "strum 0.27.2",
  "tracel-xtask",
