@@ -95,29 +95,59 @@ fn extract_workspace_name_from_toml(toml_content: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
     #[test]
-    fn the_workspace_name_comes_from_workspace_package_then_package() {
-        for (toml, expected) in [
-            (
-                "[workspace]\nmembers = ['a']\n[workspace.package]\nname = 'workspace-name'\n",
-                Some("workspace-name"),
-            ),
-            ("[package]\nname = 'single-crate'\n", Some("single-crate")),
-            (
-                "[workspace.package]\nname = 'workspace-name'\n[package]\nname = 'package-name'\n",
-                Some("workspace-name"),
-            ),
-            ("[workspace]\nmembers = ['a']\n", None),
-            ("this is not valid toml { [ }", None),
-            ("", None),
-        ] {
-            assert_eq!(
-                extract_workspace_name_from_toml(toml).as_deref(),
-                expected,
-                "{toml:?}"
-            );
-        }
+    fn given_a_workspace_package_name_when_reading_the_manifest_then_it_names_the_workspace() {
+        let manifest = r#"
+[workspace]
+members = ["trainer"]
+
+[workspace.package]
+name = "my-workspace"
+"#;
+
+        let name = extract_workspace_name_from_toml(manifest);
+
+        assert_eq!(name.as_deref(), Some("my-workspace"));
+    }
+
+    #[test]
+    fn given_a_single_package_when_reading_the_manifest_then_its_name_names_the_workspace() {
+        let manifest = r#"
+[package]
+name = "trainer"
+"#;
+
+        let name = extract_workspace_name_from_toml(manifest);
+
+        assert_eq!(name.as_deref(), Some("trainer"));
+    }
+
+    #[test]
+    fn given_both_names_when_reading_the_manifest_then_the_workspace_package_name_wins() {
+        let manifest = r#"
+[workspace.package]
+name = "my-workspace"
+
+[package]
+name = "trainer"
+"#;
+
+        let name = extract_workspace_name_from_toml(manifest);
+
+        assert_eq!(name.as_deref(), Some("my-workspace"));
+    }
+
+    #[rstest]
+    #[case::no_name("[workspace]\nmembers = [\"trainer\"]\n")]
+    #[case::empty("")]
+    #[case::invalid_toml("this is not valid toml { [ }")]
+    fn given_a_manifest_without_a_name_when_reading_it_then_there_is_none(#[case] manifest: &str) {
+        let name = extract_workspace_name_from_toml(manifest);
+
+        assert_eq!(name, None);
     }
 }

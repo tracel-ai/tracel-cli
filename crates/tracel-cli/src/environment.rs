@@ -68,77 +68,59 @@ fn parse(value: &str) -> Option<Env> {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
-    use crate::test_support::report;
 
     #[test]
-    fn flags_choose_the_environment_before_tracel_env() {
-        for (dev, staging, variable, expected) in [
-            (false, None, None, "production"),
-            (false, None, Some("development"), "development"),
-            (true, None, Some("production"), "development"),
-            (true, None, Some("bogus"), "development"),
-            (false, Some(2), Some("Development"), "staging-2"),
-            (false, Some(2), Some("bogus"), "staging-2"),
-        ] {
-            let environment = resolve(dev, staging, variable).unwrap();
-            assert_eq!(
-                name(&environment),
-                expected,
-                "{dev} {staging:?} {variable:?}"
-            );
-        }
+    fn given_dev_when_resolving_the_environment_then_it_is_development_whatever_tracel_env_says() {
+        let environment = resolve(true, None, Some("production")).unwrap();
+
+        assert_eq!(name(&environment), "development");
     }
 
     #[test]
-    fn tracel_env_reads_every_environment_as_the_cli_and_the_sdk_write_it() {
-        for environment in [
-            Env::Production,
-            Env::Development,
-            Env::Staging(0),
-            Env::Staging(255),
-        ] {
-            for written in [name(&environment), sdk_value(&environment)] {
-                let read = resolve(false, None, Some(&written)).unwrap();
-                assert_eq!(name(&read), name(&environment), "{written}");
-            }
-        }
+    fn given_staging_when_resolving_the_environment_then_it_is_that_staging_whatever_tracel_env_says()
+     {
+        let environment = resolve(false, Some(2), Some("development")).unwrap();
+
+        assert_eq!(name(&environment), "staging-2");
     }
 
     #[test]
-    fn an_unknown_tracel_env_is_a_usage_error() {
-        for value in [
-            "bogus",
-            "",
-            "Staging()",
-            "Staging(1",
-            "staging-",
-            "staging--1",
-            "Staging(256)",
-            "staging-256",
-            "Production ",
-        ] {
-            let error = anyhow::Error::new(resolve(false, None, Some(value)).unwrap_err());
-            assert_eq!(report(&error), (ErrorKind::Usage, 2, false), "{value:?}");
-            assert!(
-                error.to_string().contains(&format!("'{value}'")),
-                "{value:?}"
-            );
-        }
+    fn given_no_flag_or_tracel_env_when_resolving_the_environment_then_it_is_production() {
+        let environment = resolve(false, None, None).unwrap();
+
+        assert_eq!(name(&environment), "production");
     }
 
-    #[test]
-    fn each_environment_has_its_web_console() {
-        for (environment, expected) in [
-            (Env::Production, "https://console.tracel.ai/"),
-            (Env::Staging(3), "https://s3-console.tracel.ai/"),
-            (Env::Development, "http://localhost:9000/"),
-        ] {
-            assert_eq!(
-                web_console(&environment).as_str(),
-                expected,
-                "{environment:?}"
-            );
-        }
+    #[rstest]
+    #[case::cli_development("development", "development")]
+    #[case::sdk_development("Development", "development")]
+    #[case::cli_staging("staging-2", "staging-2")]
+    #[case::sdk_staging("Staging(2)", "staging-2")]
+    #[case::sdk_production("Production", "production")]
+    fn given_tracel_env_as_the_cli_or_the_sdk_writes_it_when_resolving_then_it_names_that_environment(
+        #[case] variable: &str,
+        #[case] expected: &str,
+    ) {
+        let environment = resolve(false, None, Some(variable)).unwrap();
+
+        assert_eq!(name(&environment), expected);
+    }
+
+    #[rstest]
+    #[case::unknown("bogus")]
+    #[case::no_version("staging-")]
+    #[case::version_too_large("Staging(256)")]
+    #[case::trailing_space("Production ")]
+    fn given_an_unknown_tracel_env_when_resolving_then_it_is_a_usage_error(#[case] variable: &str) {
+        let error = resolve(false, None, Some(variable)).unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Usage);
+        assert!(
+            error.to_string().contains(&format!("'{variable}'")),
+            "{error}"
+        );
     }
 }

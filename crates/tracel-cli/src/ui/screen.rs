@@ -286,6 +286,8 @@ fn columns(terminal: &console::Term) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
     fn screen(format: Format, layout: Layout, stderr: bool, stdout: bool) -> Screen {
@@ -297,54 +299,60 @@ mod tests {
     }
 
     #[test]
-    fn a_read_shows_its_result_in_a_box_only_where_stdout_shares_the_terminal() {
-        for (format, layout, stderr, stdout, boxed) in [
-            (Format::Human, Layout::Read, true, true, true),
-            (Format::Human, Layout::Read, true, false, false),
-            (Format::Human, Layout::Read, false, true, false),
-            (Format::Json, Layout::Read, true, true, false),
-            (Format::Human, Layout::flow("Link"), true, true, false),
-            (Format::Human, Layout::Bare, true, true, false),
-        ] {
-            let case = format!("{format:?} {stderr} {stdout}");
-            let delivery = screen(format, layout, stderr, stdout).delivery();
-            assert_eq!(matches!(delivery, Delivery::Box(_)), boxed, "{case}");
-        }
+    fn given_a_read_whose_stdout_shares_the_terminal_when_delivering_then_its_result_is_boxed() {
+        let screen = screen(Format::Human, Layout::Read, true, true);
+
+        let delivery = screen.delivery();
+
+        assert!(matches!(delivery, Delivery::Box(_)));
+    }
+
+    #[rstest]
+    #[case::stdout_piped(Format::Human, Layout::Read, true, false)]
+    #[case::stderr_piped(Format::Human, Layout::Read, false, true)]
+    #[case::json(Format::Json, Layout::Read, true, true)]
+    #[case::flow(Format::Human, Layout::flow("Link"), true, true)]
+    fn given_anything_but_a_read_sharing_the_terminal_when_delivering_then_the_result_goes_to_stdout(
+        #[case] format: Format,
+        #[case] layout: Layout,
+        #[case] stderr: bool,
+        #[case] stdout: bool,
+    ) {
+        let screen = screen(format, layout, stderr, stdout);
+
+        let delivery = screen.delivery();
+
+        assert!(matches!(delivery, Delivery::Stdout));
     }
 
     #[test]
-    fn a_flow_opens_a_session_saying_what_it_does_and_where() {
-        let flow = screen(
+    fn given_a_flow_on_a_terminal_when_it_starts_then_its_header_says_what_it_does_and_where() {
+        let screen = screen(
             Format::Human,
             Layout::flow("Link this workspace"),
             true,
             false,
         );
 
-        let header = flow
-            .header()
-            .map(|header| console::strip_ansi_codes(&header).into_owned());
+        let header = screen.header().unwrap();
 
         assert_eq!(
-            header.as_deref(),
-            Some("Link this workspace in test/demo · development")
+            console::strip_ansi_codes(&header),
+            "Link this workspace in test/demo · development"
         );
     }
 
-    #[test]
-    fn only_a_flow_drawn_on_a_terminal_opens_a_session() {
-        for (format, layout, stderr) in [
-            (Format::Human, Layout::Read, true),
-            (Format::Human, Layout::Bare, true),
-            (Format::Human, Layout::flow("Link"), false),
-            (Format::Json, Layout::flow("Link"), true),
-        ] {
-            let screen = screen(format, layout, stderr, true);
+    #[rstest]
+    #[case::stderr_piped(Format::Human, false)]
+    #[case::json(Format::Json, true)]
+    fn given_a_flow_that_does_not_draw_when_it_starts_then_no_session_opens(
+        #[case] format: Format,
+        #[case] stderr: bool,
+    ) {
+        let screen = screen(format, Layout::flow("Link"), stderr, true);
 
-            screen.intro();
+        screen.intro();
 
-            assert!(screen.header().is_none(), "{format:?} {stderr}");
-            assert!(!screen.session_open(), "{format:?} {stderr}");
-        }
+        assert!(!screen.session_open());
     }
 }

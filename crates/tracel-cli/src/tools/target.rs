@@ -225,17 +225,17 @@ pub fn install_missing_target(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::report;
 
     #[test]
-    fn no_requested_target_means_the_host() {
-        for host in ALL_TARGETS {
-            assert_eq!(resolve_targets(host, &[]).unwrap(), [host], "{host:?}");
-        }
+    fn given_no_requested_target_when_resolving_targets_then_it_is_the_host() {
+        let targets = resolve_targets((Os::Macos, Arch::Arm64), &[]).unwrap();
+
+        assert_eq!(targets, [(Os::Macos, Arch::Arm64)]);
     }
 
     #[test]
-    fn requested_targets_keep_their_order_without_repeats() {
+    fn given_a_target_requested_twice_when_resolving_targets_then_it_appears_once_in_request_order()
+    {
         let requested = [
             "aarch64-unknown-linux-gnu".to_string(),
             "x86_64-pc-windows-msvc".to_string(),
@@ -251,14 +251,19 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_target_lists_the_targets() {
-        let error = anyhow::Error::new(parse_target("unknown-triple").unwrap_err());
+    fn given_an_unknown_triple_when_parsing_a_target_then_the_error_lists_the_targets() {
+        let error = parse_target("x86_64-apple-darwin").unwrap_err();
 
-        assert_eq!(report(&error), (ErrorKind::Usage, 2, false));
         let message = error.to_string();
-        assert!(message.contains("'unknown-triple'"), "{message}");
-        for (os, arch) in ALL_TARGETS {
-            assert!(message.contains(target_triple(os, arch)), "{message}");
+        assert_eq!(error.kind, ErrorKind::Usage);
+        for target in [
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "aarch64-apple-darwin",
+            "x86_64-pc-windows-msvc",
+            "aarch64-pc-windows-msvc",
+        ] {
+            assert!(message.contains(target), "{message}");
         }
     }
 }

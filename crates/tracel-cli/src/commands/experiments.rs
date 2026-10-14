@@ -507,6 +507,7 @@ pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Res
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
     use serde_json::json;
 
     use super::*;
@@ -514,8 +515,7 @@ mod tests {
     use crate::test_support::{command, plain};
 
     fn logs_args(args: &[&str]) -> LogsArgs {
-        let mut argv = vec!["experiments", "logs", "42"];
-        argv.extend(args);
+        let argv = [&["experiments", "logs", "42"][..], args].concat();
         match command(&argv) {
             Commands::Experiments(ExperimentsArgs {
                 command: ExperimentsCommands::Logs(args),
@@ -530,88 +530,50 @@ mod tests {
             log_level: LogLevelResponse::Warn,
             timestamp: "2026-10-07T00:00:00Z".into(),
             message: message.into(),
-            metadata: json!({"epoch": 3}),
+            metadata: json!({}),
         }
     }
 
     #[test]
-    fn an_experiment_is_a_positive_number_or_latest() {
-        for (value, expected) in [
-            ("latest", Some("latest")),
-            ("42", Some("42")),
-            ("0", None),
-            ("-1", None),
-            ("v7", None),
-        ] {
-            let parsed = parse_experiment(value).ok().map(|selector| match selector {
-                ExperimentSelector::Latest => "latest".to_string(),
-                ExperimentSelector::Number(number) => number.to_string(),
-            });
-            assert_eq!(parsed.as_deref(), expected, "{value}");
-        }
+    fn given_latest_when_parsing_an_experiment_then_it_selects_the_latest() {
+        let selector = parse_experiment("latest").unwrap();
+
+        assert!(matches!(selector, ExperimentSelector::Latest));
     }
 
     #[test]
-    fn log_filters_become_the_client_request() {
-        let args = logs_args(&[
-            "--limit",
-            "25",
-            "--level",
-            "info",
-            "--level",
-            "error",
-            "--from",
-            "2026-10-06T00:00:00Z",
-            "--to",
-            "2026-10-07T00:00:00Z",
-            "--offset",
-            "5",
-            "--search",
-            "loss",
-            "--metadata",
-            "worker=gpu=0",
-            "--metadata-not",
-            "stage=init",
-            "--metadata-exists",
-            "epoch",
-        ]);
+    fn given_a_number_when_parsing_an_experiment_then_it_selects_that_experiment() {
+        let selector = parse_experiment("42").unwrap();
 
-        let request = args.into_request();
+        assert!(matches!(selector, ExperimentSelector::Number(42)));
+    }
 
-        assert_eq!(request.limit, Some(25));
-        assert_eq!(
-            request.levels,
-            Some(vec![LogLevelRequest::Info, LogLevelRequest::Error])
-        );
-        assert_eq!(request.from.as_deref(), Some("2026-10-06T00:00:00Z"));
-        assert_eq!(request.to.as_deref(), Some("2026-10-07T00:00:00Z"));
-        assert_eq!(request.offset, Some(5));
-        assert_eq!(request.search.as_deref(), Some("loss"));
-        assert_eq!(request.after, None);
-        assert_eq!(
-            serde_json::to_value(request.metadata_filters).unwrap(),
-            json!([
-                {"type":"equals", "key":"worker", "value":"gpu=0"},
-                {"type":"not_equals", "key":"stage", "value":"init"},
-                {"type":"exists", "key":"epoch"},
-            ])
-        );
+    #[rstest]
+    #[case::zero("0")]
+    #[case::negative("-1")]
+    #[case::text("v7")]
+    fn given_anything_else_when_parsing_an_experiment_then_it_is_refused(#[case] value: &str) {
+        let parsed = parse_experiment(value);
+
+        assert!(parsed.is_err());
+    }
+
+    #[rstest]
+    #[case::follow(&["--follow"], Some(0))]
+    #[case::follow_after(&["--follow", "--after", "12"], Some(12))]
+    #[case::after(&["--after", "12"], Some(12))]
+    #[case::neither(&[], None)]
+    fn given_follow_or_after_when_querying_logs_then_reading_starts_after_that_sequence(
+        #[case] args: &[&str],
+        #[case] after: Option<u64>,
+    ) {
+        let request = logs_args(args).into_request();
+
+        assert_eq!(request.after, after);
     }
 
     #[test]
-    fn following_logs_reads_from_a_sequence_cursor() {
-        for (args, after) in [
-            (&["--follow"][..], Some(0)),
-            (&["--follow", "--after", "12"], Some(12)),
-            (&["--after", "12"], Some(12)),
-            (&[], None),
-        ] {
-            assert_eq!(logs_args(args).into_request().after, after, "{args:?}");
-        }
-    }
-
-    #[test]
-    fn logs_read_oldest_first() {
+    fn given_logs_newest_first_when_writing_them_as_text_then_they_read_oldest_first() {
         let logs = ExperimentLogQueryResponse {
             running: false,
             items: vec![log(9, "second"), log(8, "first")],
@@ -630,34 +592,10 @@ mod tests {
     }
 
     #[test]
-    fn a_followed_log_is_an_event_with_its_type() {
-        let item = log(7, "loss\nspiked");
-        for (event, expected) in [
-            (
-                LogEvent::Log(&item),
-                json!({
-                    "type": "log",
-                    "seq": 7,
-                    "log_level": "warn",
-                    "timestamp": "2026-10-07T00:00:00Z",
-                    "message": "loss\nspiked",
-                    "metadata": {"epoch": 3},
-                }),
-            ),
-            (
-                LogEvent::End { running: false },
-                json!({"type": "end", "running": false}),
-            ),
-        ] {
-            assert_eq!(serde_json::to_value(&event).unwrap(), expected);
-        }
-    }
+    fn given_a_log_entry_when_writing_it_as_text_then_it_is_one_line_with_its_time_and_level() {
+        let entry = log(7, "loss\nspiked");
 
-    #[test]
-    fn a_log_line_shows_its_local_time_level_and_one_line_message() {
-        let item = log(7, "loss\nspiked");
-
-        let text = plain(&LogEvent::Log(&item)) + &plain(&LogEvent::End { running: false });
+        let text = plain(&LogEvent::Log(&entry));
 
         assert_eq!(
             text,

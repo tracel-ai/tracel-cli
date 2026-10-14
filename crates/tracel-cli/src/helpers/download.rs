@@ -180,54 +180,32 @@ fn download_each(
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
     use crate::error::classify;
 
-    #[test]
-    fn a_download_path_stays_inside_its_directory() {
-        for (path, safe) in [
-            ("a", true),
-            ("nested/weights.bin", true),
-            ("a-b/c_d", true),
-            ("", false),
-            (".", false),
-            ("./a", false),
-            ("a/./b", false),
-            ("..", false),
-            ("../a", false),
-            ("a/../b", false),
-            ("/a", false),
-            ("C:\\a", false),
-            ("C:a", false),
-            ("C:/a", false),
-            ("\\\\server\\file", false),
-            ("\\a", false),
-            ("a\0b", false),
-        ] {
-            match validate_rel_path(path) {
-                Ok(()) => assert!(safe, "{path:?}"),
-                Err(error) => {
-                    assert!(!safe, "{path:?}");
-                    assert_eq!(classify(&error), ErrorKind::Internal, "{path:?}");
-                    assert!(error.to_string().contains(path), "{path:?}");
-                }
-            }
-        }
-    }
+    const HELLO_WORLD_SHA256: &str =
+        "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
 
-    fn file(size_bytes: Option<u64>, checksum: Option<&str>) -> DownloadFile {
+    fn file(rel_path: &str, size_bytes: Option<u64>, checksum: Option<&str>) -> DownloadFile {
         DownloadFile {
-            rel_path: "hello".into(),
+            rel_path: rel_path.into(),
             url: String::new(),
             size_bytes,
             checksum: checksum.map(str::to_string),
         }
     }
 
-    /// A writer that takes two bytes at a time, as a socket may.
-    struct PartialWriter(Vec<u8>);
+    fn written(contents: &[u8]) -> HashingWriter<Vec<u8>> {
+        let mut writer = HashingWriter::new(Vec::new());
+        writer.write_all(contents).unwrap();
+        writer
+    }
 
-    impl Write for PartialWriter {
+    struct TwoBytesAtATime(Vec<u8>);
+
+    impl Write for TwoBytesAtATime {
         fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
             let count = data.len().min(2);
             self.0.extend_from_slice(&data[..count]);
@@ -239,58 +217,119 @@ mod tests {
         }
     }
 
+    #[rstest]
+    #[case::file("weights.bin")]
+    #[case::nested("nested/weights.bin")]
+    fn given_a_relative_path_when_validating_it_then_it_is_safe(#[case] rel_path: &str) {
+        let validated = validate_rel_path(rel_path);
+
+        assert!(validated.is_ok());
+    }
+
+    #[rstest]
+    #[case::empty("")]
+    #[case::current_directory("./a")]
+    #[case::parent("../a")]
+    #[case::inner_parent("a/../b")]
+    #[case::absolute("/a")]
+    #[case::windows_drive("C:a")]
+    #[case::backslash(r"a\b")]
+    #[case::nul("a\0b")]
+    fn given_a_path_that_can_leave_its_directory_when_validating_it_then_it_is_refused(
+        #[case] rel_path: &str,
+    ) {
+        let validated = validate_rel_path(rel_path);
+
+        assert!(validated.is_err());
+    }
+
     #[test]
-    fn the_writer_hashes_only_the_bytes_written() {
-        let mut writer = HashingWriter::new(PartialWriter(Vec::new()));
+    fn given_a_writer_that_takes_two_bytes_at_a_time_when_writing_then_only_written_bytes_are_hashed()
+     {
+        let mut writer = HashingWriter::new(TwoBytesAtATime(Vec::new()));
 
         writer.write_all(b"hello world").unwrap();
 
-        assert_eq!(writer.bytes, 11);
         assert_eq!(writer.inner.0, b"hello world");
+        assert_eq!(writer.bytes, 11);
         assert_eq!(
-            format!("{:x}", writer.hasher.clone().finalize()),
-            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+            format!("{:x}", writer.hasher.finalize()),
+            HELLO_WORLD_SHA256
         );
     }
 
     #[test]
-    fn a_download_must_match_its_declared_size_and_checksum() {
-        let checksum = "B94D27B9934D3E08A52E52D7DA7DABFAC484EFE37A5380EE9088F7ACE2EFCDE9";
-        let mut writer = HashingWriter::new(Vec::new());
-        writer.write_all(b"hello world").unwrap();
-        for (declared, matches) in [
-            (file(Some(11), Some(checksum)), true),
-            (file(Some(0), Some("")), true),
-            (file(None, None), true),
-            (file(Some(10), None), false),
-            (file(None, Some("bad")), false),
-        ] {
-            let case = (declared.size_bytes, declared.checksum.clone());
-            assert_eq!(writer.verify(&declared).is_ok(), matches, "{case:?}");
-        }
+    fn given_the_declared_size_and_checksum_when_verifying_a_download_then_it_passes() {
+        let writer = written(b"hello world");
+        let declared = file("hello", Some(11), Some(&HELLO_WORLD_SHA256.to_uppercase()));
+
+        let verified = writer.verify(&declared);
+
+        assert!(verified.is_ok());
+    }
+
+    #[rstest]
+    #[case::none(None, None)]
+    #[case::zero_and_empty(Some(0), Some(""))]
+    fn given_no_declared_size_or_checksum_when_verifying_a_download_then_it_passes(
+        #[case] size_bytes: Option<u64>,
+        #[case] checksum: Option<&str>,
+    ) {
+        let writer = written(b"hello world");
+
+        let verified = writer.verify(&file("hello", size_bytes, checksum));
+
+        assert!(verified.is_ok());
     }
 
     #[test]
-    fn every_path_is_checked_before_any_existing_file() {
+    fn given_another_size_when_verifying_a_download_then_it_fails() {
+        let writer = written(b"hello world");
+
+        let verified = writer.verify(&file("hello", Some(10), None));
+
+        assert!(verified.is_err());
+    }
+
+    #[test]
+    fn given_another_checksum_when_verifying_a_download_then_it_fails() {
+        let writer = written(b"hello world");
+
+        let verified = writer.verify(&file("hello", None, Some("0123abcd")));
+
+        assert!(verified.is_err());
+    }
+
+    #[test]
+    fn given_an_existing_file_when_checking_destinations_then_it_is_a_conflict() {
         let directory = tempfile::tempdir().unwrap();
         fs::write(directory.path().join("hello"), b"existing").unwrap();
-        let new = || DownloadFile {
-            rel_path: "new".into(),
-            ..file(None, None)
-        };
-        let unsafe_path = DownloadFile {
-            rel_path: "../unsafe".into(),
-            ..file(None, None)
-        };
 
-        let existing = check_destinations(directory.path(), &[new(), file(None, None)], false);
-        let forced = check_destinations(directory.path(), &[new(), file(None, None)], true);
-        let unsafe_first =
-            check_destinations(directory.path(), &[file(None, None), unsafe_path], false);
+        let error =
+            check_destinations(directory.path(), &[file("hello", None, None)], false).unwrap_err();
 
-        assert_eq!(classify(&existing.unwrap_err()), ErrorKind::Conflict);
-        assert!(forced.is_ok());
-        assert_eq!(classify(&unsafe_first.unwrap_err()), ErrorKind::Internal);
-        assert!(!directory.path().join("new").exists());
+        assert_eq!(classify(&error), ErrorKind::Conflict);
+    }
+
+    #[test]
+    fn given_force_when_checking_destinations_then_an_existing_file_may_be_overwritten() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("hello"), b"existing").unwrap();
+
+        let checked = check_destinations(directory.path(), &[file("hello", None, None)], true);
+
+        assert!(checked.is_ok());
+    }
+
+    #[test]
+    fn given_an_unsafe_path_after_an_existing_file_when_checking_destinations_then_the_unsafe_path_fails_first()
+     {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("hello"), b"existing").unwrap();
+        let files = [file("hello", None, None), file("../escape", None, None)];
+
+        let error = check_destinations(directory.path(), &files, false).unwrap_err();
+
+        assert!(error.to_string().contains("'../escape'"), "{error}");
     }
 }

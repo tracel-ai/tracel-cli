@@ -62,61 +62,50 @@ impl Format {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
     #[test]
-    fn json_then_output_then_tracel_output_choose_the_format() {
-        use FormatArg::{Auto, Human as HumanArg, Json as JsonArg};
-        for (flag, json, environment, auto, expected) in [
-            (None, false, None, Format::Human, Some(Format::Human)),
-            (None, false, None, Format::Json, Some(Format::Json)),
-            (
-                Some(Auto),
-                false,
-                Some("json"),
-                Format::Human,
-                Some(Format::Human),
-            ),
-            (
-                None,
-                false,
-                Some("human"),
-                Format::Json,
-                Some(Format::Human),
-            ),
-            (None, false, Some("json"), Format::Human, Some(Format::Json)),
-            (
-                Some(HumanArg),
-                false,
-                Some("json"),
-                Format::Json,
-                Some(Format::Human),
-            ),
-            (
-                Some(JsonArg),
-                false,
-                Some("human"),
-                Format::Human,
-                Some(Format::Json),
-            ),
-            (
-                Some(HumanArg),
-                false,
-                Some("xml"),
-                Format::Json,
-                Some(Format::Human),
-            ),
-            (None, true, Some("human"), Format::Human, Some(Format::Json)),
-            (None, true, Some("xml"), Format::Human, Some(Format::Json)),
-            (None, false, Some("xml"), Format::Human, None),
-            (None, false, Some("auto"), Format::Human, None),
-        ] {
-            let case = (flag, json, environment, auto);
-            let resolved = Format::resolve(flag, json, environment, auto);
-            assert_eq!(resolved.as_ref().ok().copied(), expected, "{case:?}");
-            if let Err(error) = resolved {
-                assert_eq!(error.kind, ErrorKind::Usage, "{case:?}");
-            }
-        }
+    fn given_json_when_choosing_the_format_then_it_is_json_whatever_else_says() {
+        let format = Format::resolve(Some(FormatArg::Human), true, Some("human"), Format::Human);
+
+        assert_eq!(format.unwrap(), Format::Json);
+    }
+
+    #[rstest]
+    #[case::human_over_json(FormatArg::Human, "json", Format::Human)]
+    #[case::json_over_human(FormatArg::Json, "human", Format::Json)]
+    #[case::auto_over_json(FormatArg::Auto, "json", Format::Human)]
+    fn given_output_when_choosing_the_format_then_it_wins_over_tracel_output(
+        #[case] flag: FormatArg,
+        #[case] tracel_output: &str,
+        #[case] expected: Format,
+    ) {
+        let format = Format::resolve(Some(flag), false, Some(tracel_output), Format::Human);
+
+        assert_eq!(format.unwrap(), expected);
+    }
+
+    #[test]
+    fn given_only_tracel_output_when_choosing_the_format_then_it_decides() {
+        let format = Format::resolve(None, false, Some("json"), Format::Human);
+
+        assert_eq!(format.unwrap(), Format::Json);
+    }
+
+    #[test]
+    fn given_no_choice_when_choosing_the_format_then_it_is_the_commands_default() {
+        let format = Format::resolve(None, false, None, Format::Json);
+
+        assert_eq!(format.unwrap(), Format::Json);
+    }
+
+    #[test]
+    fn given_an_unknown_tracel_output_when_choosing_the_format_then_it_is_a_usage_error() {
+        let error = Format::resolve(None, false, Some("xml"), Format::Human).unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Usage);
+        assert!(error.to_string().contains("'xml'"), "{error}");
     }
 }

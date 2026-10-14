@@ -250,148 +250,119 @@ pub fn validate_project_exists_on_server(
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
-    use crate::test_support::report;
+    use crate::error::{ErrorReport, classify};
 
-    #[test]
-    fn a_project_flag_is_a_namespace_and_a_name() {
-        for (value, expected) in [
-            ("alice/demo", Some(("alice", "demo"))),
-            ("", None),
-            ("alice", None),
-            ("/demo", None),
-            ("alice/", None),
-            ("/", None),
-            ("alice/demo/extra", None),
-            ("alice//demo", None),
-        ] {
-            match parse_project(value) {
-                Ok(project) => assert_eq!(
-                    Some((project.namespace.as_str(), project.name.as_str())),
-                    expected,
-                    "{value:?}"
-                ),
-                Err(error) => {
-                    assert_eq!(expected, None, "{value:?}");
-                    let error = anyhow::Error::new(error);
-                    assert_eq!(report(&error), (CliErrorKind::Usage, 2, false), "{value:?}");
-                    assert!(error.to_string().contains(&format!("'{value}'")));
-                }
-            }
+    fn tracel_toml(namespace: Option<&str>, project: Option<&str>) -> TracelTomlConfig {
+        TracelTomlConfig {
+            namespace: namespace.map(str::to_string),
+            project: project.map(str::to_string),
         }
     }
 
-    #[test]
-    fn the_flag_then_the_variables_then_tracel_toml_name_the_project() {
-        let flag = parse_project("flag/project").unwrap();
-        let file = "namespace = 'file'\nproject = 'project'";
-        for (flag, namespace, project, toml, expected) in [
-            (
-                Some(&flag),
-                Some("env"),
-                Some("env"),
-                None,
-                ("flag", "project", ProjectSource::Flag),
-            ),
-            (
-                None,
-                Some("env"),
-                Some("demo"),
-                None,
-                ("env", "demo", ProjectSource::Env),
-            ),
-            (
-                None,
-                None,
-                None,
-                Some(file),
-                ("file", "project", ProjectSource::TracelToml),
-            ),
-            (
-                None,
-                Some("env"),
-                None,
-                Some(file),
-                ("env", "project", ProjectSource::Env),
-            ),
-            (
-                None,
-                None,
-                Some("demo"),
-                Some(file),
-                ("file", "demo", ProjectSource::Env),
-            ),
-            (
-                None,
-                None,
-                None,
-                Some("owner = 'old'\nname = 'names'"),
-                ("old", "names", ProjectSource::TracelToml),
-            ),
-        ] {
-            let case = (namespace, project, toml);
-            let config = || match toml {
-                Some(toml) => Ok(toml::from_str(toml).unwrap()),
-                None => panic!("tracel.toml is read for {case:?}"),
-            };
-            let resolved = resolve_project_from(
-                flag,
-                namespace.map(str::to_owned),
-                project.map(str::to_owned),
-                config,
-            )
-            .unwrap();
-            let (namespace, name, source) = expected;
-            assert_eq!(resolved.project.namespace, namespace, "{case:?}");
-            assert_eq!(resolved.project.name, name, "{case:?}");
-            assert_eq!(resolved.source, source, "{case:?}");
-        }
+    fn unread() -> anyhow::Result<TracelTomlConfig> {
+        panic!("tracel.toml was read")
+    }
+
+    fn full_name(project: &TracelProject) -> String {
+        format!("{}/{}", project.namespace, project.name)
     }
 
     #[test]
-    fn an_incomplete_project_is_not_found_with_a_hint() {
-        for (namespace, project) in [(None, None), (Some("alice"), None), (None, Some("demo"))] {
-            let error = resolve_project_from(
-                None,
-                namespace.map(str::to_owned),
-                project.map(str::to_owned),
-                || Ok(TracelTomlConfig::default()),
-            )
-            .unwrap_err();
-            assert_eq!(
-                report(&error),
-                (CliErrorKind::NotFound, 5, true),
-                "{namespace:?} {project:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_missing_project_names_itself_however_it_was_selected() {
+    fn given_a_namespace_and_a_name_when_parsing_a_project_then_it_has_both() {
         let project = parse_project("alice/demo").unwrap();
-        for source in [
-            ProjectSource::Flag,
-            ProjectSource::Env,
-            ProjectSource::TracelToml,
-        ] {
-            let error = anyhow::Error::new(missing_project(&project, &source));
-            assert_eq!(
-                report(&error),
-                (CliErrorKind::NotFound, 5, true),
-                "{source:?}"
-            );
-            assert!(error.to_string().contains("alice/demo"), "{source:?}");
-        }
+
+        assert_eq!(project.namespace, "alice");
+        assert_eq!(project.name, "demo");
+    }
+
+    #[rstest]
+    #[case::empty("")]
+    #[case::no_slash("alice")]
+    #[case::no_namespace("/demo")]
+    #[case::no_name("alice/")]
+    #[case::extra_part("alice/demo/extra")]
+    fn given_a_value_that_is_not_namespace_slash_name_when_parsing_a_project_then_it_is_a_usage_error(
+        #[case] value: &str,
+    ) {
+        let error = parse_project(value).unwrap_err();
+
+        assert_eq!(error.kind, CliErrorKind::Usage);
+        assert!(error.to_string().contains(&format!("'{value}'")), "{error}");
     }
 
     #[test]
-    fn a_project_source_has_its_documented_json_name() {
-        for (source, value) in [
-            (ProjectSource::Flag, "flag"),
-            (ProjectSource::Env, "env"),
-            (ProjectSource::TracelToml, "tracel.toml"),
-        ] {
-            assert_eq!(serde_json::to_value(&source).unwrap(), value, "{source:?}");
-        }
+    fn given_a_project_flag_when_resolving_the_project_then_the_flag_wins() {
+        let flag = parse_project("alice/demo").unwrap();
+
+        let resolved =
+            resolve_project_from(Some(&flag), Some("env".into()), Some("env".into()), unread)
+                .unwrap();
+
+        assert_eq!(full_name(&resolved.project), "alice/demo");
+        assert_eq!(resolved.source, ProjectSource::Flag);
+    }
+
+    #[test]
+    fn given_both_variables_when_resolving_the_project_then_they_name_it_without_tracel_toml() {
+        let resolved =
+            resolve_project_from(None, Some("alice".into()), Some("demo".into()), unread).unwrap();
+
+        assert_eq!(full_name(&resolved.project), "alice/demo");
+        assert_eq!(resolved.source, ProjectSource::Env);
+    }
+
+    #[test]
+    fn given_no_flag_or_variable_when_resolving_the_project_then_tracel_toml_names_it() {
+        let resolved = resolve_project_from(None, None, None, || {
+            Ok(tracel_toml(Some("alice"), Some("demo")))
+        })
+        .unwrap();
+
+        assert_eq!(full_name(&resolved.project), "alice/demo");
+        assert_eq!(resolved.source, ProjectSource::TracelToml);
+    }
+
+    #[test]
+    fn given_only_tracel_namespace_when_resolving_the_project_then_it_overrides_tracel_toml_namespace()
+     {
+        let resolved = resolve_project_from(None, Some("team".into()), None, || {
+            Ok(tracel_toml(Some("alice"), Some("demo")))
+        })
+        .unwrap();
+
+        assert_eq!(full_name(&resolved.project), "team/demo");
+        assert_eq!(resolved.source, ProjectSource::Env);
+    }
+
+    #[test]
+    fn given_no_project_anywhere_when_resolving_the_project_then_it_is_not_found() {
+        let error =
+            resolve_project_from(None, None, None, || Ok(tracel_toml(None, None))).unwrap_err();
+
+        assert_eq!(classify(&error), CliErrorKind::NotFound);
+        assert!(
+            ErrorReport::new(&error)
+                .hint
+                .unwrap()
+                .contains("tracel init")
+        );
+    }
+
+    #[rstest]
+    #[case::flag(ProjectSource::Flag, "tracel project list")]
+    #[case::env(ProjectSource::Env, "tracel project list")]
+    #[case::tracel_toml(ProjectSource::TracelToml, "tracel init --force")]
+    fn given_how_a_project_was_selected_when_the_console_lacks_it_then_the_hint_suggests_the_fitting_command(
+        #[case] source: ProjectSource,
+        #[case] command: &str,
+    ) {
+        let project = parse_project("alice/demo").unwrap();
+
+        let error = anyhow::Error::new(missing_project(&project, &source));
+
+        assert!(ErrorReport::new(&error).hint.unwrap().contains(command));
     }
 }

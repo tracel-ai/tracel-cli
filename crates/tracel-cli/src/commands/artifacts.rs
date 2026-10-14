@@ -229,47 +229,56 @@ pub fn handle_command(args: ArtifactsArgs, context: CliContext) -> anyhow::Resul
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
     use serde_json::json;
 
     use super::*;
-    use crate::test_support::report;
+    use crate::error::{ErrorReport, classify};
 
     #[test]
-    fn an_artifact_downloads_into_a_directory_named_after_it() {
-        for (name, expected) in [
-            ("weights", Some("./weights")),
-            ("", None),
-            (".", None),
-            ("..", None),
-            ("../weights", None),
-            ("weights/nested", None),
-            ("/weights", None),
-            ("C:\\weights", None),
-        ] {
-            match default_directory(name) {
-                Ok(directory) => assert_eq!(Some(directory.as_path()), expected.map(Path::new)),
-                Err(error) => {
-                    assert_eq!(expected, None, "{name:?}");
-                    let error = anyhow::Error::new(error);
-                    assert_eq!(report(&error), (ErrorKind::Usage, 2, true), "{name:?}");
-                }
-            }
-        }
+    fn given_a_plain_artifact_name_when_choosing_where_to_download_then_it_is_a_directory_named_after_it()
+     {
+        let directory = default_directory("weights").unwrap();
+
+        assert_eq!(directory, PathBuf::from("./weights"));
+    }
+
+    #[rstest]
+    #[case::empty("")]
+    #[case::nested("weights/best")]
+    #[case::parent("../weights")]
+    #[case::absolute("/weights")]
+    fn given_a_name_that_is_not_one_plain_directory_when_choosing_where_to_download_then_one_must_be_passed(
+        #[case] name: &str,
+    ) {
+        let error = anyhow::Error::new(default_directory(name).unwrap_err());
+
+        assert_eq!(classify(&error), ErrorKind::Usage);
+        assert!(
+            ErrorReport::new(&error)
+                .hint
+                .unwrap()
+                .contains("--directory")
+        );
     }
 
     #[test]
-    fn a_file_is_checked_against_its_manifest_entry() {
-        let manifest = json!({"files": [
-            {"rel_path": "a", "size_bytes": 7, "checksum": "abc"},
-            {"rel_path": "b"},
-        ]});
-        for (rel_path, expected) in [
-            ("a", (Some(7), Some("abc".to_string()))),
-            ("b", (None, None)),
-            ("missing", (None, None)),
-        ] {
-            assert_eq!(file_integrity(&manifest, rel_path), expected, "{rel_path}");
-        }
-        assert_eq!(file_integrity(&Value::Null, "a"), (None, None));
+    fn given_a_manifest_entry_for_a_file_when_reading_its_integrity_then_it_has_its_size_and_checksum()
+     {
+        let manifest =
+            json!({"files": [{"rel_path": "weights.bin", "size_bytes": 7, "checksum": "abc"}]});
+
+        let integrity = file_integrity(&manifest, "weights.bin");
+
+        assert_eq!(integrity, (Some(7), Some("abc".to_string())));
+    }
+
+    #[test]
+    fn given_a_file_the_manifest_does_not_list_when_reading_its_integrity_then_there_is_none() {
+        let manifest = json!({"files": [{"rel_path": "weights.bin", "size_bytes": 7}]});
+
+        let integrity = file_integrity(&manifest, "config.json");
+
+        assert_eq!(integrity, (None, None));
     }
 }

@@ -46,6 +46,7 @@ gix = { version = "0.77.0", default-features = false, features = [
 chrono = "0.4.45"
 strum = { version = "0.27.2", features = ["derive"] }
 tempfile = "3.27.0"
+rstest = { version = "0.27.0", default-features = false }
 
 
 ## External Crate

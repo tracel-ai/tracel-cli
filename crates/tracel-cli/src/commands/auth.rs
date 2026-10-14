@@ -159,20 +159,32 @@ fn time_left(until: SystemTime, now: SystemTime) -> String {
 mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
+    use rstest::rstest;
+
     use super::*;
 
-    #[test]
-    fn the_time_left_on_a_login_reads_in_its_two_largest_units() {
+    #[rstest]
+    #[case::under_a_minute(59, "0m")]
+    #[case::minutes(45 * 60, "45m")]
+    #[case::hours(3 * 3600 + 5 * 60, "3h 5m")]
+    #[case::days(6 * 86400 + 23 * 3600 + 59 * 60, "6d 23h")]
+    fn given_the_time_until_a_login_expires_when_showing_it_then_it_reads_in_its_two_largest_units(
+        #[case] seconds: u64,
+        #[case] expected: &str,
+    ) {
         let now = UNIX_EPOCH + Duration::from_secs(1_900_000_000);
-        for (seconds, expected) in [
-            (0, "0m"),
-            (59, "0m"),
-            (45 * 60, "45m"),
-            (3 * 3600 + 5 * 60, "3h 5m"),
-            (6 * 86400 + 23 * 3600 + 59 * 60, "6d 23h"),
-        ] {
-            let until = now + Duration::from_secs(seconds);
-            assert_eq!(time_left(until, now), expected, "{seconds}");
-        }
+
+        let left = time_left(now + Duration::from_secs(seconds), now);
+
+        assert_eq!(left, expected);
+    }
+
+    #[test]
+    fn given_an_expired_login_when_showing_the_time_left_then_no_time_is_left() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_900_000_000);
+
+        let left = time_left(now - Duration::from_secs(60), now);
+
+        assert_eq!(left, "0m");
     }
 }

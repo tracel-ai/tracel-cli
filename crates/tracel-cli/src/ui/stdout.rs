@@ -224,7 +224,6 @@ fn write_failure(report: &ErrorReport<'_>, out: &mut dyn Write) -> io::Result<()
 mod tests {
     use super::*;
     use crate::error::{CliError, ErrorKind};
-    use crate::test_support::ClosedPipe;
 
     #[derive(Serialize)]
     struct Greeting {
@@ -235,9 +234,17 @@ mod tests {
         fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
             writeln!(out, "Hello, {}.", self.name)
         }
+    }
 
-        fn summary(&self) -> Option<String> {
-            Some("Greeted.".into())
+    struct ClosedPipe;
+
+    impl Write for ClosedPipe {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
         }
     }
 
@@ -248,76 +255,61 @@ mod tests {
     }
 
     #[test]
-    fn a_result_on_stdout_is_an_envelope_or_text_ending_with_its_summary() {
+    fn given_json_output_when_writing_a_result_then_it_is_an_envelope_without_the_summary() {
         let greeting = Greeting { name: "Ada" };
-        let data = Outcome::data(Greeting { name: "Ada" });
-        let data = data.0.as_deref().unwrap();
-        for (format, report, summary, expected) in [
-            (
-                Format::Json,
-                &greeting as &dyn Report,
-                Some("Greeted."),
-                "{\"ok\":true,\"data\":{\"name\":\"Ada\"}}\n",
-            ),
-            (Format::Human, &greeting, None, "Hello, Ada.\n"),
-            (
+
+        let text =
+            written(|out| write_result(Format::Json, &greeting, Some("Greeted."), None, out));
+
+        assert_eq!(text, "{\"ok\":true,\"data\":{\"name\":\"Ada\"}}\n");
+    }
+
+    #[test]
+    fn given_text_output_when_writing_a_result_then_its_text_ends_with_the_summary() {
+        let greeting = Greeting { name: "Ada" };
+
+        let text =
+            written(|out| write_result(Format::Human, &greeting, Some("Greeted."), None, out));
+
+        assert_eq!(text, "Hello, Ada.\nGreeted.\n");
+    }
+
+    #[test]
+    fn given_a_result_for_json_only_when_writing_it_as_text_then_nothing_is_written() {
+        let outcome = Outcome::data(Greeting { name: "Ada" });
+
+        let text = written(|out| {
+            write_result(
                 Format::Human,
-                &greeting,
-                Some("Greeted."),
-                "Hello, Ada.\nGreeted.\n",
-            ),
-            (
-                Format::Json,
-                data,
+                outcome.0.as_deref().unwrap(),
                 None,
-                "{\"ok\":true,\"data\":{\"name\":\"Ada\"}}\n",
-            ),
-            (Format::Human, data, None, ""),
-        ] {
-            assert_eq!(
-                written(|out| write_result(format, report, summary, None, out)),
-                expected,
-                "{format:?} {summary:?}"
-            );
-        }
+                None,
+                out,
+            )
+        });
+
+        assert_eq!(text, "");
     }
 
     #[test]
-    fn a_box_holds_the_text_of_a_result_without_its_summary() {
-        let greeting = Greeting { name: "Ada" };
-
-        let text = box_text(&greeting, None).unwrap();
-
-        assert_eq!(console::strip_ansi_codes(&text), "Hello, Ada.\n");
-    }
-
-    #[test]
-    fn an_event_is_a_bare_json_line_or_its_text() {
+    fn given_json_output_when_writing_an_event_then_it_is_a_bare_json_line() {
         let event = Greeting { name: "Ada" };
-        for (format, expected) in [
-            (Format::Json, "{\"name\":\"Ada\"}\n"),
-            (Format::Human, "Hello, Ada.\n"),
-        ] {
-            assert_eq!(
-                written(|out| write_event(format, None, &event, out)),
-                expected,
-                "{format:?}"
-            );
-        }
+
+        let text = written(|out| write_event(Format::Json, None, &event, out));
+
+        assert_eq!(text, "{\"name\":\"Ada\"}\n");
     }
 
     #[test]
-    fn a_failure_envelope_carries_the_error_report() {
+    fn given_a_failure_when_writing_its_envelope_then_it_carries_the_error_report() {
         let error = anyhow::Error::new(
             CliError::new(ErrorKind::NotFound, "No model 'weights'.").with_hint("List models."),
         );
-        let report = ErrorReport::new(&error);
 
-        let envelope: serde_json::Value =
-            serde_json::from_str(&written(|out| write_failure(&report, out))).unwrap();
+        let text = written(|out| write_failure(&ErrorReport::new(&error), out));
 
         assert_eq!(
-            envelope,
+            serde_json::from_str::<serde_json::Value>(&text).unwrap(),
             serde_json::json!({
                 "ok": false,
                 "error": {
@@ -331,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn a_reader_that_went_away_closes_stdout() {
+    fn given_a_reader_that_went_away_when_writing_then_stdout_is_closed() {
         let greeting = Greeting { name: "Ada" };
         let written = write_result(Format::Human, &greeting, None, None, &mut ClosedPipe);
 

@@ -132,28 +132,62 @@ pub fn resolve_linker(
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
-    #[test]
-    fn a_linker_setting_is_needed_only_across_linux_architectures() {
-        const LINUX_X86: (Os, Arch) = (Os::Linux, Arch::X86_64);
-        const LINUX_ARM: (Os, Arch) = (Os::Linux, Arch::Arm64);
-        const MAC_X86: (Os, Arch) = (Os::Macos, Arch::X86_64);
-        const MAC_ARM: (Os, Arch) = (Os::Macos, Arch::Arm64);
-        const WIN_X86: (Os, Arch) = (Os::Windows, Arch::X86_64);
-        for (host, target, expected) in [
-            (LINUX_X86, LINUX_X86, None),
-            (LINUX_X86, LINUX_ARM, Some("aarch64-linux-gnu-gcc")),
-            (LINUX_ARM, LINUX_X86, Some("x86_64-linux-gnu-gcc")),
-            (MAC_X86, MAC_ARM, None),
-            (LINUX_X86, WIN_X86, None),
-            (LINUX_X86, MAC_ARM, None),
-        ] {
-            let linker = match linker_need(host, target) {
-                LinkerNeed::None => None,
-                LinkerNeed::ConfigEntry { linker, .. } => Some(linker),
-            };
-            assert_eq!(linker, expected, "{host:?} {target:?}");
+    const LINUX_X86: (Os, Arch) = (Os::Linux, Arch::X86_64);
+    const LINUX_ARM: (Os, Arch) = (Os::Linux, Arch::Arm64);
+    const MAC_X86: (Os, Arch) = (Os::Macos, Arch::X86_64);
+    const MAC_ARM: (Os, Arch) = (Os::Macos, Arch::Arm64);
+    const WIN_X86: (Os, Arch) = (Os::Windows, Arch::X86_64);
+
+    fn linker(need: LinkerNeed) -> Option<&'static str> {
+        match need {
+            LinkerNeed::None => None,
+            LinkerNeed::ConfigEntry { linker, .. } => Some(linker),
         }
+    }
+
+    #[test]
+    fn given_the_host_target_when_building_then_no_linker_is_needed() {
+        let need = linker_need(LINUX_X86, LINUX_X86);
+
+        assert_eq!(linker(need), None);
+    }
+
+    #[rstest]
+    #[case::to_arm(LINUX_X86, LINUX_ARM, "aarch64-linux-gnu-gcc")]
+    #[case::to_x86(LINUX_ARM, LINUX_X86, "x86_64-linux-gnu-gcc")]
+    fn given_another_linux_architecture_when_building_then_its_cross_gcc_links(
+        #[case] host: (Os, Arch),
+        #[case] target: (Os, Arch),
+        #[case] expected: &str,
+    ) {
+        let need = linker_need(host, target);
+
+        assert_eq!(linker(need), Some(expected));
+    }
+
+    #[rstest]
+    #[case::macos_architectures(MAC_X86, MAC_ARM)]
+    #[case::linux_to_windows(LINUX_X86, WIN_X86)]
+    #[case::linux_to_macos(LINUX_X86, MAC_ARM)]
+    fn given_a_target_the_toolchain_or_build_driver_links_when_building_then_no_linker_is_needed(
+        #[case] host: (Os, Arch),
+        #[case] target: (Os, Arch),
+    ) {
+        let need = linker_need(host, target);
+
+        assert_eq!(linker(need), None);
+    }
+
+    #[test]
+    fn given_no_cargo_config_when_checking_the_linker_then_it_is_not_configured() {
+        let root = tempfile::tempdir().unwrap();
+
+        let configured = linker_configured(root.path(), "aarch64-unknown-linux-gnu");
+
+        assert!(!configured);
     }
 }

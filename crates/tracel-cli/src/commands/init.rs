@@ -418,34 +418,32 @@ pub fn commit_all(terminal: &Terminal) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
-    #[test]
-    fn a_project_name_has_only_letters_digits_underscores_and_hyphens() {
-        for (name, valid) in [
-            ("project", true),
-            ("Project123", true),
-            ("my_project-1", true),
-            ("modèle", true),
-            ("", false),
-            ("my project", false),
-            ("project.name", false),
-            ("project/name", false),
-        ] {
-            assert_eq!(validate_project_name(name).is_ok(), valid, "{name:?}");
-        }
+    #[rstest]
+    #[case::letters_and_digits("Project123")]
+    #[case::underscore_and_hyphen("my_project-1")]
+    #[case::accented_letter("modèle")]
+    fn given_letters_digits_underscores_or_hyphens_when_validating_a_project_name_then_it_is_valid(
+        #[case] name: &str,
+    ) {
+        let validated = validate_project_name(name);
+
+        assert_eq!(validated, Ok(()));
     }
 
-    #[test]
-    fn a_project_is_on_the_web_console_under_its_namespace() {
-        for (namespace, expected) in [
-            (Namespace::User("ada".into()), "/users/ada/projects/demo"),
-            (
-                Namespace::Organization("tracel".into()),
-                "/orgs/tracel/projects/demo",
-            ),
-        ] {
-            assert_eq!(namespace.project_path("demo"), expected);
-        }
+    #[rstest]
+    #[case::empty("")]
+    #[case::space("my project")]
+    #[case::dot("project.name")]
+    #[case::slash("project/name")]
+    fn given_another_character_when_validating_a_project_name_then_it_is_invalid(
+        #[case] name: &str,
+    ) {
+        let validated = validate_project_name(name);
+
+        assert!(validated.is_err());
     }
 }

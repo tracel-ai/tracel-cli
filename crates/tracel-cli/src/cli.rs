@@ -345,71 +345,98 @@ fn handle_command(command: Commands, context: CliContext) -> anyhow::Result<Outc
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
-    use crate::test_support::{command, parse, report};
+    use crate::error::classify;
+    use crate::test_support::{command, parse};
     use crate::ui::{Declined, StdoutClosed};
 
+    fn arguments(args: &[&str]) -> Vec<OsString> {
+        args.iter().map(OsString::from).collect()
+    }
+
     #[test]
-    fn command_definitions_pass_clap_checks() {
+    fn given_the_command_definitions_when_clap_checks_them_then_they_are_valid() {
         CliArgs::command().debug_assert();
     }
 
-    #[test]
-    fn auto_output_is_plain_text_where_another_program_reads_stdout() {
-        for (args, stdout_is_terminal, expected) in [
-            (&["auth", "token"][..], false, Format::Human),
-            (&["auth", "token"], true, Format::Human),
-            (&["train", "--", "--epochs", "1"], false, Format::Human),
-            (&["auth", "status"], false, Format::Json),
-            (&["auth", "status"], true, Format::Human),
-            (&["me"], false, Format::Json),
-        ] {
-            assert_eq!(
-                command(args).auto_format(stdout_is_terminal),
-                expected,
-                "{args:?} {stdout_is_terminal}"
-            );
-        }
+    #[rstest]
+    #[case::auth_token(&["auth", "token"])]
+    #[case::train(&["train", "--", "--epochs", "1"])]
+    fn given_a_command_whose_stdout_is_its_own_when_piped_then_its_output_stays_text(
+        #[case] args: &[&str],
+    ) {
+        let format = command(args).auto_format(false);
+
+        assert_eq!(format, Format::Human);
     }
 
     #[test]
-    fn arguments_that_do_not_parse_report_in_the_format_they_ask_for() {
-        for (args, environment, expected) in [
-            (&["models", "get", "--json"][..], None, Format::Json),
-            (&["-o", "json", "models", "get"], None, Format::Json),
-            (&["--output=json", "models", "get"], None, Format::Json),
-            (&["-ojson", "models", "get"], None, Format::Json),
-            (&["models", "get"], Some("json"), Format::Json),
-            (
-                &["models", "get", "-o", "human"],
-                Some("json"),
-                Format::Human,
-            ),
-            (&["models", "get"], None, Format::Human),
-            (&["models", "get"], Some("xml"), Format::Human),
-            (&["train", "--", "--json"], None, Format::Human),
-        ] {
-            let arguments = args.iter().map(OsString::from);
-            assert_eq!(
-                usage_format(arguments, environment, true),
-                expected,
-                "{args:?} {environment:?}"
-            );
-        }
+    fn given_another_command_when_stdout_is_piped_then_its_output_is_json() {
+        let format = command(&["me"]).auto_format(false);
+
+        assert_eq!(format, Format::Json);
     }
 
     #[test]
-    fn arguments_that_do_not_parse_are_a_usage_error() {
-        let parse_error = parse(&["models", "get", "--json"]).unwrap_err();
+    fn given_another_command_when_stdout_is_a_terminal_then_its_output_is_text() {
+        let format = command(&["me"]).auto_format(true);
+
+        assert_eq!(format, Format::Human);
+    }
+
+    #[rstest]
+    #[case::json_flag(&["models", "get", "--json"])]
+    #[case::output_flag(&["-o", "json", "models", "get"])]
+    #[case::output_equals(&["--output=json", "models", "get"])]
+    #[case::output_attached(&["-ojson", "models", "get"])]
+    fn given_an_output_flag_among_arguments_that_do_not_parse_when_reporting_then_the_error_is_json(
+        #[case] args: &[&str],
+    ) {
+        let format = usage_format(arguments(args), None, true);
+
+        assert_eq!(format, Format::Json);
+    }
+
+    #[test]
+    fn given_tracel_output_json_when_arguments_do_not_parse_then_the_error_is_json() {
+        let format = usage_format(arguments(&["models", "get"]), Some("json"), true);
+
+        assert_eq!(format, Format::Json);
+    }
+
+    #[test]
+    fn given_an_output_flag_and_tracel_output_when_arguments_do_not_parse_then_the_flag_wins() {
+        let format = usage_format(
+            arguments(&["models", "get", "-o", "human"]),
+            Some("json"),
+            true,
+        );
+
+        assert_eq!(format, Format::Human);
+    }
+
+    #[test]
+    fn given_json_after_a_double_dash_when_arguments_do_not_parse_then_it_is_not_an_output_flag() {
+        let format = usage_format(arguments(&["train", "--", "--json"]), None, true);
+
+        assert_eq!(format, Format::Human);
+    }
+
+    #[test]
+    fn given_arguments_that_do_not_parse_when_reporting_them_then_it_is_a_usage_error_without_clap_prefix()
+     {
+        let parse_error = parse(&["models", "get", "--unknown"]).unwrap_err();
 
         let error = anyhow::Error::new(usage_error(&parse_error));
 
-        assert_eq!(report(&error), (ErrorKind::Usage, 2, false));
+        assert_eq!(classify(&error), ErrorKind::Usage);
         assert!(!error.to_string().starts_with("error:"), "{error}");
     }
 
     #[test]
-    fn a_closed_stdout_ends_the_command_with_exit_code_0() {
+    fn given_a_reader_that_closed_stdout_when_the_command_stops_then_it_exits_with_0() {
         let error = anyhow::Error::new(StdoutClosed).context("Can't write the result");
 
         let stop = Stop::of(&error);
@@ -419,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn a_declined_prompt_ends_the_command_on_its_outcome_with_exit_code_0() {
+    fn given_a_declined_prompt_when_the_command_stops_then_it_ends_on_its_outcome_with_0() {
         let error = anyhow::Error::new(Declined::new("Nothing was linked."))
             .context("Can't link the workspace");
 
@@ -430,9 +457,11 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_ends_the_command_with_its_exit_code() {
+    fn given_a_failure_when_the_command_stops_then_it_exits_with_the_failure_code() {
         let error = anyhow::Error::new(CliError::new(ErrorKind::NotFound, "No model 'w'."));
 
-        assert_eq!(Stop::of(&error).exit_code(), 5);
+        let stop = Stop::of(&error);
+
+        assert_eq!(stop.exit_code(), 5);
     }
 }

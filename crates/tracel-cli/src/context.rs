@@ -138,10 +138,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tracel_api_key_comes_before_a_stored_login() {
+    fn given_tracel_api_key_when_choosing_credentials_then_the_stored_login_is_not_read() {
         let api_key = TracelCredentials::ApiKey("key".into());
 
-        let chosen = first_credentials(Some(api_key), || panic!("the stored login is read"));
+        let chosen = first_credentials(Some(api_key), || panic!("the stored login was read"));
 
         assert!(matches!(chosen, Ok(Some(TracelCredentials::ApiKey(key))) if key == "key"));
     }

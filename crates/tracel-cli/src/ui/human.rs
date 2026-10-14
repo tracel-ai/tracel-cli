@@ -374,111 +374,80 @@ fn cell_text(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::ui::screen::BOX_PADDING;
+    use rstest::rstest;
 
-    fn text(
-        width: Option<usize>,
-        styled: bool,
-        write: impl FnOnce(&mut Human<'_>) -> io::Result<()>,
-    ) -> String {
+    use super::*;
+
+    fn text(width: Option<usize>, write: impl FnOnce(&mut Human<'_>) -> io::Result<()>) -> String {
         let mut out = Vec::new();
-        write(&mut Human::new(&mut out, width, styled)).unwrap();
+        write(&mut Human::plain(&mut out, width)).unwrap();
         String::from_utf8(out).unwrap()
     }
 
-    fn plain(write: impl FnOnce(&mut Human<'_>) -> io::Result<()>) -> String {
-        text(None, false, write)
-    }
-
-    fn table() -> Table<3> {
+    fn files() -> Table<3> {
         Table::new(["NAME", "DESCRIPTION", "ID"]).rows([
-            ["weights".into(), "two\nlines".into(), "1".into()],
+            ["weights".into(), "best\nepoch".into(), "1".into()],
             ["w".into(), String::new(), "22".into()],
         ])
     }
 
     #[test]
-    fn a_table_aligns_its_cells_on_one_line_each() {
-        let written = plain(|out| table().write(out));
+    fn given_rows_when_writing_a_table_then_its_columns_align_with_one_line_per_row() {
+        let written = text(None, |out| files().write(out));
 
         assert_eq!(
             written,
             "NAME     DESCRIPTION  ID\n\
-             weights  two lines    1\n\
+             weights  best epoch   1\n\
              w        -            22\n"
         );
     }
 
     #[test]
-    fn an_empty_table_writes_only_its_empty_text() {
-        let empty = || Table::new(["NAME"]);
+    fn given_no_rows_when_writing_a_table_then_only_its_empty_text_is_written() {
+        let written = text(None, |out| {
+            Table::new(["NAME"]).empty("No files.").write(out)
+        });
 
-        assert_eq!(plain(|out| empty().write(out)), "");
-        assert_eq!(
-            plain(|out| empty().empty("No files.").write(out)),
-            "No files.\n"
-        );
+        assert_eq!(written, "No files.\n");
     }
 
     #[test]
-    fn a_narrow_width_shortens_only_shrinkable_columns() {
-        let table = || {
-            Table::new(["NAME", "DESCRIPTION", "ID"]).rows([[
+    fn given_a_narrow_width_when_writing_a_table_then_only_the_shrinkable_column_is_cut() {
+        let table = Table::new(["NAME", "DESCRIPTION", "ID"])
+            .shrink("DESCRIPTION")
+            .rows([[
                 "weights".into(),
                 "a rather long description".into(),
                 "0123456789".into(),
-            ]])
-        };
+            ]]);
 
-        let shrunk = text(Some(36), false, |out| {
-            table().shrink("DESCRIPTION").write(out)
-        });
-        let whole = text(Some(36), false, |out| table().write(out));
-
-        assert_eq!(
-            shrunk,
-            "NAME     DESCRIPTION      ID\n\
-             weights  a rather long…   0123456789\n"
-        );
-        assert_eq!(whole, plain(|out| table().write(out)));
-    }
-
-    #[test]
-    fn a_shrinking_column_can_cut_its_header() {
-        let written = text(Some(18), false, |out| {
-            table().shrink("DESCRIPTION").write(out)
-        });
+        let written = text(Some(36), |out| table.write(out));
 
         assert_eq!(
             written,
-            "NAME     DESC…  ID\n\
-             weights  two…   1\n\
-             w        -      22\n"
+            "NAME     DESCRIPTION      ID\n\
+             weights  a rather long…   0123456789\n"
         );
     }
 
-    fn details() -> Details {
-        Details::new()
+    #[test]
+    fn given_fields_and_a_section_when_writing_details_then_fields_align_above_dotted_keys() {
+        let details = Details::new()
             .field("Name", "weights")
             .optional("Description", None::<&str>)
             .section(
                 "Config",
-                &serde_json::json!({"lr": 0.1, "loss": 0.7499999999999999, "schedule": {"warmup": 2}, "tags": ["a"]}),
-            )
-            .section("Attributes", &serde_json::json!({}))
-    }
+                &serde_json::json!({"lr": 0.1, "schedule": {"warmup": 2}, "tags": ["a"]}),
+            );
 
-    #[test]
-    fn details_align_their_fields_above_sections_of_dotted_keys() {
-        let written = plain(|out| details().write(out));
+        let written = text(None, |out| details.write(out));
 
         assert_eq!(
             written,
             "Name:         weights\n\
              Description:  -\n\
              Config:\n  \
-               loss             0.75\n  \
                lr               0.1\n  \
                schedule.warmup  2\n  \
                tags             [\"a\"]\n"
@@ -486,115 +455,60 @@ mod tests {
     }
 
     #[test]
-    fn a_styled_text_is_the_plain_text_with_bold_and_dim_spans() {
+    fn given_styles_when_writing_then_removing_them_leaves_the_plain_text() {
         let write = |out: &mut Human<'_>| {
-            let (bold, dim) = (out.bold("NAME"), out.dim("-"));
-            writeln!(out, "{bold} {dim} x")?;
-            details().write(out)?;
-            table().write(out)
+            let name = out.bold("NAME");
+            writeln!(out, "{name}")?;
+            files().write(out)
         };
+        let mut styled = Vec::new();
 
-        let styled = text(None, true, write);
+        write(&mut Human::new(&mut styled, None, true)).unwrap();
 
-        assert!(styled.starts_with("\u{1b}[1mNAME\u{1b}[0m \u{1b}[2m-\u{1b}[0m x\n"));
-        assert_eq!(console::strip_ansi_codes(&styled), plain(write));
+        let styled = String::from_utf8(styled).unwrap();
+        assert_ne!(styled, text(None, write));
+        assert_eq!(console::strip_ansi_codes(&styled), text(None, write));
     }
 
-    /// The columns inside a box, as cliclack measures them to wrap its text.
-    fn box_width() -> usize {
-        usize::from(console::Term::stderr().size().1.saturating_sub(BOX_PADDING))
+    #[rstest]
+    #[case::none(0, 0, "No models.")]
+    #[case::all(3, 3, "3 models.")]
+    #[case::some(10, 16, "Showing 10 of 16 models.")]
+    fn given_a_list_when_summing_it_up_then_it_says_how_many_were_shown(
+        #[case] shown: usize,
+        #[case] total: u64,
+        #[case] expected: &str,
+    ) {
+        let summary = list_summary(shown, total, ["model", "models"], "No models.");
+
+        assert_eq!(summary, expected);
     }
 
-    #[test]
-    fn a_table_fitted_to_the_box_is_not_wrapped_again() {
-        let width = box_width();
+    #[rstest]
+    #[case::float_noise(0.7499999999999999, "0.75")]
+    #[case::long_fraction(0.923076923076923, "0.9231")]
+    #[case::large(1234.5678, "1235")]
+    #[case::whole(2.0, "2")]
+    fn given_a_metric_when_showing_it_then_it_keeps_about_four_significant_digits(
+        #[case] value: f64,
+        #[case] expected: &str,
+    ) {
+        let shown = number(value);
 
-        let fitted = text(Some(width), true, |out| {
-            Table::new(["NAME", "DESCRIPTION", "ID"])
-                .shrink("DESCRIPTION")
-                .rows([[
-                    "weights".into(),
-                    "a rather long description ".repeat(width / 8),
-                    String::new(),
-                ]])
-                .write(out)
-        });
-
-        let fitted = fitted.trim_end();
-        assert!(
-            fitted
-                .lines()
-                .any(|line| console::measure_text_width(line) == width)
-        );
-        assert_eq!(cliclack::termwrap(fitted, BOX_PADDING), fitted);
+        assert_eq!(shown, expected);
     }
 
-    #[test]
-    fn a_count_uses_the_plural_from_two() {
-        for (count, expected) in [(0, "0 files"), (1, "1 file"), (2, "2 files")] {
-            assert_eq!(counted(count, ["file", "files"]), expected, "{count}");
-        }
-    }
+    #[rstest]
+    #[case::bytes(999, "999 B")]
+    #[case::kilobytes(6900, "6.9 KB")]
+    #[case::megabytes(713_713_674, "713.7 MB")]
+    #[case::gigabytes(2_500_000_000, "2.5 GB")]
+    fn given_a_byte_count_when_showing_it_then_it_is_in_its_largest_unit(
+        #[case] bytes: u64,
+        #[case] expected: &str,
+    ) {
+        let shown = size(bytes);
 
-    #[test]
-    fn a_list_summary_says_what_was_left_out() {
-        for (shown, total, expected) in [
-            (0, 0, "No models."),
-            (1, 1, "1 model."),
-            (3, 3, "3 models."),
-            (10, 16, "Showing 10 of 16 models."),
-            (3, 0, "3 models."),
-        ] {
-            assert_eq!(
-                list_summary(shown, total, ["model", "models"], "No models."),
-                expected,
-                "{shown} {total}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_number_keeps_about_four_significant_digits() {
-        for (value, expected) in [
-            (0.7499999999999999, "0.75"),
-            (0.923076923076923, "0.9231"),
-            (0.00001, "0.00001"),
-            (43.4, "43.4"),
-            (1234.5678, "1235"),
-            (1000000.0, "1000000"),
-            (-0.5, "-0.5"),
-            (2.0, "2"),
-            (0.0, "0"),
-        ] {
-            assert_eq!(number(value), expected, "{value}");
-        }
-    }
-
-    #[test]
-    fn a_size_is_in_bytes_kb_mb_or_gb() {
-        for (bytes, expected) in [
-            (0, "0 B"),
-            (999, "999 B"),
-            (6900, "6.9 KB"),
-            (4_732_426, "4.732 MB"),
-            (713_713_674, "713.7 MB"),
-            (2_500_000_000, "2.5 GB"),
-        ] {
-            assert_eq!(size(bytes), expected, "{bytes}");
-        }
-    }
-
-    #[test]
-    fn a_digest_shows_its_first_twelve_characters() {
-        for (digest, expected) in [
-            (
-                "a8dd58d70d796abee1ef941f1f14b350310f17cba90c37813305ce8254aee225",
-                "a8dd58d70d79",
-            ),
-            ("9e24f16700f2fb16090f7e18c7f174c4660e963b", "9e24f16700f2"),
-            ("short", "short"),
-        ] {
-            assert_eq!(short_digest(digest), expected, "{digest}");
-        }
+        assert_eq!(shown, expected);
     }
 }

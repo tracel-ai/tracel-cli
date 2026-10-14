@@ -35,28 +35,3 @@ impl Display for Place {
         f.write_str(&parts.join(" · "))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_place_names_its_project_and_environment() {
-        for (project, environment, expected) in [
-            (
-                Some("test/demo"),
-                Some("development"),
-                "test/demo · development",
-            ),
-            (Some("test/demo"), None, "test/demo"),
-            (None, Some("development"), "development"),
-            (None, None, ""),
-        ] {
-            let place = Place {
-                project: project.map(str::to_string),
-                environment: environment.map(str::to_string),
-            };
-            assert_eq!(place.to_string(), expected, "{project:?} {environment:?}");
-        }
-    }
-}

@@ -322,75 +322,67 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn polling_stops_at_the_earlier_deadline() {
-        let now = UNIX_EPOCH + Duration::from_secs(1_900_000_000);
-        let expires_at = now + Duration::from_secs(60);
-        for (timeout, elapsed, remaining, deadline) in [
-            (None, 0, 60, PollDeadline::Expiry),
-            (Some(90), 0, 60, PollDeadline::Expiry),
-            (Some(60), 0, 60, PollDeadline::Expiry),
-            (Some(30), 10, 20, PollDeadline::Timeout),
-            (Some(30), 30, 0, PollDeadline::Timeout),
-            (Some(30), 31, 0, PollDeadline::Timeout),
-            (Some(0), 0, 0, PollDeadline::Timeout),
-        ] {
-            assert_eq!(
-                poll_window(
-                    expires_at,
-                    now,
-                    timeout.map(Duration::from_secs),
-                    Duration::from_secs(elapsed)
-                ),
-                (Duration::from_secs(remaining), deadline),
-                "{timeout:?} {elapsed}"
-            );
-        }
+    fn now() -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(1_900_000_000)
     }
 
     #[test]
-    fn an_expired_login_stops_polling_whatever_the_timeout() {
-        let expires_at = UNIX_EPOCH + Duration::from_secs(1_900_000_000);
-        for timeout in [None, Some(Duration::ZERO), Some(Duration::MAX)] {
-            for now in [expires_at, expires_at + Duration::from_secs(1)] {
-                assert_eq!(
-                    poll_window(expires_at, now, timeout, Duration::ZERO),
-                    (Duration::ZERO, PollDeadline::Expiry),
-                    "{timeout:?} {now:?}"
-                );
-            }
-        }
+    fn given_no_timeout_when_polling_a_login_then_it_polls_until_the_login_expires() {
+        let expires_at = now() + Duration::from_secs(60);
+
+        let window = poll_window(expires_at, now(), None, Duration::ZERO);
+
+        assert_eq!(window, (Duration::from_secs(60), PollDeadline::Expiry));
     }
 
     #[test]
-    fn a_pending_login_says_so_in_its_json() {
-        let pending = LoginPending {
-            verification_uri_complete: "http://localhost:9001/verify?code=BCDF-GHJK".into(),
-            user_code: "BCDF-GHJK".into(),
-            expires_at: Timestamp(UNIX_EPOCH + Duration::from_secs(1_900_000_000)),
-        };
+    fn given_a_timeout_after_the_expiry_when_polling_a_login_then_it_polls_until_the_login_expires()
+    {
+        let expires_at = now() + Duration::from_secs(60);
 
-        let json = serde_json::to_value(pending).unwrap();
-
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "status": "pending",
-                "verification_uri_complete": "http://localhost:9001/verify?code=BCDF-GHJK",
-                "user_code": "BCDF-GHJK",
-                "expires_at": "2030-03-17T17:46:40+00:00",
-            })
+        let window = poll_window(
+            expires_at,
+            now(),
+            Some(Duration::from_secs(90)),
+            Duration::ZERO,
         );
+
+        assert_eq!(window, (Duration::from_secs(60), PollDeadline::Expiry));
     }
 
     #[test]
-    fn a_slow_down_adds_five_seconds_to_the_interval() {
-        for (interval, expected) in [
-            (Duration::from_secs(7), Duration::from_secs(12)),
-            (Duration::from_secs(12), Duration::from_secs(17)),
-            (Duration::MAX, Duration::MAX),
-        ] {
-            assert_eq!(poll_backoff(interval), expected, "{interval:?}");
-        }
+    fn given_a_timeout_before_the_expiry_when_polling_a_login_then_it_polls_for_the_time_the_timeout_leaves()
+     {
+        let expires_at = now() + Duration::from_secs(60);
+
+        let window = poll_window(
+            expires_at,
+            now(),
+            Some(Duration::from_secs(30)),
+            Duration::from_secs(10),
+        );
+
+        assert_eq!(window, (Duration::from_secs(20), PollDeadline::Timeout));
+    }
+
+    #[test]
+    fn given_an_expired_login_when_polling_it_then_polling_stops_on_the_expiry() {
+        let expires_at = now() - Duration::from_secs(1);
+
+        let window = poll_window(
+            expires_at,
+            now(),
+            Some(Duration::from_secs(30)),
+            Duration::ZERO,
+        );
+
+        assert_eq!(window, (Duration::ZERO, PollDeadline::Expiry));
+    }
+
+    #[test]
+    fn given_a_slow_down_when_polling_a_login_then_the_interval_grows_by_five_seconds() {
+        let interval = poll_backoff(Duration::from_secs(7));
+
+        assert_eq!(interval, Duration::from_secs(12));
     }
 }

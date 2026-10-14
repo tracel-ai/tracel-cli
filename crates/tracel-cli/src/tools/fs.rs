@@ -87,11 +87,13 @@ pub fn build_file_specs(files: &BTreeMap<String, PathBuf>) -> anyhow::Result<Vec
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::fs;
 
+    use super::*;
+
     #[test]
-    fn files_are_listed_by_their_relative_path_with_slashes() {
+    fn given_a_nested_directory_when_collecting_its_files_then_each_is_named_by_its_relative_path()
+    {
         let directory = tempfile::tempdir().unwrap();
         fs::create_dir(directory.path().join("nested")).unwrap();
         fs::write(directory.path().join("a.txt"), b"a").unwrap();
@@ -99,34 +101,30 @@ mod tests {
 
         let files = collect_files(directory.path()).unwrap();
 
-        assert_eq!(
-            files.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["a.txt", "nested/b.txt"]
-        );
+        assert_eq!(files.keys().collect::<Vec<_>>(), ["a.txt", "nested/b.txt"]);
     }
 
     #[test]
-    fn an_empty_directory_has_no_files_to_upload() {
+    fn given_an_empty_directory_when_collecting_its_files_then_there_is_nothing_to_upload() {
         let directory = tempfile::tempdir().unwrap();
 
-        let error = collect_files(directory.path()).unwrap_err();
+        let collected = collect_files(directory.path());
 
-        assert!(error.to_string().starts_with("No files"), "{error}");
+        assert!(collected.is_err());
     }
 
     #[test]
-    fn a_file_spec_has_its_size_and_sha256() {
+    fn given_a_file_when_describing_it_then_it_has_its_size_and_sha256() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("hello.txt");
         fs::write(&path, b"hello world").unwrap();
-        let files = BTreeMap::from([("hello.txt".to_string(), path)]);
 
-        let specs = build_file_specs(&files).unwrap();
+        let specs = build_file_specs(&BTreeMap::from([("hello.txt".to_string(), path)])).unwrap();
 
-        let spec = &specs[0];
-        assert_eq!((spec.rel_path.as_str(), spec.size_bytes), ("hello.txt", 11));
+        assert_eq!(specs[0].rel_path, "hello.txt");
+        assert_eq!(specs[0].size_bytes, 11);
         assert_eq!(
-            spec.checksum,
+            specs[0].checksum,
             "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
         );
     }

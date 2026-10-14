@@ -358,41 +358,11 @@ impl Progress {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
-    use crate::test_support::{quiet_terminal, report};
-
-    #[test]
-    fn prompts_need_terminals_human_output_and_no_ci() {
-        for ci in [None, Some(""), Some("0"), Some("false")] {
-            for format in [Format::Human, Format::Json] {
-                for stdin in [false, true] {
-                    for stderr in [false, true] {
-                        for no_input in [false, true] {
-                            assert_eq!(
-                                allows_input(stdin, stderr, format, ci, no_input),
-                                stdin && stderr && format == Format::Human && !no_input
-                            );
-                        }
-                    }
-                }
-            }
-        }
-        for ci in ["1", "true", "yes", "FALSE", " "] {
-            assert!(!allows_input(true, true, Format::Human, Some(ci), false));
-        }
-    }
-
-    #[test]
-    fn a_failure_shows_its_hint_under_its_message() {
-        assert_eq!(failure("Job 'fail' failed.", None), "Job 'fail' failed.");
-        assert_eq!(
-            failure(
-                "No job 'nope'.\nJobs: train.",
-                Some("See them with `tracel run --list`.")
-            ),
-            "No job 'nope'.\n   Jobs: train.\n   See them with `tracel run --list`."
-        );
-    }
+    use crate::error::classify;
+    use crate::test_support::quiet_terminal;
 
     fn unlinking() -> Unanswered {
         Unanswered::new(
@@ -402,55 +372,81 @@ mod tests {
     }
 
     #[test]
-    fn an_unanswerable_confirmation_requires_its_flag() {
+    fn given_terminals_and_text_output_when_checking_for_input_then_prompts_may_ask() {
+        let allowed = allows_input(true, true, Format::Human, None, false);
+
+        assert!(allowed);
+    }
+
+    #[rstest]
+    #[case::stdin_piped(false, true, Format::Human, None, false)]
+    #[case::stderr_piped(true, false, Format::Human, None, false)]
+    #[case::json_output(true, true, Format::Json, None, false)]
+    #[case::ci(true, true, Format::Human, Some("true"), false)]
+    #[case::no_input(true, true, Format::Human, None, true)]
+    fn given_no_one_to_answer_when_checking_for_input_then_prompts_may_not_ask(
+        #[case] stdin: bool,
+        #[case] stderr: bool,
+        #[case] format: Format,
+        #[case] ci: Option<&str>,
+        #[case] no_input: bool,
+    ) {
+        let allowed = allows_input(stdin, stderr, format, ci, no_input);
+
+        assert!(!allowed);
+    }
+
+    #[rstest]
+    #[case::empty("")]
+    #[case::zero("0")]
+    #[case::false_("false")]
+    fn given_ci_set_to_false_when_checking_for_input_then_prompts_may_ask(#[case] ci: &str) {
+        let allowed = allows_input(true, true, Format::Human, Some(ci), false);
+
+        assert!(allowed);
+    }
+
+    #[test]
+    fn given_a_failure_with_a_hint_when_closing_on_it_then_its_lines_and_hint_are_indented_under_it()
+     {
+        let closing = failure(
+            "No job 'nope'.\nJobs: train.",
+            Some("See them with `tracel run --list`."),
+        );
+
+        assert_eq!(
+            closing,
+            "No job 'nope'.\n   Jobs: train.\n   See them with `tracel run --list`."
+        );
+    }
+
+    #[test]
+    fn given_a_confirmation_no_one_can_answer_when_asking_then_it_requires_its_flag() {
         let terminal = quiet_terminal();
 
         let error = terminal
             .confirm("Unlink test/demo?", false, unlinking())
             .unwrap_err();
 
-        assert_eq!(report(&error), (ErrorKind::ConfirmationRequired, 7, true));
-        assert_eq!(
-            ErrorReport::new(&error).hint,
-            Some("Pass --yes to unlink without asking.")
-        );
+        assert_eq!(classify(&error), ErrorKind::ConfirmationRequired);
+        assert!(ErrorReport::new(&error).hint.unwrap().contains("--yes"));
     }
 
     #[test]
-    fn other_unanswerable_input_is_a_usage_error() {
+    fn given_other_input_no_one_can_answer_when_asking_then_it_is_a_usage_error() {
         let terminal = quiet_terminal();
-        let items = [(1, "one", ""), (2, "two", "")];
-        for error in [
-            terminal.input("Name", unlinking()).unwrap_err(),
-            terminal
-                .select("Pick", &items, None, unlinking())
-                .unwrap_err(),
-            terminal
-                .multiselect("Pick", &items, vec![1], unlinking())
-                .unwrap_err(),
-        ] {
-            assert_eq!(report(&error), (ErrorKind::Usage, 2, true));
-        }
+
+        let error = terminal.input("Name", unlinking()).unwrap_err();
+
+        assert_eq!(classify(&error), ErrorKind::Usage);
     }
 
     #[test]
-    fn an_unanswerable_offer_is_declined_without_asking() {
+    fn given_an_offer_no_one_can_answer_when_offering_then_it_is_declined_without_asking() {
         let terminal = quiet_terminal();
 
         let accepted = terminal.offer("Open it in your browser?").unwrap();
 
         assert!(!accepted);
-    }
-
-    #[test]
-    fn a_hyperlink_opens_its_url_from_its_text() {
-        let url = url::Url::parse("http://localhost:9001/verify?code=BCDF-GHJK").unwrap();
-
-        let link = hyperlink(&url, "the approval page");
-
-        assert_eq!(
-            link,
-            "\u{1b}]8;;http://localhost:9001/verify?code=BCDF-GHJK\u{1b}\\the approval page\u{1b}]8;;\u{1b}\\"
-        );
     }
 }

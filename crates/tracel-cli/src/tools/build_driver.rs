@@ -148,28 +148,62 @@ pub fn cross_preflight(
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
-    #[test]
-    fn the_driver_follows_the_target_os_and_the_installed_tools() {
-        const LINUX_X86: (Os, Arch) = (Os::Linux, Arch::X86_64);
-        const LINUX_ARM: (Os, Arch) = (Os::Linux, Arch::Arm64);
-        const MAC_ARM: (Os, Arch) = (Os::Macos, Arch::Arm64);
-        const WIN_X86: (Os, Arch) = (Os::Windows, Arch::X86_64);
-        let drivers = |zigbuild, xwin| AvailableDrivers { zigbuild, xwin };
-        for (target, available, expected) in [
-            (LINUX_X86, drivers(true, true), BuildDriver::Cargo),
-            (LINUX_ARM, drivers(true, true), BuildDriver::Cargo),
-            (WIN_X86, drivers(true, true), BuildDriver::Xwin),
-            (WIN_X86, drivers(true, false), BuildDriver::Cargo),
-            (MAC_ARM, drivers(true, true), BuildDriver::Zigbuild),
-            (MAC_ARM, drivers(false, true), BuildDriver::Cargo),
-        ] {
-            assert_eq!(
-                choose(LINUX_X86, target, &available),
-                expected,
-                "{target:?}"
-            );
-        }
+    const LINUX_X86: (Os, Arch) = (Os::Linux, Arch::X86_64);
+    const LINUX_ARM: (Os, Arch) = (Os::Linux, Arch::Arm64);
+    const MAC_ARM: (Os, Arch) = (Os::Macos, Arch::Arm64);
+    const WIN_X86: (Os, Arch) = (Os::Windows, Arch::X86_64);
+
+    const ALL_DRIVERS: AvailableDrivers = AvailableDrivers {
+        zigbuild: true,
+        xwin: true,
+    };
+
+    #[rstest]
+    #[case::same_target(LINUX_X86)]
+    #[case::other_architecture(LINUX_ARM)]
+    fn given_a_target_on_the_host_os_when_choosing_a_driver_then_it_is_cargo(
+        #[case] target: (Os, Arch),
+    ) {
+        let driver = choose(LINUX_X86, target, &ALL_DRIVERS);
+
+        assert_eq!(driver, BuildDriver::Cargo);
+    }
+
+    #[rstest]
+    #[case::xwin_installed(true, BuildDriver::Xwin)]
+    #[case::xwin_missing(false, BuildDriver::Cargo)]
+    fn given_a_windows_target_when_choosing_a_driver_then_only_xwin_cross_builds(
+        #[case] xwin: bool,
+        #[case] expected: BuildDriver,
+    ) {
+        let drivers = AvailableDrivers {
+            zigbuild: true,
+            xwin,
+        };
+
+        let driver = choose(LINUX_X86, WIN_X86, &drivers);
+
+        assert_eq!(driver, expected);
+    }
+
+    #[rstest]
+    #[case::zigbuild_installed(true, BuildDriver::Zigbuild)]
+    #[case::zigbuild_missing(false, BuildDriver::Cargo)]
+    fn given_a_macos_target_when_choosing_a_driver_then_zigbuild_cross_builds(
+        #[case] zigbuild: bool,
+        #[case] expected: BuildDriver,
+    ) {
+        let drivers = AvailableDrivers {
+            zigbuild,
+            xwin: true,
+        };
+
+        let driver = choose(LINUX_X86, MAC_ARM, &drivers);
+
+        assert_eq!(driver, expected);
     }
 }

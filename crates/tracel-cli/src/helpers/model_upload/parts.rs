@@ -98,16 +98,18 @@ pub fn build_part_tasks(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use rstest::rstest;
     use tracel_client::console::artifact::response::MultipartUploadResponse;
 
-    fn local_file(size: u64) -> (BTreeMap<String, PathBuf>, BTreeMap<String, u64>) {
+    use super::*;
+
+    fn weights(size: u64) -> (BTreeMap<String, PathBuf>, BTreeMap<String, u64>) {
         let files = BTreeMap::from([("weights.bin".to_string(), PathBuf::from("weights.bin"))]);
         let sizes = BTreeMap::from([("weights.bin".to_string(), size)]);
         (files, sizes)
     }
 
-    fn response(rel_path: &str, parts: &[(u32, u64)]) -> Vec<PresignedModelFileUploadUrlsResponse> {
+    fn parts_of(rel_path: &str, parts: &[(u32, u64)]) -> Vec<PresignedModelFileUploadUrlsResponse> {
         vec![PresignedModelFileUploadUrlsResponse {
             rel_path: rel_path.to_string(),
             urls: MultipartUploadResponse {
@@ -116,7 +118,7 @@ mod tests {
                     .iter()
                     .map(|&(part, size_bytes)| PresignedUploadUrlResponse {
                         part,
-                        url: format!("https://example.com/part{part}"),
+                        url: format!("https://storage/part{part}"),
                         size_bytes,
                     })
                     .collect(),
@@ -125,35 +127,42 @@ mod tests {
     }
 
     #[test]
-    fn parts_get_sequential_offsets_in_part_order() {
-        let (files, sizes) = local_file(300);
+    fn given_parts_out_of_order_when_splitting_a_file_then_each_part_starts_where_the_previous_ends()
+     {
+        let (files, sizes) = weights(300);
 
         let tasks = build_part_tasks(
             &files,
             &sizes,
-            &response("weights.bin", &[(2, 100), (1, 200)]),
+            &parts_of("weights.bin", &[(2, 100), (1, 200)]),
         )
         .unwrap();
 
-        let layout: Vec<(u32, u64, u64)> = tasks
-            .iter()
-            .map(|task| (task.part, task.offset, task.size_bytes))
-            .collect();
-        assert_eq!(layout, [(1, 0, 200), (2, 200, 100)]);
+        assert_eq!(
+            (tasks[0].part, tasks[0].offset, tasks[0].size_bytes),
+            (1, 0, 200)
+        );
+        assert_eq!(
+            (tasks[1].part, tasks[1].offset, tasks[1].size_bytes),
+            (2, 200, 100)
+        );
     }
 
-    #[test]
-    fn an_upload_response_that_does_not_cover_the_file_is_rejected() {
-        let (files, sizes) = local_file(300);
-        for (rel_path, parts, named) in [
-            ("missing.bin", &[(1, 300)][..], "'missing.bin'"),
-            ("weights.bin", &[], "'weights.bin'"),
-            ("weights.bin", &[(1, 200)], "200 bytes"),
-            ("weights.bin", &[(1, 150), (1, 150)], "got 1"),
-            ("weights.bin", &[(1, 200), (3, 100)], "got 3"),
-        ] {
-            let error = build_part_tasks(&files, &sizes, &response(rel_path, parts)).unwrap_err();
-            assert!(error.to_string().contains(named), "{parts:?}: {error}");
-        }
+    #[rstest]
+    #[case::unknown_file("other.bin", &[(1, 300)], "'other.bin'")]
+    #[case::no_parts("weights.bin", &[], "no parts")]
+    #[case::too_small("weights.bin", &[(1, 200)], "200 bytes")]
+    #[case::repeated_part("weights.bin", &[(1, 150), (1, 150)], "got 1")]
+    #[case::missing_part("weights.bin", &[(1, 200), (3, 100)], "got 3")]
+    fn given_parts_that_do_not_cover_the_file_when_splitting_it_then_the_upload_is_refused_for_that_reason(
+        #[case] rel_path: &str,
+        #[case] parts: &[(u32, u64)],
+        #[case] reason: &str,
+    ) {
+        let (files, sizes) = weights(300);
+
+        let error = build_part_tasks(&files, &sizes, &parts_of(rel_path, parts)).unwrap_err();
+
+        assert!(error.to_string().contains(reason), "{error}");
     }
 }

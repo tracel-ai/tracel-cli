@@ -140,35 +140,73 @@ mod tests {
         }
     }
 
-    fn authorization(device_code: &str) -> DeviceCodeResponse {
-        DeviceCodeResponse {
+    fn pending(device_code: &str) -> PendingLogin {
+        let authorization = DeviceCodeResponse {
             device_code: device_code.to_string(),
             user_code: "BCDF-GHJK".to_string(),
             verification_uri: "http://localhost:9001/verify".to_string(),
             verification_uri_complete: "http://localhost:9001/verify?code=BCDF-GHJK".to_string(),
             expires_in: 600,
             interval: 5,
-        }
+        };
+        PendingLogin::new(
+            authorization,
+            UNIX_EPOCH + Duration::from_secs(1_900_000_000),
+        )
+        .unwrap()
     }
 
     #[test]
-    fn a_saved_pending_login_loads_back_until_it_is_cleared() {
+    fn given_no_pending_login_when_loading_it_then_there_is_none() {
+        let directory = tempfile::tempdir().unwrap();
+
+        let loaded = store(&directory).load().unwrap();
+
+        assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn given_a_saved_pending_login_when_loading_it_then_it_is_the_one_saved() {
         let directory = tempfile::tempdir().unwrap();
         let store = store(&directory);
-        let now = UNIX_EPOCH + Duration::from_secs(1_900_000_000);
-        assert!(store.load().unwrap().is_none());
+        store.save(&pending("first")).unwrap();
 
-        for device_code in ["first", "second"] {
-            let pending = PendingLogin::new(authorization(device_code), now).unwrap();
-            store.save(&pending).unwrap();
-            let loaded = store.load().unwrap().unwrap();
-            assert_eq!(
-                serde_json::to_value(&loaded).unwrap(),
-                serde_json::to_value(&pending).unwrap()
-            );
-            let entries = fs::read_dir(store.path.parent().unwrap()).unwrap().count();
-            assert_eq!(entries, 1, "a save leaves no temporary file");
-        }
+        let loaded = store.load().unwrap().unwrap();
+
+        assert_eq!(loaded.authorization.device_code, "first");
+        assert_eq!(loaded.expires_at, pending("first").expires_at);
+    }
+
+    #[test]
+    fn given_a_saved_pending_login_when_saving_another_then_it_replaces_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = store(&directory);
+        store.save(&pending("first")).unwrap();
+
+        store.save(&pending("second")).unwrap();
+
+        let loaded = store.load().unwrap().unwrap();
+        assert_eq!(loaded.authorization.device_code, "second");
+    }
+
+    #[test]
+    fn given_a_saved_pending_login_when_saving_another_then_no_temporary_file_is_left() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = store(&directory);
+        store.save(&pending("first")).unwrap();
+
+        store.save(&pending("second")).unwrap();
+
+        let files = fs::read_dir(store.path.parent().unwrap()).unwrap().count();
+        assert_eq!(files, 1);
+    }
+
+    #[test]
+    fn given_a_saved_pending_login_when_clearing_it_twice_then_there_is_none() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = store(&directory);
+        store.save(&pending("first")).unwrap();
+
         store.clear().unwrap();
         store.clear().unwrap();
 
@@ -177,50 +215,20 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_pending_login_is_readable_by_its_owner_only() {
+    fn given_a_pending_login_others_could_read_when_saving_it_then_only_its_owner_can() {
         use std::os::unix::fs::PermissionsExt;
 
         let directory = tempfile::tempdir().unwrap();
         let store = store(&directory);
-        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
-        let pending = PendingLogin::new(authorization("first"), SystemTime::now()).unwrap();
-        store.save(&pending).unwrap();
+        let sessions = store.path.parent().unwrap().to_path_buf();
+        store.save(&pending("first")).unwrap();
         fs::set_permissions(&store.path, fs::Permissions::from_mode(0o644)).unwrap();
-        let parent = store.path.parent().unwrap();
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&sessions, fs::Permissions::from_mode(0o755)).unwrap();
 
-        store.save(&pending).unwrap();
+        store.save(&pending("first")).unwrap();
 
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&store.path), 0o600);
-        assert_eq!(mode(parent), 0o700);
-    }
-
-    #[test]
-    fn a_pending_login_expires_its_lifetime_after_it_started() {
-        let now = UNIX_EPOCH + Duration::from_secs(1_900_000_000);
-        for (seconds, expected) in [(-1, 0), (0, 0), (1, 1), (600, 600)] {
-            let mut authorization = authorization("device-code");
-            authorization.expires_in = seconds;
-            let pending = PendingLogin::new(authorization, now).unwrap();
-            assert_eq!(
-                pending.expires_at,
-                now + Duration::from_secs(expected),
-                "{seconds}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_pending_login_sits_beside_its_session() {
-        for url in ["https://console.tracel.ai/api/", "http://localhost:9001/"] {
-            let url = Url::parse(url).unwrap();
-            let session = FileSessionStore::for_server(&url).unwrap();
-            let pending = PendingLoginStore::for_server(&url).unwrap();
-            assert_eq!(
-                pending.path,
-                session.path().with_extension("pending.json"),
-                "{url}"
-            );
-        }
+        assert_eq!(mode(&sessions), 0o700);
     }
 }

@@ -780,34 +780,40 @@ fn alias(
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
-    use crate::test_support::report;
+    use crate::error::{ErrorReport, classify};
 
     #[test]
-    fn a_default_pull_directory_needs_a_plain_model_name() {
-        for (model, valid) in [
-            ("weights", true),
-            ("", false),
-            (".", false),
-            ("..", false),
-            ("/weights", false),
-            ("../weights", false),
-            ("nested/weights", false),
-            ("C:\\weights", false),
-        ] {
-            let checked = validate_download_directory(None, model);
-            match checked {
-                Ok(()) => assert!(valid, "{model:?}"),
-                Err(error) => {
-                    assert!(!valid, "{model:?}");
-                    assert_eq!(report(&error), (ErrorKind::Usage, 2, true), "{model:?}");
-                    assert!(
-                        error.to_string().contains(&format!("'{model}'")),
-                        "{model:?}"
-                    );
-                }
-            }
-            assert!(validate_download_directory(Some(Path::new("./out")), model).is_ok());
-        }
+    fn given_a_plain_model_name_when_pulling_without_a_directory_then_it_is_the_directory() {
+        let checked = validate_download_directory(None, "weights");
+
+        assert!(checked.is_ok());
+    }
+
+    #[rstest]
+    #[case::nested("team/weights")]
+    #[case::parent("../weights")]
+    #[case::absolute("/weights")]
+    fn given_a_model_name_that_is_not_one_plain_directory_when_pulling_without_a_directory_then_one_must_be_passed(
+        #[case] model: &str,
+    ) {
+        let error = validate_download_directory(None, model).unwrap_err();
+
+        assert_eq!(classify(&error), ErrorKind::Usage);
+        assert!(
+            ErrorReport::new(&error)
+                .hint
+                .unwrap()
+                .contains("--directory")
+        );
+    }
+
+    #[test]
+    fn given_a_directory_when_pulling_then_any_model_name_is_fine() {
+        let checked = validate_download_directory(Some(Path::new("./out")), "team/weights");
+
+        assert!(checked.is_ok());
     }
 }

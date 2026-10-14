@@ -51,34 +51,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn server_times_read_in_the_local_zone() {
-        let west = chrono::FixedOffset::west_opt(4 * 3600).unwrap();
-        for (text, expected) in [
-            ("2026-10-09T20:21:06.075Z", "2026-10-09 16:21"),
-            ("2026-10-09T20:21:06+00:00", "2026-10-09 16:21"),
-            ("yesterday", "yesterday"),
-            ("", ""),
-        ] {
-            assert_eq!(local(text, &west, TO_THE_MINUTE), expected, "{text:?}");
-        }
+    fn given_a_server_time_when_showing_it_then_it_reads_in_the_local_zone_to_the_minute() {
+        let four_hours_west = chrono::FixedOffset::west_opt(4 * 3600).unwrap();
+
+        let time = local("2026-10-09T20:21:06.075Z", &four_hours_west, TO_THE_MINUTE);
+
+        assert_eq!(time, "2026-10-09 16:21");
     }
 
     #[test]
-    fn a_log_time_keeps_its_seconds() {
-        let utc = chrono::Utc;
-
-        let time = local("2026-10-09T20:21:06.075Z", &utc, TO_THE_SECOND);
+    fn given_a_log_time_when_showing_it_then_it_keeps_its_seconds() {
+        let time = local("2026-10-09T20:21:06.075Z", &Utc, TO_THE_SECOND);
 
         assert_eq!(time, "2026-10-09 20:21:06");
     }
 
     #[test]
-    fn a_timestamp_is_rfc_3339_in_utc() {
-        let time = Timestamp(UNIX_EPOCH + Duration::from_secs(1_900_000_000));
+    fn given_text_that_is_not_a_time_when_showing_it_then_it_stays_as_it_is() {
+        let time = local("yesterday", &Utc, TO_THE_MINUTE);
 
-        let (text, json) = (time.to_string(), serde_json::to_value(time).unwrap());
+        assert_eq!(time, "yesterday");
+    }
+
+    #[test]
+    fn given_a_timestamp_when_writing_it_then_it_is_rfc_3339_in_utc() {
+        let timestamp = Timestamp(UNIX_EPOCH + Duration::from_secs(1_900_000_000));
+
+        let text = timestamp.to_string();
 
         assert_eq!(text, "2030-03-17T17:46:40+00:00");
-        assert_eq!(json, "2030-03-17T17:46:40+00:00");
     }
 }

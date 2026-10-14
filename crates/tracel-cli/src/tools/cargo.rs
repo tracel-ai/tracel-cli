@@ -141,46 +141,52 @@ fn executables(messages: &[u8]) -> anyhow::Result<Vec<(String, PathBuf)>> {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
     #[test]
-    fn executables_are_the_artifacts_with_an_executable() {
+    fn given_cargo_build_messages_when_listing_executables_then_only_artifacts_with_one_are_listed()
+    {
         let messages = br#"{"reason":"compiler-artifact","target":{"name":"helper","kind":["lib"]},"executable":null}
-not json
-{"reason":"build-script-executed","package_id":"x"}
-{"reason":"compiler-artifact","target":{"name":"trainer","kind":["bin"]},"executable":"/work/target/debug/trainer"}
+{"reason":"build-script-executed","package_id":"trainer"}
+{"reason":"compiler-artifact","target":{"name":"trainer","kind":["bin"]},"executable":"/work/target/release/trainer"}
 {"reason":"build-finished","success":true}
 "#;
+
+        let executables = executables(messages).unwrap();
+
         assert_eq!(
-            executables(messages).unwrap(),
+            executables,
             [(
                 "trainer".to_string(),
-                PathBuf::from("/work/target/debug/trainer")
+                PathBuf::from("/work/target/release/trainer")
             )]
         );
-        assert!(executables(b"").unwrap().is_empty());
     }
 
-    #[test]
-    fn status_lines_say_what_cargo_does_without_paths() {
-        assert_eq!(
-            status_line(
-                "\u{1b}[1m\u{1b}[32m   Compiling\u{1b}[0m trainer v0.1.0 (/work/trainer)\n"
-            )
-            .as_deref(),
-            Some("Compiling trainer v0.1.0")
-        );
-        assert_eq!(
-            status_line("  Downloaded serde v1.0.228\n").as_deref(),
-            Some("Downloaded serde v1.0.228")
-        );
-        for line in [
-            "    Finished `release` profile [optimized] target(s) in 0.20s\n",
-            "warning: unused variable: `x`\n",
-            "  --> src/main.rs:3:9\n",
-            "\n",
-        ] {
-            assert_eq!(status_line(line), None, "{line:?}");
-        }
+    #[rstest]
+    #[case::compiling(
+        "\u{1b}[1m\u{1b}[32m   Compiling\u{1b}[0m trainer v0.1.0 (/work/trainer)\n",
+        "Compiling trainer v0.1.0"
+    )]
+    #[case::downloaded("  Downloaded serde v1.0.228\n", "Downloaded serde v1.0.228")]
+    fn given_a_cargo_status_when_reading_it_then_it_says_what_cargo_does_without_paths(
+        #[case] line: &str,
+        #[case] expected: &str,
+    ) {
+        let status = status_line(line);
+
+        assert_eq!(status.as_deref(), Some(expected));
+    }
+
+    #[rstest]
+    #[case::finished("    Finished `release` profile [optimized] target(s) in 0.20s\n")]
+    #[case::warning("warning: unused variable: `x`\n")]
+    #[case::source_location("  --> src/main.rs:3:9\n")]
+    fn given_another_cargo_line_when_reading_it_then_it_is_no_status(#[case] line: &str) {
+        let status = status_line(line);
+
+        assert_eq!(status, None);
     }
 }
