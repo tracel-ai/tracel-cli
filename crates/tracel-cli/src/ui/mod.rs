@@ -20,7 +20,7 @@ pub use human::{Details, Human, Table, counted, list_summary, number, short_dige
 pub use layout::{Layout, Place};
 pub use stderr::{Declined, Terminal, Unanswered};
 pub use stdout::{Outcome, Output, Render, StdoutClosed};
-pub use time::{Timestamp, log_time, when};
+pub use time::{Timestamp, elapsed, log_time, when};
 
 /// Open stdout and stderr for one command, drawing on the same screen. A flow's session
 /// opens now, saying what it does and where.

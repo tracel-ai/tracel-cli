@@ -4,6 +4,9 @@ use std::fmt::{self, Display};
 pub enum Layout {
     /// A command that reads, its result in one box under its summary.
     Read,
+    /// A command that reads text to show as it is, such as a job's logs, closed by its
+    /// summary when it has one.
+    Text,
     /// A command that does work, in a session that first says what it does, such as
     /// "Upload a version of model 'weights'", and where.
     Flow(String),

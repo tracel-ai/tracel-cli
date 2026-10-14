@@ -15,6 +15,7 @@ pub enum ErrorKind {
     Conflict,
     ConfirmationRequired,
     LimitReached,
+    JobFailed,
     Timeout,
     Unavailable,
 }
@@ -30,6 +31,7 @@ impl ErrorKind {
             Self::Conflict => 6,
             Self::ConfirmationRequired => 7,
             Self::LimitReached => 8,
+            Self::JobFailed => 9,
             Self::Timeout => 10,
             Self::Unavailable => 11,
         }

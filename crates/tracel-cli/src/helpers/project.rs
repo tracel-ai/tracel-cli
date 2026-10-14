@@ -1,7 +1,9 @@
 //! Finding the workspace and the project a command works on.
 
+use std::path::Path;
+
 use anyhow::Context;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::{
     context::CliContext,
@@ -9,7 +11,7 @@ use crate::{
     tools::{
         cargo::try_locate_manifest,
         project_context::{ErrorKind, ProjectContext, ProjectContextError},
-        tracel_config::TracelProject,
+        tracel_config::{TracelProject, TracelToml},
         workspace::WorkspaceInfo,
     },
 };
@@ -71,13 +73,15 @@ pub fn require_linked_project() -> anyhow::Result<ProjectContext> {
 }
 
 pub fn parse_project(value: &str) -> Result<TracelProject, CliError> {
-    if let Some((namespace, project)) = value.split_once('/') {
-        if !namespace.is_empty() && !project.is_empty() && !project.contains('/') {
-            return Ok(TracelProject {
-                namespace: namespace.to_owned(),
-                name: project.to_owned(),
-            });
-        }
+    if let Some((namespace, project)) = value.split_once('/')
+        && !namespace.is_empty()
+        && !project.is_empty()
+        && !project.contains('/')
+    {
+        return Ok(TracelProject {
+            namespace: namespace.to_owned(),
+            name: project.to_owned(),
+        });
     }
 
     Err(CliError::new(
@@ -110,14 +114,6 @@ impl std::fmt::Display for ProjectSource {
 pub struct ResolvedProject {
     pub project: TracelProject,
     pub source: ProjectSource,
-}
-
-#[derive(Deserialize, Default)]
-struct TracelTomlConfig {
-    #[serde(alias = "owner")]
-    namespace: Option<String>,
-    #[serde(alias = "name")]
-    project: Option<String>,
 }
 
 fn project_not_found() -> CliError {
@@ -160,36 +156,31 @@ pub fn resolve_project(flag: Option<&TracelProject>) -> anyhow::Result<ResolvedP
         || {
             let manifest_path = try_locate_manifest().ok_or_else(project_not_found)?;
             let workspace_root = manifest_path.parent().ok_or_else(project_not_found)?;
-            let path = TracelProject::path(workspace_root);
-            let contents = match std::fs::read_to_string(&path) {
-                Ok(contents) => contents,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    return Ok(TracelTomlConfig::default());
-                }
-                Err(error) => {
-                    return Err(CliError::new(
-                        CliErrorKind::Usage,
-                        format!("Can't read '{}': {error}", path.display()),
-                    )
-                    .into());
-                }
-            };
-            toml::from_str(&contents).map_err(|error| {
-                CliError::new(
-                    CliErrorKind::Usage,
-                    format!("Can't parse '{}': {error}", path.display()),
-                )
-                .into()
-            })
+            Ok(read_tracel_toml(workspace_root)?)
         },
     )
+}
+
+/// Read the `tracel.toml` of `workspace_root`, empty when there is none.
+fn read_tracel_toml(workspace_root: &Path) -> Result<TracelToml, CliError> {
+    TracelToml::load(workspace_root)
+        .map(Option::unwrap_or_default)
+        .map_err(|error| {
+            CliError::new(
+                CliErrorKind::Usage,
+                format!(
+                    "Can't read '{}': {error}",
+                    TracelProject::path(workspace_root).display()
+                ),
+            )
+        })
 }
 
 fn resolve_project_from(
     flag: Option<&TracelProject>,
     namespace: Option<String>,
     project: Option<String>,
-    load_config: impl FnOnce() -> anyhow::Result<TracelTomlConfig>,
+    load_config: impl FnOnce() -> anyhow::Result<TracelToml>,
 ) -> anyhow::Result<ResolvedProject> {
     if let Some(project) = flag {
         return Ok(ResolvedProject {
@@ -204,7 +195,7 @@ fn resolve_project_from(
         ProjectSource::TracelToml
     };
     let config = if namespace.is_some() && project.is_some() {
-        TracelTomlConfig::default()
+        TracelToml::default()
     } else {
         load_config()?
     };
@@ -224,6 +215,20 @@ fn resolve_project_from(
 pub fn require_cargo_workspace() -> anyhow::Result<WorkspaceInfo> {
     let manifest_path = find_manifest()?;
     ProjectContext::load_workspace_info(&manifest_path).map_err(explain_project_context_error)
+}
+
+/// Load the Cargo workspace, with the project a command works on and how it was
+/// selected.
+pub fn require_workspace_project(
+    context: &CliContext,
+) -> anyhow::Result<(ProjectContext, ProjectSource)> {
+    let workspace_info = require_cargo_workspace()?;
+    let resolved = resolve_namespace_project(context)?;
+    let project = ProjectContext {
+        workspace_info,
+        project: resolved.project,
+    };
+    Ok((project, resolved.source))
 }
 
 /// Decide whether `tracel init` links: not when the workspace is linked and `force` is
@@ -255,14 +260,14 @@ mod tests {
     use super::*;
     use crate::error::{ErrorReport, classify};
 
-    fn tracel_toml(namespace: Option<&str>, project: Option<&str>) -> TracelTomlConfig {
-        TracelTomlConfig {
+    fn tracel_toml(namespace: Option<&str>, project: Option<&str>) -> TracelToml {
+        TracelToml {
             namespace: namespace.map(str::to_string),
             project: project.map(str::to_string),
         }
     }
 
-    fn unread() -> anyhow::Result<TracelTomlConfig> {
+    fn unread() -> anyhow::Result<TracelToml> {
         panic!("tracel.toml was read")
     }
 

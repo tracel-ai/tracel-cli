@@ -1,8 +1,11 @@
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use tracel_client::ClientError;
 use tracel_client::console::auth::DeviceAuthClient;
-use tracel_client::console::{AppSession, Client, Env, FileSessionStore, TracelCredentials};
+use tracel_client::console::{
+    AppSession, Client, Env, FileSessionStore, StoredAppSession, TracelCredentials,
+};
 use url::Url;
 
 use crate::environment;
@@ -63,10 +66,28 @@ impl CliContext {
     /// Find the credential commands use: `TRACEL_API_KEY` when it is set, else the
     /// stored login.
     pub fn credentials(&self) -> Result<Option<TracelCredentials>, ClientError> {
+        self.credentials_where(|_| true)
+    }
+
+    /// Whether a credential works without logging in: `TRACEL_API_KEY`, or a stored login
+    /// that hasn't ended.
+    pub fn has_credentials(&self) -> Result<bool, ClientError> {
+        let now = SystemTime::now();
+        Ok(self
+            .credentials_where(|login| !login.has_ended_at(now))?
+            .is_some())
+    }
+
+    /// Find `TRACEL_API_KEY`, else the stored login when `usable` accepts it.
+    fn credentials_where(
+        &self,
+        usable: impl FnOnce(&StoredAppSession) -> bool,
+    ) -> Result<Option<TracelCredentials>, ClientError> {
         first_credentials(TracelCredentials::from_env().ok(), || {
             let app_session = self.app_session()?;
             Ok(app_session
                 .stored()?
+                .filter(|login| usable(login))
                 .map(|_| TracelCredentials::app_session(app_session)))
         })
     }
@@ -99,7 +120,8 @@ impl CliContext {
         &self.terminal
     }
 
-    /// Return stdout, for commands that stream their output while they run.
+    /// Return stdout, for commands that write to it while they run: streams, or a
+    /// program they run.
     pub fn output(&self) -> &Output {
         &self.output
     }

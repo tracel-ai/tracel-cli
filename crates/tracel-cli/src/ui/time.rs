@@ -31,6 +31,25 @@ pub fn log_time(text: &str) -> String {
     local(text, &Local, TO_THE_SECOND)
 }
 
+/// Say how long it was from the RFC 3339 time `start` to `end`, or to now without one,
+/// such as "3 min 20 s". None when a time doesn't parse.
+pub fn elapsed(start: &str, end: Option<&str>) -> Option<String> {
+    let start = DateTime::parse_from_rfc3339(start).ok()?;
+    let end = match end {
+        Some(end) => DateTime::parse_from_rfc3339(end).ok()?.to_utc(),
+        None => Utc::now(),
+    };
+    Some(span((end - start.to_utc()).num_seconds().max(0)))
+}
+
+fn span(seconds: i64) -> String {
+    match seconds {
+        seconds if seconds < 60 => format!("{seconds} s"),
+        seconds if seconds < 3600 => format!("{} min {} s", seconds / 60, seconds % 60),
+        seconds => format!("{} h {} min", seconds / 3600, seconds % 3600 / 60),
+    }
+}
+
 const TO_THE_MINUTE: &str = "%Y-%m-%d %H:%M";
 const TO_THE_SECOND: &str = "%Y-%m-%d %H:%M:%S";
 
@@ -47,6 +66,8 @@ where
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, UNIX_EPOCH};
+
+    use rstest::rstest;
 
     use super::*;
 
@@ -71,6 +92,28 @@ mod tests {
         let time = local("yesterday", &Utc, TO_THE_MINUTE);
 
         assert_eq!(time, "yesterday");
+    }
+
+    #[rstest]
+    #[case::seconds("2026-10-13T15:02:45Z", "45 s")]
+    #[case::minutes("2026-10-13T15:05:20Z", "3 min 20 s")]
+    #[case::hours("2026-10-13T17:07:59Z", "2 h 5 min")]
+    #[case::end_before_start("2026-10-13T15:01:00Z", "0 s")]
+    fn given_a_start_and_an_end_when_saying_how_long_it_took_then_it_reads_in_its_two_largest_units(
+        #[case] end: &str,
+        #[case] expected: &str,
+    ) {
+        let took = elapsed("2026-10-13T15:02:00Z", Some(end));
+
+        assert_eq!(took.as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn given_a_start_that_is_not_a_time_when_saying_how_long_it_took_then_there_is_nothing_to_say()
+    {
+        let took = elapsed("soon", Some("2026-10-13T15:01:00Z"));
+
+        assert_eq!(took, None);
     }
 
     #[test]

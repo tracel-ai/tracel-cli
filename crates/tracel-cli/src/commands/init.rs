@@ -1,7 +1,6 @@
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
 use crate::helpers::{can_initialize_project, require_cargo_workspace, require_linked_project};
-use crate::tools::git;
 use crate::tools::project_context::ProjectContext;
 use crate::tools::tracel_config::TracelProject;
 use crate::ui::{Declined, Outcome, Terminal, Unanswered};
@@ -29,12 +28,6 @@ pub struct InitArgs {
     /// Link an existing project without asking
     #[arg(long, short = 'y')]
     pub yes: bool,
-    /// Commit all current changes first
-    #[arg(long, conflicts_with = "allow_dirty")]
-    pub commit: bool,
-    /// Link with uncommitted changes
-    #[arg(long)]
-    pub allow_dirty: bool,
 }
 
 /// The project the workspace is linked to. `url` is null when it already was.
@@ -95,10 +88,6 @@ fn link(args: InitArgs, context: &CliContext, client: &Client) -> anyhow::Result
     let workspace_info = require_cargo_workspace()?;
     let terminal = context.terminal();
 
-    ensure_git_repo_initialized(&workspace_info.get_ws_root(), terminal)?;
-    ensure_git_repo_clean(terminal, args.commit, args.allow_dirty)?;
-    git::get_first_commit_hash().context("Can't read the first commit")?;
-
     let namespace = choose_namespace(
         &user.username,
         &user.namespace,
@@ -130,11 +119,12 @@ fn link(args: InitArgs, context: &CliContext, client: &Client) -> anyhow::Result
     let url = context.web_console().join(&namespace.project_path(&name))?;
     let shown = format!("{}/{}", project.namespace, project.name);
     let link = terminal.format_url(&url);
-    terminal.outro(&if created {
+    let outcome = if created {
         format!("Created and linked {shown} at {link}.")
     } else {
         format!("Linked to {shown} at {link}.")
-    });
+    };
+    terminal.next_steps(&outcome, &["tracel run --list".to_string()]);
 
     Ok(ProjectLinked {
         namespace: project.namespace,
@@ -318,102 +308,6 @@ fn create_project(
         namespace: project.namespace_name,
         name: project.project_name,
     })
-}
-
-fn ensure_git_repo_initialized(
-    ws_root: &std::path::Path,
-    terminal: &Terminal,
-) -> anyhow::Result<()> {
-    if !git::is_repo_initialized() {
-        git::init_repo(ws_root)?;
-        terminal.step("Created a git repository");
-    }
-    Ok(())
-}
-
-/// Make sure the workspace has a commit and no uncommitted changes, committing when
-/// `commit` says so or the user agrees, unless `allow_dirty`.
-fn ensure_git_repo_clean(
-    terminal: &Terminal,
-    commit: bool,
-    allow_dirty: bool,
-) -> anyhow::Result<()> {
-    let has_commit = git::get_last_commit_hash().is_ok();
-    let dirty = match git::is_repo_dirty() {
-        Ok(dirty) => dirty,
-        Err(_) if !has_commit => true,
-        Err(error) => return Err(error).context("Can't read the git status"),
-    };
-    if !dirty && has_commit {
-        return Ok(());
-    }
-    if commit {
-        return commit_all(terminal);
-    }
-    if allow_dirty && has_commit {
-        return Ok(());
-    }
-    if allow_dirty {
-        return Err(no_commit()
-            .with_hint("Pass --commit to make the first one.")
-            .into());
-    }
-    if !terminal.is_interactive() {
-        return Err(commit_required().into());
-    }
-    terminal.warning(if has_commit {
-        "The workspace has uncommitted changes."
-    } else {
-        "The workspace has no commit yet."
-    });
-    if !terminal.confirm(
-        "Commit all files?",
-        false,
-        Unanswered::new("Linking needs a commit.", "Pass --commit or --allow-dirty."),
-    )? {
-        return Err(Declined::new(NOTHING_LINKED).into());
-    }
-    commit_all(terminal)
-}
-
-fn no_commit() -> CliError {
-    CliError::new(ErrorKind::Usage, "The workspace has no commit yet.")
-}
-
-fn commit_required() -> CliError {
-    CliError::new(ErrorKind::Usage, "The workspace has uncommitted changes.")
-        .with_hint("Commit them, or pass --commit or --allow-dirty.")
-}
-
-/// Commit everything in the working tree, making the first commit if there is none.
-pub fn commit_all(terminal: &Terminal) -> anyhow::Result<()> {
-    let commit_message = "Automatic commit by Tracel Console CLI";
-    let status = std::process::Command::new("git")
-        .args(["add", "--all"])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .status()
-        .context("Can't run `git add --all`")?;
-    if !status.success() {
-        anyhow::bail!("`git add --all` failed.");
-    }
-    let mut command = std::process::Command::new("git");
-    command.args(["commit", "-m", commit_message]);
-    if git::get_last_commit_hash().is_err() {
-        command.arg("--allow-empty");
-    }
-    let status = command
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .status()
-        .context("Can't run `git commit`")?;
-    if !status.success() {
-        anyhow::bail!("`git commit` failed.");
-    }
-    terminal.step("Committed all files");
-    Ok(())
 }
 
 #[cfg(test)]

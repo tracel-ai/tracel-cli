@@ -77,14 +77,14 @@ impl<W: Write> HashingWriter<W> {
     }
 
     fn verify(&self, file: &DownloadFile) -> anyhow::Result<()> {
-        if let Some(size) = file.size_bytes.filter(|size| *size != 0) {
-            if self.bytes != size {
-                anyhow::bail!(
-                    "Size mismatch for '{}': expected {size} bytes, received {}.",
-                    file.rel_path,
-                    self.bytes
-                );
-            }
+        if let Some(size) = file.size_bytes.filter(|size| *size != 0)
+            && self.bytes != size
+        {
+            anyhow::bail!(
+                "Size mismatch for '{}': expected {size} bytes, received {}.",
+                file.rel_path,
+                self.bytes
+            );
         }
         if let Some(checksum) = file
             .checksum

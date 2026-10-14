@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::io::IsTerminal;
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use tracel_client::console::Env;
 
 use crate::commands;
@@ -63,19 +63,34 @@ pub struct CliArgs {
 
 impl CliArgs {
     /// Parse the arguments `tracel` was started with.
+    ///
+    /// `tracel run <job>` also takes the job's own flags: each long flag `run` doesn't take
+    /// is kept in `RunArgs::job_flags`, to be read once the job is described.
     pub fn try_parse_args<I, T>(args: I) -> Result<Self, clap::Error>
     where
         I: IntoIterator<Item = T>,
-        T: Into<OsString> + Clone,
+        T: Into<OsString>,
     {
-        Self::try_parse_from(args)
+        let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+        let mut matches =
+            commands::run::with_job_flags(Self::command(), &args).try_get_matches_from(&args)?;
+        let job_flags = matches
+            .subcommand_matches("run")
+            .map(commands::run::job_flags)
+            .unwrap_or_default();
+        let mut args = Self::from_arg_matches_mut(&mut matches)
+            .map_err(|error| error.format(&mut Self::command()))?;
+        if let Some(Commands::Run(run)) = &mut args.command {
+            run.job_flags = job_flags;
+        }
+        Ok(args)
     }
 }
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Run the workspace locally with `cargo run`
-    Train(commands::training::TrainingArgs),
+    /// Run a job locally or on a compute provider
+    Run(commands::run::RunArgs),
     /// Upload a code version of the workspace
     Package(commands::package::PackageArgs),
     /// Log in to the Tracel Console
@@ -84,9 +99,11 @@ pub enum Commands {
     Logout,
     /// Show your login, or print an access token
     Auth(commands::auth::AuthArgs),
-    /// Browse experiments, their metrics and logs
+    /// Browse and compare experiments, their metrics and logs
     #[command(visible_alias = "exp")]
     Experiments(commands::experiments::ExperimentsArgs),
+    /// Browse, follow and cancel jobs
+    Jobs(commands::jobs::JobsArgs),
     /// Link the workspace to a Tracel Console project
     Init(commands::init::InitArgs),
     /// Unlink the workspace from its project
@@ -107,12 +124,13 @@ impl Commands {
     /// How the command draws on a terminal.
     fn layout(&self) -> Layout {
         match self {
-            Self::Train(_) => Layout::Bare,
+            Self::Run(args) => args.layout(),
             Self::Auth(args) => args.layout(),
             Self::Package(_) => Layout::flow("Package a code version"),
             Self::Login(args) => args.layout(),
             Self::Logout => Layout::flow("Log out of the Tracel Console"),
             Self::Experiments(args) => args.layout(),
+            Self::Jobs(args) => args.layout(),
             Self::Init(_) => Layout::flow("Link this workspace to a Tracel Console project"),
             Self::Unlink(_) => Layout::flow("Unlink this workspace from its project"),
             Self::Me | Self::Project(_) | Self::Datasets(_) => Layout::Read,
@@ -127,6 +145,8 @@ impl Commands {
             self,
             Self::Package(_)
                 | Self::Experiments(_)
+                | Self::Jobs(_)
+                | Self::Run(_)
                 | Self::Models(_)
                 | Self::Artifacts(_)
                 | Self::Datasets(_)
@@ -134,10 +154,16 @@ impl Commands {
     }
 
     /// Choose what `auto` means: human on a terminal and JSON otherwise, except for
-    /// `auth token` and `train`, whose stdout is plain text for another program.
+    /// `auth token` and a `run` that hands over to `cargo run`, whose stdout is plain
+    /// text for another program.
     fn auto_format(&self, stdout_is_terminal: bool) -> Format {
         match self {
-            Self::Train(_)
+            Self::Run(commands::run::RunArgs {
+                job: None,
+                list: false,
+                remote: None,
+                ..
+            })
             | Self::Auth(commands::auth::AuthArgs {
                 command: commands::auth::AuthCommands::Token,
             }) => Format::Human,
@@ -175,17 +201,34 @@ pub fn cli_main() {
         auto,
     );
 
-    if let Some(directory) = &args.working_directory {
-        if let Err(error) = std::env::set_current_dir(directory) {
-            let error = CliError::new(
-                ErrorKind::Usage,
-                format!(
-                    "Can't change to directory '{}': {error}",
-                    directory.display()
-                ),
-            );
-            fail_early(&error.into(), format.unwrap_or(auto));
+    if let Some(directory) = &args.working_directory
+        && let Err(error) = std::env::set_current_dir(directory)
+    {
+        let error = CliError::new(
+            ErrorKind::Usage,
+            format!(
+                "Can't change to directory '{}': {error}",
+                directory.display()
+            ),
+        );
+        fail_early(&error.into(), format.unwrap_or(auto));
+    }
+
+    // `run --help` is clap's text whatever the format or TRACEL_ENV say, so it comes
+    // before the environment is resolved.
+    if let Some(Commands::Run(run)) = &args.command
+        && run.help
+    {
+        let (output, terminal) =
+            ui::channels(Format::Human, args.no_input, Layout::Bare, Place::default());
+        match commands::run::help(run, CliArgs::command(), &terminal) {
+            // A reader that closes early (`tracel run --help | head`) is not an error.
+            Ok(mut help) => {
+                let _ = help.print_long_help();
+            }
+            Err(error) => fail(&error, &output, &terminal),
         }
+        return;
     }
 
     let Some(command) = args.command else {
@@ -325,7 +368,7 @@ fn usage_format(
 
 fn handle_command(command: Commands, context: CliContext) -> anyhow::Result<Outcome> {
     match command {
-        Commands::Train(run_args) => commands::training::handle_command(run_args, context),
+        Commands::Run(run_args) => commands::run::handle_command(run_args, context),
         Commands::Package(package_args) => commands::package::handle_command(package_args, context),
         Commands::Login(login_args) => commands::login::handle_command(login_args, context),
         Commands::Logout => commands::logout::handle_command(context),
@@ -333,6 +376,7 @@ fn handle_command(command: Commands, context: CliContext) -> anyhow::Result<Outc
         Commands::Experiments(experiments_args) => {
             commands::experiments::handle_command(experiments_args, context)
         }
+        Commands::Jobs(jobs_args) => commands::jobs::handle_command(jobs_args, context),
         Commands::Init(init_args) => commands::init::handle_command(init_args, context),
         Commands::Unlink(unlink_args) => commands::unlink::handle_command(unlink_args, context),
         Commands::Me => commands::me::handle_command(context),
@@ -363,7 +407,7 @@ mod tests {
 
     #[rstest]
     #[case::auth_token(&["auth", "token"])]
-    #[case::train(&["train", "--", "--epochs", "1"])]
+    #[case::program(&["run", "--", "--epochs", "1"])]
     fn given_a_command_whose_stdout_is_its_own_when_piped_then_its_output_stays_text(
         #[case] args: &[&str],
     ) {
@@ -372,9 +416,13 @@ mod tests {
         assert_eq!(format, Format::Human);
     }
 
-    #[test]
-    fn given_another_command_when_stdout_is_piped_then_its_output_is_json() {
-        let format = command(&["me"]).auto_format(false);
+    #[rstest]
+    #[case::me(&["me"])]
+    #[case::named_job(&["run", "train"])]
+    #[case::job_list(&["run", "--list"])]
+    #[case::remote_run(&["run", "--remote", "gpu"])]
+    fn given_another_command_when_stdout_is_piped_then_its_output_is_json(#[case] args: &[&str]) {
+        let format = command(args).auto_format(false);
 
         assert_eq!(format, Format::Json);
     }
@@ -419,7 +467,7 @@ mod tests {
 
     #[test]
     fn given_json_after_a_double_dash_when_arguments_do_not_parse_then_it_is_not_an_output_flag() {
-        let format = usage_format(arguments(&["train", "--", "--json"]), None, true);
+        let format = usage_format(arguments(&["run", "--", "--json"]), None, true);
 
         assert_eq!(format, Format::Human);
     }

@@ -1,10 +1,14 @@
 use std::ffi::OsString;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 
 use anyhow::Context;
-use cargo_metadata::Message;
+use cargo_metadata::{Message, Metadata};
+
+use crate::error::{CliError, ErrorKind};
+use crate::tools::build_driver::BuildDriver;
+use crate::ui::Terminal;
 
 /// Find the manifest of the Cargo workspace around the current directory.
 pub fn try_locate_manifest() -> Option<PathBuf> {
@@ -20,42 +24,108 @@ pub fn try_locate_manifest() -> Option<PathBuf> {
 }
 
 /// Start a cargo command, with the cargo `CARGO` names when it is set.
-pub fn command() -> std::process::Command {
-    std::process::Command::new(std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")))
+pub fn command() -> Command {
+    Command::new(std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")))
+}
+
+/// A binary target of a workspace package.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Binary {
+    pub package: String,
+    pub name: String,
+}
+
+/// List the binary targets of the workspace's packages.
+pub fn binaries(metadata: &Metadata) -> Vec<Binary> {
+    metadata
+        .workspace_packages()
+        .into_iter()
+        .flat_map(|package| {
+            package
+                .targets
+                .iter()
+                .filter(|target| target.is_bin())
+                .map(|target| Binary {
+                    package: package.name.to_string(),
+                    name: target.name.clone(),
+                })
+        })
+        .collect()
+}
+
+/// Find the binary `--bin <name>` names among `binaries`, with its package.
+pub fn find_binary(binaries: &[Binary], name: &str) -> Result<Binary, CliError> {
+    if let Some(binary) = binaries.iter().find(|binary| binary.name == name) {
+        return Ok(binary.clone());
+    }
+    let names: Vec<&str> = binaries.iter().map(|binary| binary.name.as_str()).collect();
+    Err(CliError::new(
+        ErrorKind::Usage,
+        format!("No binary '{name}'. Binaries: {}.", names.join(", ")),
+    ))
+}
+
+/// Make the release build of `bin`, or of every binary, with `driver`, for `target` when
+/// cross-building, and the command as messages show it.
+pub fn release_build(
+    driver: BuildDriver,
+    target: Option<&str>,
+    linker: Option<&str>,
+    bin: Option<&Binary>,
+) -> (Command, String) {
+    let mut command = command();
+    command.args(driver.subcommand_args()).arg("--release");
+    let mut label = format!("{} --release", driver.label());
+    if let Some(bin) = bin {
+        command.args(["--package", &bin.package, "--bin", &bin.name]);
+        label.push_str(&format!(" --package {} --bin {}", bin.package, bin.name));
+    }
+    if let Some(triple) = target {
+        command.args(["--target", triple]);
+        label.push_str(&format!(" --target {triple}"));
+        if let Some(linker) = linker {
+            command
+                .arg("--config")
+                .arg(format!("target.{triple}.linker=\"{linker}\""));
+        }
+    }
+    (command, label)
+}
+
+/// Run `command`, a cargo build named `label` in errors, under a spinner saying `building`
+/// and what cargo compiles, and list the executables it built as `(target name, path)`
+/// pairs. The spinner clears once the build is done; cargo's own output shows only when
+/// the build fails.
+pub fn build(
+    terminal: &Terminal,
+    command: Command,
+    label: &str,
+    building: &str,
+) -> anyhow::Result<Vec<(String, PathBuf)>> {
+    let spinner = terminal.spinner(building);
+    let built = build_quietly(command, label, |status| {
+        spinner.set_message(format!("{building}: {status}"));
+    });
+    spinner.clear();
+    let built = built?;
+    if !built.succeeded {
+        let _ = io::stderr().write_all(&built.output);
+        anyhow::bail!("`{label}` failed.");
+    }
+    Ok(built.executables)
 }
 
 /// A finished cargo build whose own output was kept back.
-pub struct QuietBuild {
-    label: String,
+struct QuietBuild {
     succeeded: bool,
     output: Vec<u8>,
     executables: Vec<(String, PathBuf)>,
 }
 
-impl QuietBuild {
-    pub fn succeeded(&self) -> bool {
-        self.succeeded
-    }
-
-    /// Print cargo's output on stderr, as cargo would have.
-    pub fn show_output(&self) {
-        let _ = io::stderr().write_all(&self.output);
-    }
-
-    /// List the executables the build made as `(target name, path)` pairs, or fail if
-    /// the build did.
-    pub fn executables(self) -> anyhow::Result<Vec<(String, PathBuf)>> {
-        if !self.succeeded {
-            anyhow::bail!("`{}` failed.", self.label);
-        }
-        Ok(self.executables)
-    }
-}
-
 /// Run `command`, a cargo build named `label` in errors, keeping cargo's output back.
 /// Each status line, such as `Compiling trainer v0.1.0`, goes to `status` as it comes.
-pub fn build_quietly(
-    mut command: std::process::Command,
+fn build_quietly(
+    mut command: Command,
     label: &str,
     mut status: impl FnMut(&str),
 ) -> anyhow::Result<QuietBuild> {
@@ -84,7 +154,6 @@ pub fn build_quietly(
         .join()
         .map_err(|_| anyhow::anyhow!("Can't read the output of `{label}`."))??;
     Ok(QuietBuild {
-        label: label.to_string(),
         succeeded: child.wait()?.success(),
         output,
         executables,
@@ -158,5 +227,77 @@ mod tests {
         let status = status_line(line);
 
         assert_eq!(status, None);
+    }
+
+    fn trainer() -> Binary {
+        Binary {
+            package: "trainer".to_string(),
+            name: "train".to_string(),
+        }
+    }
+
+    fn args(command: &Command) -> Vec<&str> {
+        command
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn given_a_binary_when_making_its_release_build_then_only_that_binary_is_built() {
+        let (command, _) = release_build(BuildDriver::Cargo, None, None, Some(&trainer()));
+
+        assert_eq!(
+            args(&command),
+            [
+                "build",
+                "--release",
+                "--package",
+                "trainer",
+                "--bin",
+                "train"
+            ]
+        );
+    }
+
+    #[test]
+    fn given_a_cross_target_and_its_linker_when_making_the_release_build_then_the_linker_is_set_for_that_target()
+     {
+        let target = "aarch64-unknown-linux-gnu";
+
+        let (command, _) = release_build(
+            BuildDriver::Cargo,
+            Some(target),
+            Some("aarch64-linux-gnu-gcc"),
+            None,
+        );
+
+        assert_eq!(
+            args(&command),
+            [
+                "build",
+                "--release",
+                "--target",
+                target,
+                "--config",
+                "target.aarch64-unknown-linux-gnu.linker=\"aarch64-linux-gnu-gcc\""
+            ]
+        );
+    }
+
+    #[test]
+    fn given_an_unknown_binary_when_finding_it_then_the_error_lists_the_binaries() {
+        let binaries = [
+            Binary {
+                package: "tools".to_string(),
+                name: "fmt-data".to_string(),
+            },
+            trainer(),
+        ];
+
+        let error = find_binary(&binaries, "serve").unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Usage);
+        assert!(error.to_string().contains("fmt-data, train"), "{error}");
     }
 }

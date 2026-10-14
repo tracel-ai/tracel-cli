@@ -12,6 +12,7 @@ pub enum Resource<'a> {
     ModelAlias { model: &'a str, alias: &'a str },
     Experiment(i32),
     Dataset(&'a str),
+    Job(i32),
 }
 
 /// Turn the Tracel Console's "not found" for `resource` into an error that names it and
@@ -70,6 +71,10 @@ pub fn map_resource_error(
         (ClientError::NotFoundWithCode(ApiErrorCode::Dataset), Resource::Dataset(dataset)) => (
             format!("No dataset '{dataset}' in {namespace}/{project}."),
             "List datasets with `tracel datasets list`.".to_string(),
+        ),
+        (ClientError::NotFoundWithCode(ApiErrorCode::ComputeProviderJob), Resource::Job(job)) => (
+            format!("No job {job} in {namespace}/{project}."),
+            "List jobs with `tracel jobs list`.".to_string(),
         ),
         _ => return error.into(),
     };
@@ -189,6 +194,12 @@ mod tests {
         Resource::Dataset("images"),
         "'images'",
         "tracel datasets list"
+    )]
+    #[case::job(
+        ApiErrorCode::ComputeProviderJob,
+        Resource::Job(12),
+        "job 12",
+        "tracel jobs list"
     )]
     fn given_the_console_says_what_is_missing_when_mapping_the_error_then_it_names_it_and_how_to_list_them(
         #[case] code: ApiErrorCode,

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use cliclack::ProgressBar;
 
 use super::Format;
+use super::human::terminal_link;
 use super::screen::Screen;
 use crate::error::{CliError, ErrorKind, ErrorReport};
 
@@ -127,12 +128,43 @@ impl Terminal {
         }
     }
 
+    /// Say what the command did when more follows, such as a job it queued before its
+    /// logs, as a sentence.
+    pub fn success(&self, message: &str) {
+        if self.is_styled() {
+            self.screen.draw(|| cliclack::log::success(message));
+        } else if self.is_human() {
+            self.line(message);
+        }
+    }
+
     /// End the command on its outcome: the corner of a flow's session, or a line.
     pub fn outro(&self, outcome: &str) {
         if self.screen.session_open() {
             self.screen.outro(outcome);
         } else {
             self.step(outcome);
+        }
+    }
+
+    /// End the command on its outcome, then the commands to run next.
+    pub fn next_steps(&self, outcome: &str, commands: &[String]) {
+        self.success(outcome);
+        if self.screen.session_open() {
+            self.screen.next_steps(&commands.join("\n"));
+        } else if self.is_human() {
+            self.line("Next steps:");
+            for command in commands {
+                self.line(format_args!("  {command}"));
+            }
+        }
+    }
+
+    /// End the line a program the command ran left after the `^C` the terminal echoed,
+    /// when it was interrupted, so what comes next starts a line of its own.
+    pub fn program_ended(&self, interrupted: bool) {
+        if interrupted && io::stderr().is_terminal() {
+            let _ = writeln!(io::stderr());
         }
     }
 
@@ -185,12 +217,7 @@ impl Terminal {
         if !self.is_styled() {
             return url.to_string();
         }
-        let text = console::style(url).for_stderr().blue().bold().to_string();
-        if supports_hyperlinks::on(supports_hyperlinks::Stream::Stderr) {
-            hyperlink(url, &text)
-        } else {
-            text
-        }
+        terminal_link(url, console::Style::new().for_stderr())
     }
 
     /// Fail with `kind` when the user can't answer a prompt, and otherwise settle the screen
@@ -203,13 +230,19 @@ impl Terminal {
         Ok(())
     }
 
+    /// Fail as `confirm` does when the user can't answer, so a command can stop before
+    /// the slow work that comes ahead of its question.
+    pub fn require_confirmation(&self, unanswered: Unanswered) -> anyhow::Result<()> {
+        self.require_answer(ErrorKind::ConfirmationRequired, unanswered)
+    }
+
     pub fn confirm(
         &self,
         question: &str,
         initial: bool,
         unanswered: Unanswered,
     ) -> anyhow::Result<bool> {
-        self.require_answer(ErrorKind::ConfirmationRequired, unanswered)?;
+        self.require_confirmation(unanswered)?;
         cliclack::confirm(question)
             .initial_value(initial)
             .interact()
@@ -315,12 +348,6 @@ fn one_line(message: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-/// `text` as a terminal hyperlink to `url` (OSC 8), which terminals that render them
-/// open on a click.
-fn hyperlink(url: &url::Url, text: &str) -> String {
-    format!("\u{1b}]8;;{url}\u{1b}\\{text}\u{1b}]8;;\u{1b}\\")
 }
 
 /// A spinner or bar for one step, drawn until it ends. When something else draws

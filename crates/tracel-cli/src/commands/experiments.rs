@@ -1,8 +1,11 @@
+mod compare;
+
 use std::io::{self, Write};
 use std::time::Duration;
 
 use clap::{Args, Subcommand, ValueEnum};
 use serde::Serialize;
+use tracel_client::ClientError;
 use tracel_client::console::Client;
 use tracel_client::console::experiment::request::{
     ExperimentLogQueryRequest, ListExperimentsQuery, LogLevelRequest, MetadataFilterRequest,
@@ -52,6 +55,8 @@ pub enum ExperimentsCommands {
     Metrics(MetricsArgs),
     /// Show an experiment's logs
     Logs(LogsArgs),
+    /// Compare two experiments' config, attributes and metrics
+    Compare(CompareArgs),
 }
 
 #[derive(Args, Debug)]
@@ -73,7 +78,7 @@ pub enum ExperimentSelector {
     Latest,
 }
 
-fn parse_experiment(value: &str) -> Result<ExperimentSelector, String> {
+pub fn parse_experiment(value: &str) -> Result<ExperimentSelector, String> {
     if value == "latest" {
         return Ok(ExperimentSelector::Latest);
     }
@@ -175,6 +180,31 @@ pub struct LogsArgs {
     /// Keep showing new entries until the experiment ends
     #[arg(long, conflicts_with_all = ["from", "to", "offset"])]
     pub follow: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct CompareArgs {
+    /// Experiment number to compare against
+    #[arg(value_parser = clap::value_parser!(i32).range(1..))]
+    pub base: i32,
+    /// Experiment number to compare
+    #[arg(value_parser = clap::value_parser!(i32).range(1..))]
+    pub other: i32,
+    /// Compare this metric; repeat for more
+    #[arg(long = "metric", value_name = "NAME", value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    pub metrics: Vec<String>,
+}
+
+impl CompareArgs {
+    fn check(&self) -> Result<(), CliError> {
+        if self.base == self.other {
+            return Err(CliError::new(
+                ErrorKind::Usage,
+                format!("Experiment {} can't be compared with itself.", self.base),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl LogsArgs {
@@ -347,6 +377,33 @@ impl Render for ExperimentLogQueryResponse {
     }
 }
 
+/// Find the experiment `selector` names in `project`.
+pub fn get_experiment(
+    client: &Client,
+    project: &TracelProject,
+    selector: &ExperimentSelector,
+) -> anyhow::Result<ExperimentDetailsResponse> {
+    match *selector {
+        ExperimentSelector::Number(num) => client
+            .get_experiment(&project.namespace, &project.name, num)
+            .map_err(|error| missing_experiment(error, project, num)),
+        ExperimentSelector::Latest => client
+            .get_project_latest_experiment(&project.namespace, &project.name)?
+            .ok_or_else(|| {
+                CliError::new(ErrorKind::NotFound, "No experiments in this project yet.").into()
+            }),
+    }
+}
+
+fn missing_experiment(error: ClientError, project: &TracelProject, num: i32) -> anyhow::Error {
+    map_resource_error(
+        error,
+        &project.namespace,
+        &project.name,
+        Resource::Experiment(num),
+    )
+}
+
 /// Name an experiment status in a word: "stopping" for the server's `cancel_requested`.
 fn status_name(status: &str) -> &str {
     match status {
@@ -428,8 +485,11 @@ fn follow_logs(
 }
 
 pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Result<Outcome> {
-    let client = get_client_and_login_if_needed(&context)?;
+    if let ExperimentsCommands::Compare(args) = &args.command {
+        args.check()?;
+    }
     let project = resolve_namespace_project(&context)?.project;
+    let client = get_client_and_login_if_needed(&context)?;
     let (namespace, name) = (&project.namespace, &project.name);
     let missing =
         |num| move |error| map_resource_error(error, namespace, name, Resource::Experiment(num));
@@ -446,17 +506,7 @@ pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Res
             )?
             .into()),
         ExperimentsCommands::Get(args) => {
-            let experiment = match args.experiment {
-                ExperimentSelector::Number(num) => client
-                    .get_experiment(namespace, name, num)
-                    .map_err(missing(num))?,
-                ExperimentSelector::Latest => client
-                    .get_project_latest_experiment(namespace, name)?
-                    .ok_or_else(|| {
-                        CliError::new(ErrorKind::NotFound, "No experiments in this project yet.")
-                    })?,
-            };
-            Ok(experiment.into())
+            Ok(get_experiment(&client, &project, &args.experiment)?.into())
         }
         ExperimentsCommands::Metrics(args) => {
             let Some(metric) = args.metric else {
@@ -501,6 +551,9 @@ pub fn handle_command(args: ExperimentsArgs, context: CliContext) -> anyhow::Res
                 .query_experiment_logs(namespace, name, num, request)
                 .map_err(missing(num))?
                 .into())
+        }
+        ExperimentsCommands::Compare(args) => {
+            Ok(compare::compare_experiments(&client, &project, args)?.into())
         }
     }
 }

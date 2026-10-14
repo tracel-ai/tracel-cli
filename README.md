@@ -17,7 +17,8 @@ The Tracel CLI (`tracel`) works with the
 and run training on compute providers. Together with the
 [Tracel SDK](https://github.com/tracel-ai/tracel) in your project, it lets you:
 
-- run your project locally and browse its experiments, metrics and logs;
+- run your program's jobs, on your machine or on compute providers, and browse
+  their experiments, metrics and logs;
 - package your code for compute providers;
 - push, pull and promote models, and download artifacts and datasets.
 
@@ -35,7 +36,7 @@ cd tracel-cli
 cargo install --path crates/tracel-cli
 ```
 
-You need Rust 1.87 or later, an account on the
+You need Rust 1.97 or later, an account on the
 [Tracel Console](https://console.tracel.ai/), and the Tracel SDK in your Burn
 project.
 
@@ -44,7 +45,8 @@ project.
 ```bash
 tracel login      # approve the login in your browser
 tracel init       # link this workspace to a Console project
-tracel train      # run it locally with `cargo run`
+tracel run --list # list the jobs your program defines
+tracel run train  # run one, recording it on the Console
 tracel experiments list
 ```
 
@@ -94,12 +96,11 @@ Tracel Console, creating the project if it doesn't exist. The link is saved in
 
 ```bash
 tracel init
-tracel init --owner my-org --name mnist --yes --allow-dirty
+tracel init --owner my-org --name mnist --yes
 tracel unlink
 ```
 
-`init` needs a git commit, and offers to commit your changes. `--force` links a
-workspace that is already linked to another project.
+`--force` links a workspace that is already linked to another project.
 
 ### `tracel project`
 
@@ -112,31 +113,46 @@ tracel project list
 tracel project list my-org
 ```
 
-### `tracel train`
+### `tracel run`
 
-Run the workspace locally with `cargo run`. Arguments after `--` go to your
-program, and its output and exit code are the command's.
+Run a job your program defines, on this machine or on a compute provider. Its
+input starts from the job's example, or from the input an experiment recorded
+with `--like`; `-c` merges JSON files onto it, and the job's own flags or `--set`
+change single values. `tracel run <job> --help` lists the job's flags. The run
+is recorded on the Tracel Console when the workspace is linked and you're logged
+in, and on this machine otherwise. Ctrl-C stops the job.
+
+With `--remote`, the workspace is packaged as `tracel package` does and the job
+is queued on a compute provider group once you confirm, since a job may incur
+costs. `--follow` then shows its logs until it finishes. Without a job,
+`tracel run` is `cargo run --release`.
 
 ```bash
-tracel train -- --epochs 10
+tracel run --list
+tracel run train --help
+tracel run train --epochs 5 --optimizer.lr 0.01
+tracel run train --set epochs=5 -c base.json --like 42
+tracel run train --offline
+tracel run train --remote gpu --mode binary --yes --follow
+tracel run -- --epochs 10
 ```
 
 ### `tracel package`
 
 Upload a code version of the workspace, the code compute providers run: a
-compiled binary, or the source to build there. A code version is the current
-commit, so `package` offers to commit your changes first.
+compiled binary, or the source to build there. Packaging the same source again
+gives the same code version.
 
 ```bash
 tracel package
 tracel package --mode binary --target x86_64-unknown-linux-gnu --json
-tracel package --mode source --allow-dirty
+tracel package --mode source
 ```
 
 ### `tracel experiments`
 
 Browse the project's experiments by their number, along with their metrics and
-logs. `exp` is short for `experiments`.
+logs, and compare two of them. `exp` is short for `experiments`.
 
 ```bash
 tracel experiments list --sort created_at,desc --limit 10
@@ -144,6 +160,7 @@ tracel exp get latest
 tracel exp metrics 42 --metric loss
 tracel exp logs 42 --level warn --level error
 tracel exp logs 42 --follow
+tracel exp compare 41 42 --metric loss
 ```
 
 ### `tracel models`
@@ -179,6 +196,19 @@ Browse the project's datasets and their published versions.
 tracel datasets list
 tracel datasets get images
 tracel datasets versions images
+```
+
+### `tracel jobs`
+
+Browse the project's jobs on compute providers, read and follow their logs,
+cancel them, and wait for them to finish.
+
+```bash
+tracel jobs list
+tracel jobs get 12
+tracel jobs logs 12 --follow
+tracel jobs cancel 12
+tracel jobs wait 12 --timeout 3600
 ```
 
 ## Development

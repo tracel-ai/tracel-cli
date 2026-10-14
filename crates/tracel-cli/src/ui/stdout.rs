@@ -1,4 +1,5 @@
 use std::io::{self, Write};
+use std::process::Stdio;
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -116,6 +117,13 @@ impl Output {
                     let body = box_text(report.as_ref(), width)?;
                     self.screen.show_result(summary.as_deref(), &body);
                 }
+                Delivery::Text => {
+                    let width = self.screen.stdout_width();
+                    self.write_stdout(|out| report.write_text(&mut Human::plain(out, width)))?;
+                    if summary.is_some() {
+                        self.screen.show_result(summary.as_deref(), "");
+                    }
+                }
                 Delivery::Stdout => {
                     let (format, width) = (self.screen.format(), self.screen.stdout_width());
                     self.write_stdout(|out| {
@@ -136,6 +144,17 @@ impl Output {
             write_event(format, width, event, out)?;
             out.flush()
         })
+    }
+
+    /// Choose where a program the command runs writes its stdout: here with text output,
+    /// or stderr with JSON output, which keeps stdout for the envelope. On a terminal the
+    /// program writes among a session's lines, so the live widget is settled first.
+    pub fn child_stdout(&self) -> Stdio {
+        self.screen.settle();
+        match self.screen.format() {
+            Format::Human => Stdio::inherit(),
+            Format::Json => Stdio::from(io::stderr()),
+        }
     }
 
     /// Write the error envelope of a failed command with JSON output. Text errors go
