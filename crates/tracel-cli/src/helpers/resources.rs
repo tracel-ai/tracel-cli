@@ -11,8 +11,32 @@ pub enum Resource<'a> {
     ModelVersion { model: &'a str, version: u32 },
     ModelAlias { model: &'a str, alias: &'a str },
     Experiment(i32),
+    Artifact { experiment: i32, artifact: &'a str },
     Dataset(&'a str),
     Job(i32),
+}
+
+impl Resource<'_> {
+    /// Name the resource in a sentence, such as "artifact 'weights' of experiment 42".
+    fn named(self) -> String {
+        match self {
+            Self::Model(model) => format!("model '{model}'"),
+            Self::ModelVersionRef { model, reference } => {
+                format!("version '{reference}' of model '{model}'")
+            }
+            Self::ModelVersion { model, version } => {
+                format!("version {version} of model '{model}'")
+            }
+            Self::ModelAlias { model, alias } => format!("alias '{alias}' of model '{model}'"),
+            Self::Experiment(experiment) => format!("experiment {experiment}"),
+            Self::Artifact {
+                experiment,
+                artifact,
+            } => format!("artifact '{artifact}' of experiment {experiment}"),
+            Self::Dataset(dataset) => format!("dataset '{dataset}'"),
+            Self::Job(job) => format!("job {job}"),
+        }
+    }
 }
 
 /// Turn the Tracel Console's "not found" for `resource` into an error that names it and
@@ -24,6 +48,13 @@ pub fn map_resource_error(
     resource: Resource<'_>,
 ) -> anyhow::Error {
     let (message, hint) = match (&error, resource) {
+        (ClientError::NotFoundWithCode(ApiErrorCode::ObjectStorageFile), resource) => {
+            let message = format!(
+                "The files of {} are missing from the Tracel Console's storage.",
+                resource.named()
+            );
+            return CliError::new(ErrorKind::NotFound, message).into();
+        }
         (
             ClientError::NotFoundWithCode(ApiErrorCode::Model),
             Resource::Model(model)
@@ -62,11 +93,26 @@ pub fn map_resource_error(
             format!("List aliases with `tracel models alias list {model}`."),
         ),
         (
-            ClientError::NotFound | ClientError::NotFoundWithCode(ApiErrorCode::Unknown),
+            ClientError::NotFound
+            | ClientError::NotFoundWithCode(ApiErrorCode::Unknown | ApiErrorCode::Experiment),
             Resource::Experiment(experiment),
+        )
+        | (
+            ClientError::NotFoundWithCode(ApiErrorCode::Experiment),
+            Resource::Artifact { experiment, .. },
         ) => (
             format!("No experiment {experiment} in {namespace}/{project}."),
             "List experiments with `tracel experiments list`.".to_string(),
+        ),
+        (
+            ClientError::NotFoundWithCode(ApiErrorCode::ExperimentArtifact),
+            Resource::Artifact {
+                experiment,
+                artifact,
+            },
+        ) => (
+            format!("No artifact '{artifact}' in experiment {experiment}."),
+            format!("List artifacts with `tracel artifacts list {experiment}`."),
         ),
         (ClientError::NotFoundWithCode(ApiErrorCode::Dataset), Resource::Dataset(dataset)) => (
             format!("No dataset '{dataset}' in {namespace}/{project}."),
@@ -201,6 +247,24 @@ mod tests {
         "job 12",
         "tracel jobs list"
     )]
+    #[case::experiment(
+        ApiErrorCode::Experiment,
+        Resource::Experiment(9),
+        "experiment 9",
+        "tracel experiments list"
+    )]
+    #[case::experiment_of_an_artifact(
+        ApiErrorCode::Experiment,
+        Resource::Artifact { experiment: 9, artifact: "weights" },
+        "experiment 9",
+        "tracel experiments list"
+    )]
+    #[case::artifact(
+        ApiErrorCode::ExperimentArtifact,
+        Resource::Artifact { experiment: 9, artifact: "weights" },
+        "'weights'",
+        "tracel artifacts list 9"
+    )]
     fn given_the_console_says_what_is_missing_when_mapping_the_error_then_it_names_it_and_how_to_list_them(
         #[case] code: ApiErrorCode,
         #[case] resource: Resource<'static>,
@@ -234,6 +298,27 @@ mod tests {
                 .hint
                 .unwrap()
                 .contains("tracel experiments list")
+        );
+    }
+
+    #[test]
+    fn given_the_stored_files_are_missing_when_mapping_the_error_then_it_says_so_of_the_resource() {
+        let error = map_resource_error(
+            ClientError::NotFoundWithCode(ApiErrorCode::ObjectStorageFile),
+            "alice",
+            "demo",
+            Resource::Artifact {
+                experiment: 9,
+                artifact: "weights",
+            },
+        );
+
+        assert_eq!(classify(&error), ErrorKind::NotFound);
+        assert!(
+            error
+                .to_string()
+                .contains("artifact 'weights' of experiment 9"),
+            "{error}"
         );
     }
 

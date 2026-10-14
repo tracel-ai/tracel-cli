@@ -193,9 +193,11 @@ impl Terminal {
         self.start(cliclack::spinner(), message.to_string())
     }
 
-    /// Start a bar that counts the `total` steps of one task.
-    pub fn progress(&self, message: impl Display, total: u64) -> Progress {
-        self.start(cliclack::progress_bar(total), message.to_string())
+    /// Start a bar that counts the bytes of a transfer of `total_bytes`, with its rate and
+    /// time left.
+    pub fn transfer(&self, message: impl Display, total_bytes: u64) -> Progress {
+        let bar = cliclack::progress_bar(total_bytes).with_download_template();
+        self.start(bar, message.to_string())
     }
 
     fn start(&self, bar: ProgressBar, message: String) -> Progress {
@@ -368,7 +370,7 @@ impl Progress {
         }
     }
 
-    /// Set how many of a bar's steps are done.
+    /// Set how much of a bar is done, such as the bytes a transfer has moved.
     pub fn set_position(&self, done: u64) {
         if let Some(id) = self.id {
             self.screen.set_position(id, done);

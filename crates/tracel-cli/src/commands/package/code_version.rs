@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
 use serde::Serialize;
+use tracel_artifact::upload::{MultipartUploadFile, MultipartUploadPart};
 use tracel_client::console::Client;
 use tracel_client::console::project::request::{
     PublishArtifactRequest, PublishBinaryRequest, PublishProjectVersionRequest,
@@ -12,6 +13,7 @@ use tracel_client::console::project::request::{
 
 use super::{MODE_HINT, MODE_NEEDED, Mode, PackageArgs, check_targets_allowed};
 use crate::context::CliContext;
+use crate::helpers::upload_files;
 use crate::tools::build_driver::{self, BuildDriver};
 use crate::tools::cargo::{self, Binary};
 use crate::tools::fs::file_sha256_and_size;
@@ -283,15 +285,28 @@ impl BuiltPackage {
             return Ok(version);
         }
 
-        let spinner = context.terminal().spinner("Uploading the code version");
+        let mut files = BTreeMap::new();
+        let mut plan = Vec::with_capacity(uploads.len());
         for (key, url, path) in uploads {
-            let bytes =
-                std::fs::read(&path).with_context(|| format!("Can't read '{}'", path.display()))?;
-            client
-                .upload_bytes_to_url(url, bytes)
-                .with_context(|| format!("Can't upload '{key}'"))?;
+            let size_bytes = std::fs::metadata(&path)
+                .with_context(|| format!("Can't read '{}'", path.display()))?
+                .len();
+            plan.push(MultipartUploadFile {
+                rel_path: key.clone(),
+                parts: vec![MultipartUploadPart {
+                    part: 1,
+                    url: url.to_string(),
+                    size_bytes,
+                }],
+            });
+            files.insert(key, path);
         }
-        spinner.clear();
+        upload_files(
+            context.terminal(),
+            "Uploading the code version",
+            &files,
+            &plan,
+        )?;
 
         client
             .complete_project_version_upload(&linked.namespace, &linked.name, &version.version_id)

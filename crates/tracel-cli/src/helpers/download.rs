@@ -1,14 +1,15 @@
-use std::fs::{self, File};
-use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::Context;
 use serde::Serialize;
-use sha2::{Digest, Sha256};
-use tracel_client::console::Client;
+use tracel_artifact::ReqwestTransferClient;
+use tracel_artifact::bundle::FsBundle;
+use tracel_artifact::download::{
+    ArtifactDownloadFile, download_artifacts_to_sink_with_client_and_observer,
+};
 
+use super::transfer::{TransferProgress, download_failure};
 use crate::error::{CliError, ErrorKind};
-use crate::ui::{Terminal, counted, short_digest};
+use crate::ui::{Terminal, counted};
 
 /// A file to download into a directory, with the size and checksum to check it against.
 pub struct DownloadFile {
@@ -61,132 +62,66 @@ fn check_destinations(directory: &Path, files: &[DownloadFile], force: bool) -> 
     Ok(())
 }
 
-struct HashingWriter<W> {
-    inner: W,
-    hasher: Sha256,
-    bytes: u64,
-}
-
-impl<W: Write> HashingWriter<W> {
-    fn new(inner: W) -> Self {
-        Self {
-            inner,
-            hasher: Sha256::new(),
-            bytes: 0,
-        }
-    }
-
-    fn verify(&self, file: &DownloadFile) -> anyhow::Result<()> {
-        if let Some(size) = file.size_bytes.filter(|size| *size != 0)
-            && self.bytes != size
-        {
-            anyhow::bail!(
-                "Size mismatch for '{}': expected {size} bytes, received {}.",
-                file.rel_path,
-                self.bytes
-            );
-        }
-        if let Some(checksum) = file
-            .checksum
-            .as_deref()
-            .filter(|checksum| !checksum.is_empty())
-        {
-            let actual = format!("{:x}", self.hasher.clone().finalize());
-            if !actual.eq_ignore_ascii_case(checksum) {
-                anyhow::bail!(
-                    "Checksum mismatch for '{}': expected {}, received {}.",
-                    file.rel_path,
-                    short_digest(checksum),
-                    short_digest(&actual)
-                );
-            }
-        }
-        Ok(())
-    }
-}
-
-impl<W: Write> Write for HashingWriter<W> {
-    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        let written = self.inner.write(buffer)?;
-        self.hasher.update(&buffer[..written]);
-        self.bytes += written as u64;
-        Ok(written)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush()
-    }
-}
-
-/// Download `files` into `directory` under a spinner, after checking every path and,
+/// Download `files` into `directory` under a progress bar, after checking every path and,
 /// unless `force`, that none of them exists.
+///
+/// The files are downloaded beside `directory`, and checked against their size and
+/// checksum, before any of them moves into it, so a failed download leaves nothing in it.
 pub fn download_files(
-    client: &Client,
     terminal: &Terminal,
     directory: &Path,
     files: &[DownloadFile],
     force: bool,
 ) -> anyhow::Result<Vec<DownloadResult>> {
     check_destinations(directory, files, force)?;
-    let spinner = terminal.spinner(format!(
+    let staging_parent = match directory.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let mut staging = FsBundle::temp_in(staging_parent, ".tracel-download-")?;
+    let downloads: Vec<ArtifactDownloadFile> = files
+        .iter()
+        .map(|file| ArtifactDownloadFile {
+            rel_path: file.rel_path.clone(),
+            url: file.url.clone(),
+            size_bytes: file.size_bytes,
+            checksum: file.checksum.clone(),
+        })
+        .collect();
+    let total = files.iter().filter_map(|file| file.size_bytes).sum();
+    let message = format!(
         "Downloading {}",
         counted(files.len() as u64, ["file", "files"])
-    ));
-    let results = download_each(client, directory, files)?;
-    spinner.clear();
-    Ok(results)
-}
+    );
+    let mut progress = TransferProgress::new(terminal.transfer(message, total));
+    download_artifacts_to_sink_with_client_and_observer(
+        &ReqwestTransferClient::new(),
+        &mut staging,
+        &downloads,
+        &mut progress,
+    )
+    .map_err(download_failure)?;
+    progress.finish();
+    staging.move_into(directory)?;
 
-fn download_each(
-    client: &Client,
-    directory: &Path,
-    files: &[DownloadFile],
-) -> anyhow::Result<Vec<DownloadResult>> {
-    let mut results = Vec::with_capacity(files.len());
-    for file in files {
-        let path = directory.join(&file.rel_path);
-        let parent = path.parent().expect("Validated relative file has a parent");
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Can't create '{}'", parent.display()))?;
-        let mut name = path
-            .file_name()
-            .expect("Validated relative file has a name")
-            .to_os_string();
-        name.push(".part");
-        let part = path.with_file_name(name);
-        let output =
-            File::create(&part).with_context(|| format!("Can't create '{}'", part.display()))?;
-        let result = (|| -> anyhow::Result<u64> {
-            let mut writer = HashingWriter::new(output);
-            client.download_from_url(&file.url, &mut writer)?;
-            writer.flush()?;
-            writer.verify(file)?;
-            let bytes = writer.bytes;
-            drop(writer);
-            fs::rename(&part, &path).with_context(|| format!("Can't save '{}'", path.display()))?;
-            Ok(bytes)
-        })();
-        let bytes = result.inspect_err(|_| {
-            let _ = fs::remove_file(&part);
-        })?;
-        results.push(DownloadResult {
+    Ok(files
+        .iter()
+        .map(|file| DownloadResult {
             rel_path: file.rel_path.clone(),
-            path,
-            bytes,
-        });
-    }
-    Ok(results)
+            path: directory.join(&file.rel_path),
+            bytes: progress.moved(&file.rel_path).unwrap_or_default(),
+        })
+        .collect())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use rstest::rstest;
 
     use super::*;
     use crate::error::classify;
-
-    const HELLO_WORLD_SHA256: &str =
-        "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
 
     fn file(rel_path: &str, size_bytes: Option<u64>, checksum: Option<&str>) -> DownloadFile {
         DownloadFile {
@@ -194,26 +129,6 @@ mod tests {
             url: String::new(),
             size_bytes,
             checksum: checksum.map(str::to_string),
-        }
-    }
-
-    fn written(contents: &[u8]) -> HashingWriter<Vec<u8>> {
-        let mut writer = HashingWriter::new(Vec::new());
-        writer.write_all(contents).unwrap();
-        writer
-    }
-
-    struct TwoBytesAtATime(Vec<u8>);
-
-    impl Write for TwoBytesAtATime {
-        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-            let count = data.len().min(2);
-            self.0.extend_from_slice(&data[..count]);
-            Ok(count)
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
         }
     }
 
@@ -241,63 +156,6 @@ mod tests {
         let validated = validate_rel_path(rel_path);
 
         assert!(validated.is_err());
-    }
-
-    #[test]
-    fn given_a_writer_that_takes_two_bytes_at_a_time_when_writing_then_only_written_bytes_are_hashed()
-     {
-        let mut writer = HashingWriter::new(TwoBytesAtATime(Vec::new()));
-
-        writer.write_all(b"hello world").unwrap();
-
-        assert_eq!(writer.inner.0, b"hello world");
-        assert_eq!(writer.bytes, 11);
-        assert_eq!(
-            format!("{:x}", writer.hasher.finalize()),
-            HELLO_WORLD_SHA256
-        );
-    }
-
-    #[test]
-    fn given_the_declared_size_and_checksum_when_verifying_a_download_then_it_passes() {
-        let writer = written(b"hello world");
-        let declared = file("hello", Some(11), Some(&HELLO_WORLD_SHA256.to_uppercase()));
-
-        let verified = writer.verify(&declared);
-
-        assert!(verified.is_ok());
-    }
-
-    #[rstest]
-    #[case::none(None, None)]
-    #[case::zero_and_empty(Some(0), Some(""))]
-    fn given_no_declared_size_or_checksum_when_verifying_a_download_then_it_passes(
-        #[case] size_bytes: Option<u64>,
-        #[case] checksum: Option<&str>,
-    ) {
-        let writer = written(b"hello world");
-
-        let verified = writer.verify(&file("hello", size_bytes, checksum));
-
-        assert!(verified.is_ok());
-    }
-
-    #[test]
-    fn given_another_size_when_verifying_a_download_then_it_fails() {
-        let writer = written(b"hello world");
-
-        let verified = writer.verify(&file("hello", Some(10), None));
-
-        assert!(verified.is_err());
-    }
-
-    #[test]
-    fn given_another_checksum_when_verifying_a_download_then_it_fails() {
-        let writer = written(b"hello world");
-
-        let verified = writer.verify(&file("hello", None, Some("0123abcd")));
-
-        assert!(verified.is_err());
     }
 
     #[test]

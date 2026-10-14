@@ -18,7 +18,7 @@ use screen::{Screen, Terminals};
 pub use format::{Format, FormatArg};
 pub use human::{Details, Human, Table, counted, list_summary, number, short_digest, size};
 pub use layout::{Layout, Place};
-pub use stderr::{Declined, Terminal, Unanswered};
+pub use stderr::{Declined, Progress, Terminal, Unanswered};
 pub use stdout::{Outcome, Output, Render, StdoutClosed};
 pub use time::{Timestamp, elapsed, log_time, when};
 

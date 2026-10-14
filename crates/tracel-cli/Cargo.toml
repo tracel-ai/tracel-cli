@@ -17,6 +17,7 @@ path = "src/bin/tracel.rs"
 
 [dependencies]
 tracel-client.workspace = true
+tracel-artifact.workspace = true
 tracel-job = { workspace = true, features = ["cli"] }
 anyhow.workspace = true
 clap.workspace = true

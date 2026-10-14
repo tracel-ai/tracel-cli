@@ -192,7 +192,17 @@ pub fn handle_command(args: ArtifactsArgs, context: CliContext) -> anyhow::Resul
             };
             let response = client
                 .presign_artifact_download(namespace, name, args.experiment, &artifact.id)
-                .map_err(map_error)?;
+                .map_err(|error| {
+                    map_resource_error(
+                        error,
+                        namespace,
+                        name,
+                        Resource::Artifact {
+                            experiment: args.experiment,
+                            artifact: &artifact.name,
+                        },
+                    )
+                })?;
             let files: Vec<_> = response
                 .files
                 .into_iter()
@@ -206,8 +216,7 @@ pub fn handle_command(args: ArtifactsArgs, context: CliContext) -> anyhow::Resul
                     }
                 })
                 .collect();
-            let files =
-                download_files(&client, context.terminal(), &directory, &files, args.force)?;
+            let files = download_files(context.terminal(), &directory, &files, args.force)?;
             let bytes = files.iter().map(|file| file.bytes).sum();
             context.terminal().outro(&format!(
                 "Downloaded artifact '{}' ({}) to {}.",
