@@ -29,7 +29,7 @@ use crate::ui::{Human, Layout, Outcome, Render, Table, Terminal, Unanswered, lis
 
 use describe::{describe, find_job};
 use input::Assignment;
-use launch::{Event, Launch, Target, exit_error, launch, select_target};
+use launch::{Launch, Target, exit_error, launch, select_target};
 
 #[derive(Args, Debug)]
 #[command(group(
@@ -225,21 +225,14 @@ fn run_job(job: &str, args: &RunArgs, context: &CliContext) -> anyhow::Result<Ou
 
     let mut env = sdk_environment(context, project.as_ref());
     env.push(("TRACEL_TARGET", target.as_str().to_string()));
-    let exit = launch(
-        Launch {
-            program: &described.program,
-            job,
-            input: &input_json,
-            env,
-            stdout: context.output().child_stdout(),
-        },
-        |event| match event {
-            Event::Stopping => terminal.info(&format!(
-                "Stopping job '{job}'; it is killed if still running in 30 seconds."
-            )),
-            Event::Killed => terminal.warning(&format!("Killed job '{job}'.")),
-        },
-    )?;
+    let exit = launch(Launch {
+        program: &described.program,
+        job,
+        input: &input_json,
+        env,
+        stdout: context.output().child_stdout(),
+    })?;
+    terminal.program_ended(exit.stopped);
     if let Some(error) = exit_error(job, &exit) {
         return Err(error.into());
     }

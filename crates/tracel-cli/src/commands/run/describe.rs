@@ -9,6 +9,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tracel_job::{DefinitionsFile, JobDefinition, PROTOCOL, ParseError, TRACEL_DESCRIBE};
 
+use super::launch::wait_until;
 use crate::error::{CliError, ErrorKind};
 use crate::tools::cargo;
 use crate::tools::fs::file_sha256_and_size;
@@ -262,26 +263,20 @@ fn run_describe(program: &Path, name: &str, timeout: Duration) -> anyhow::Result
         .with_context(|| format!("Can't run {}", program.display()))?;
 
     let started = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if started.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(CliError::new(
-                ErrorKind::Timeout,
-                format!(
-                    "`{name}` did not list its jobs within {} seconds.",
-                    timeout.as_secs()
-                ),
-            )
-            .with_hint(
-                "To list its jobs, the program must reach `Jobs::run` quickly; move slow setup into its jobs.",
-            )
-            .into());
-        }
-        std::thread::sleep(Duration::from_millis(50));
+    let Some(status) = wait_until(&mut child, || started.elapsed() >= timeout)? else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(CliError::new(
+            ErrorKind::Timeout,
+            format!(
+                "`{name}` didn't list its jobs within {} seconds.",
+                timeout.as_secs()
+            ),
+        )
+        .with_hint(
+            "To list its jobs, the program must reach `Jobs::run` quickly; move slow setup into its jobs.",
+        )
+        .into());
     };
     if !status.success() {
         let ended = match status.code() {

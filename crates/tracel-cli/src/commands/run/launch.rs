@@ -1,8 +1,9 @@
+use std::io;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use anyhow::Context;
 use serde::Serialize;
@@ -10,10 +11,8 @@ use tracel_job::{ExitCode, TRACEL_DESCRIBE};
 
 use crate::error::{CliError, ErrorKind};
 
-/// How long a program has to stop after it is asked to, before it is killed.
-const STOP_GRACE: Duration = Duration::from_secs(30);
-/// How often the program and the signals are checked.
-const TICK: Duration = Duration::from_millis(100);
+/// How often a running program and the signals are checked.
+const TICK: Duration = Duration::from_millis(50);
 
 /// Where a job run records its experiment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -78,29 +77,18 @@ pub struct Exit {
     pub stopped: bool,
 }
 
-/// Something that happened while the program ran.
-pub enum Event {
-    /// A signal was forwarded to the program for the first time.
-    Stopping,
-    /// The program was still running 30 seconds after the first signal, and was killed.
-    Killed,
-}
-
-/// Run `<program> <job> <input>` and wait for it, calling `on_event` as it runs.
+/// Run `<program> <job> <input>` and wait for it.
 ///
-/// SIGINT, SIGTERM and SIGHUP are forwarded to the program as SIGTERM, and the program is
-/// killed when it is still running 30 seconds after the first. The program runs in its own
-/// process group with stdin closed, so a Ctrl-C in the terminal reaches it only as that
-/// SIGTERM. On Windows, the console delivers Ctrl-C to the program itself, and the program
-/// is killed 30 seconds later.
-pub fn launch(launch: Launch, mut on_event: impl FnMut(Event)) -> anyhow::Result<Exit> {
-    let signals = Arc::new(AtomicUsize::new(0));
+/// The program runs in a process group of its own with stdin closed, so a Ctrl-C in the
+/// terminal reaches only `tracel`. The first SIGINT, SIGTERM or SIGHUP `tracel` gets kills
+/// the program and what it started at once. On Windows, the console also delivers Ctrl-C
+/// to the program.
+pub fn launch(launch: Launch) -> anyhow::Result<Exit> {
+    let signalled = Arc::new(AtomicBool::new(false));
     {
-        let signals = signals.clone();
-        ctrlc::set_handler(move || {
-            signals.fetch_add(1, Ordering::SeqCst);
-        })
-        .context("Can't handle termination signals")?;
+        let signalled = Arc::clone(&signalled);
+        ctrlc::set_handler(move || signalled.store(true, Ordering::SeqCst))
+            .context("Can't handle termination signals")?;
     }
 
     let mut command = Command::new(launch.program);
@@ -111,62 +99,65 @@ pub fn launch(launch: Launch, mut on_event: impl FnMut(Event)) -> anyhow::Result
         .envs(launch.env)
         .stdin(Stdio::null())
         .stdout(launch.stdout);
+    let mut child = own_process_group(&mut command)
+        .spawn()
+        .with_context(|| format!("Can't run {}", launch.program.display()))?;
+
+    if let Some(status) = wait_until(&mut child, || signalled.load(Ordering::SeqCst))? {
+        return Ok(Exit {
+            status,
+            stopped: false,
+        });
+    }
+    kill_job(&mut child).context("Can't stop the job")?;
+    Ok(Exit {
+        status: child.wait()?,
+        stopped: true,
+    })
+}
+
+/// Wait for `child` to exit, checking every tick until `give_up` says to stop waiting.
+/// Returns its status, or `None` when waiting was given up.
+pub fn wait_until(
+    child: &mut Child,
+    mut give_up: impl FnMut() -> bool,
+) -> io::Result<Option<ExitStatus>> {
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if give_up() {
+            return Ok(None);
+        }
+        std::thread::sleep(TICK);
+    }
+}
+
+/// Make the program `command` runs the leader of a process group of its own, which
+/// [`kill_job`] kills. On Windows, it is left as is.
+fn own_process_group(command: &mut Command) -> &mut Command {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    let mut child = command
-        .spawn()
-        .with_context(|| format!("Can't run {}", launch.program.display()))?;
-
-    let mut forwarded = 0;
-    let mut stop_requested_at = None;
-    let mut killed = false;
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        let received = signals.load(Ordering::SeqCst);
-        if received > forwarded {
-            forwarded = received;
-            request_stop(&child);
-            if stop_requested_at.is_none() {
-                stop_requested_at = Some(Instant::now());
-                on_event(Event::Stopping);
-            }
-        }
-        if let Some(requested_at) = stop_requested_at
-            && !killed
-            && requested_at.elapsed() >= STOP_GRACE
-        {
-            let _ = child.kill();
-            killed = true;
-            on_event(Event::Killed);
-        }
-        std::thread::sleep(TICK);
-    };
-
-    Ok(Exit {
-        status,
-        stopped: stop_requested_at.is_some(),
-    })
+    command
 }
 
-#[cfg(unix)]
-fn request_stop(child: &Child) {
-    let Ok(pid) = libc::pid_t::try_from(child.id()) else {
-        return;
-    };
-    // SAFETY: `kill` has no memory effects; `pid` is a child not yet waited for.
-    unsafe {
-        libc::kill(pid, libc::SIGTERM);
+/// Kill the program `child` runs and the processes it started: on Unix with SIGKILL to
+/// the process group it leads, or to the program alone when that fails; on Windows the
+/// program.
+fn kill_job(child: &mut Child) -> io::Result<()> {
+    #[cfg(unix)]
+    if let Ok(pid) = libc::pid_t::try_from(child.id()) {
+        // SAFETY: `killpg` has no memory effects; `pid` leads the group of a child not yet
+        // waited for.
+        if unsafe { libc::killpg(pid, libc::SIGKILL) } == 0 {
+            return Ok(());
+        }
     }
+    child.kill()
 }
-
-/// The console already delivered the Ctrl-C to the program.
-#[cfg(not(unix))]
-fn request_stop(_child: &Child) {}
 
 /// Build the error a run of `job` that ended with `exit` fails with, unless the job
 /// completed: `JOB_FAILED` when the job failed or was stopped, and `USAGE` when the
@@ -292,5 +283,37 @@ mod tests {
                 "{script} {stopped}"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn killing_a_job_kills_the_processes_it_started() {
+        use std::io::{BufRead, BufReader, Read};
+        use std::sync::mpsc;
+
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "(echo ready; sleep 30; echo survived) & wait"])
+            .stdout(Stdio::piped());
+        let mut job = own_process_group(&mut command).spawn().unwrap();
+        let mut stdout = BufReader::new(job.stdout.take().unwrap());
+        let mut ready = String::new();
+        stdout.read_line(&mut ready).unwrap();
+
+        kill_job(&mut job).unwrap();
+        let (sender, closed) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut rest = String::new();
+            let _ = stdout.read_to_string(&mut rest);
+            let _ = sender.send(rest);
+        });
+
+        assert_eq!(ready, "ready\n");
+        assert_eq!(
+            closed.recv_timeout(Duration::from_secs(10)).as_deref(),
+            Ok(""),
+            "a process the job started outlived it"
+        );
+        assert!(!job.wait().unwrap().success());
     }
 }

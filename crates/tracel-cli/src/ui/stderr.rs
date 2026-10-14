@@ -136,6 +136,14 @@ impl Terminal {
         }
     }
 
+    /// End the line a program the command ran left after the `^C` the terminal echoed,
+    /// when it was interrupted, so what comes next starts a line of its own.
+    pub fn program_ended(&self, interrupted: bool) {
+        if interrupted && io::stderr().is_terminal() {
+            let _ = writeln!(io::stderr());
+        }
+    }
+
     /// Report a failed command: its message and hint here, and its envelope on stdout
     /// with JSON output. On a terminal the command ends on cliclack's red closing line,
     /// with the hint under the message.
