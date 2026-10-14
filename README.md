@@ -17,7 +17,8 @@ The Tracel CLI (`tracel`) works with the
 and run training on compute providers. Together with the
 [Tracel SDK](https://github.com/tracel-ai/tracel) in your project, it lets you:
 
-- run your project locally and browse its experiments, metrics and logs;
+- run your program's jobs, on your machine or on compute providers, and browse
+  their experiments, metrics and logs;
 - package your code for compute providers;
 - push, pull and promote models, and download artifacts and datasets.
 
@@ -44,7 +45,8 @@ project.
 ```bash
 tracel login      # approve the login in your browser
 tracel init       # link this workspace to a Console project
-tracel run        # run it locally with `cargo run`
+tracel run --list # list the jobs your program defines
+tracel run train  # run one, recording it on the Console
 tracel experiments list
 ```
 
@@ -113,23 +115,25 @@ tracel project list my-org
 
 ### `tracel run`
 
-Run a job your program defines, on this machine or on a compute provider. A
-job's input starts from its example, or from the input an experiment recorded
-with `--like`; `-c` merges JSON files onto it, and the job's own flags or
-`--set` change single values. `tracel run <job> --help` lists the job's flags. The
-run is recorded on the Tracel Console when the workspace is linked, and on this
-machine otherwise. With `--remote`, the workspace is packaged as `tracel
-package` does and the job is queued on a compute provider group, once you
-confirm, since a job may cost money. Without a job, `tracel run` is `cargo run`.
+Run a job your program defines, on this machine or on a compute provider. Its
+input starts from the job's example, or from the input an experiment recorded
+with `--like`; `-c` merges JSON files onto it, and the job's own flags or `--set`
+change single values. `tracel run <job> --help` lists the job's flags. The run
+is recorded on the Tracel Console when the workspace is linked and you're logged
+in, and on this machine otherwise. Ctrl-C stops the job.
+
+With `--remote`, the workspace is packaged as `tracel package` does and the job
+is queued on a compute provider group once you confirm, since a job may incur
+costs. `--follow` then shows its logs until it finishes. Without a job,
+`tracel run` is `cargo run --release`.
 
 ```bash
 tracel run --list
 tracel run train --help
 tracel run train --epochs 5 --optimizer.lr 0.01
-tracel run train --set epochs=5 --set optimizer.lr=0.01
-tracel run train -c base.json --like 42
+tracel run train --set epochs=5 -c base.json --like 42
 tracel run train --offline
-tracel run train --remote gpu --mode source --yes --follow
+tracel run train --remote gpu --mode binary --yes --follow
 tracel run -- --epochs 10
 ```
 

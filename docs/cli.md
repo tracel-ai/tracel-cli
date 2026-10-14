@@ -16,8 +16,7 @@ questions, warnings and errors. The format is the first of these that is set:
 
 `auth token` and `run -- <args>` are plain text under `auto` too: `auth token`
 prints the bare token, and `run -- <args>` writes what the program it runs
-writes. Help and
-version output keep clap's own format.
+writes. Help and version output keep clap's own format.
 
 On a terminal, a command that reads shows its result in a frame titled with a
 line that sums it up, the project and the environment when it isn't
@@ -78,8 +77,8 @@ return:
 | `artifacts download` | `experiment`, `artifact`, `directory`, `files`, `bytes` |
 | `experiments compare` | `base`, `other`, `config` and `attributes` (each difference `path`, `base`, `other`), `metrics` (each `metric`, `group`, `base`, `other`, `delta`) |
 | `jobs cancel`, `jobs wait` | the job, as read afterwards |
-| `run --list` | `protocol`, `sdk_version`, `runner`, `jobs` (each `name`, `description`, `input_schema`, `input_example`) |
-| `run <job>` | `job`, `input`, `target` (`"console"` or `"offline"`), `exit_code`, `report` (null when the program wrote none) |
+| `run --list` | `protocol`, `sdk_version`, `jobs` (each `name`, `description`, `input_schema`, `input_example`) |
+| `run <job>` | `job`, `input`, `target` (`"console"` or `"offline"`), `exit_code` |
 | `run --remote` | `job_num` (null when the Tracel Console doesn't return it), `job_id`, `group`, `digest`, `version_id`, `command`, `uploaded` |
 | `run --remote --dry-run` | `namespace`, `project`, `group`, `mode`, `digest`, `command` |
 
@@ -147,15 +146,16 @@ next `--complete`; a denied or expired login has to start again.
 source: the SHA-256 of `path:sha256` lines sorted by path, one per file a source
 package holds. Binary packages use the same digest and upload only the
 binaries, so every package of the same source, in either mode and for any
-target, belongs to one code version, and a binary replaces the one already
-uploaded for its target. `uploaded` is false when the code version already
-had what was packaged.
+target, belongs to one code version. Only the files the code version doesn't
+have yet are uploaded, such as the binary for a new target, and `uploaded` is
+false when it already had them all.
 
 - `--mode binary` builds a release binary for each `--target <triple>`, the
-  host when there is none and no question can be asked. `--bin <name>` picks
-  the binary when the build makes several. On Linux, building for another
-  architecture needs its linker, and building for another OS needs
-  `cargo-zigbuild` or, for Windows, `cargo-xwin`.
+  host when there is none and no question can be asked. `--bin <name>` builds
+  only that binary; without it, every binary is built, and you choose one when
+  there are several. On Linux, building for another architecture needs its
+  linker, and building for another OS needs `cargo-zigbuild` or, for Windows,
+  `cargo-xwin`.
 - `--mode source` uploads the workspace's files, to be built where the code
   runs. It leaves out what `.gitignore`, `.ignore`, `.git/info/exclude` and
   git's global excludes file match, with or without a git repository, and
@@ -206,9 +206,10 @@ Each file's size and SHA-256 checksum are checked before it is saved.
 
 - A job's status is `new`, `queued`, `running`, `pending_cancellation`,
   `completed`, `failed` or `cancelled`.
-- `jobs logs <number>` reads one page of the job's log file. `--start <byte>`
-  reads from a byte offset, and a page's `end` is the next page's `start`.
-  `--follow` reads until the job has finished.
+- `jobs logs <number>` reads one page of the job's log file, and shows it as it
+  is, then the command that reads the next page when there is more.
+  `--start <byte>` reads from a byte offset, and a page's `end` is the next
+  page's `start`. `--follow` reads until the job has finished.
 - `jobs cancel <number>` cancels a new, queued or running job, after asking;
   `--yes` skips the question. A running job stays `pending_cancellation` until
   its compute provider stops it.
@@ -219,37 +220,40 @@ Each file's size and SHA-256 checksum are checked before it is saved.
 ## Running jobs
 
 - Jobs come from the binary of a workspace package that depends on the
-  `tracel` crate. `--bin <name>` picks one when there are several, unless the
-  package's `default-run` names it. The binary has to run its jobs with
-  `tracel::app::cli::Cli`.
-- To list its jobs, the binary is built and run with `TRACEL_DESCRIBE=<path>`,
-  and has 10 seconds to write their definitions there. They're cached in
-  `target/tracel/jobs.json` until the binary changes.
+  `tracel` crate and runs them with `tracel::runtime::Jobs`. `--bin <name>`
+  picks one when there are several, unless the package's `default-run` names
+  it.
+- The binary is built with
+  `cargo build --release --package <package> --bin <binary>`, the build
+  `--remote --mode binary` uploads for this machine, and cargo's output shows
+  only when the build fails. To list its jobs, it runs with
+  `TRACEL_DESCRIBE=<path>` and has 10 seconds to write their definitions
+  there. They're cached in `target/tracel/jobs.json` until the binary
+  changes.
 - `run <job>` starts from the job's example input, or from the input of the
   experiment `--like <number|latest>` names. Each `-c <file>` is merged onto it
   as a JSON merge patch (RFC 7386), then the job's flags set their fields, then
   each `--set <path>=<value>` sets one value at a dotted path with array
   indices, such as `layers[0].size`. A value that isn't JSON is a string. An
   input that doesn't match the job's schema fails with `USAGE`.
-- A job's flags are its binary's: one per field of its input, typed by the
-  input schema or else the example input. A nested field's flag joins the keys
-  with dots and writes `_` as `-`, as in `--optimizer.weight-decay`. A boolean
-  flag without a value is `true`, and an array, a map or a `null` field takes
-  JSON. A field whose flag has the name of one of `run`'s own, such as
-  `offline`, is set with `--set`.
+- A job whose input has a JSON schema has flags, one per field, typed by the
+  schema. A nested field's flag joins the keys with dots and writes `_` as
+  `-`, as in `--optimizer.weight-decay`. A boolean flag without a value is
+  `true`, and an array, a map or an optional object takes JSON. A field whose
+  flag has the name of one of `run`'s own, such as `offline`, is set with
+  `--set`.
 - The job runs as `<binary> <job> <input>`, with stdin closed. With JSON
   output, its stdout goes to stderr.
 - The run is recorded on the Tracel Console when a project is linked and a
   credential is available, and on this machine otherwise or with `--offline`.
-  The program gets `TRACEL_TARGET` (`console` or `offline`), `TRACEL_ENV`,
-  `TRACEL_NAMESPACE` and `TRACEL_PROJECT`, and `TRACEL_REPORT_FILE`, where it
-  writes how the job is going and the experiment it recorded, if any.
-- A job is stopped when `tracel` asked it to stop, or when the program exits
-  with code 130. A stopped job fails with `JOB_FAILED`, as does a job whose
-  report says it failed. Without a final report, exit code 0 means completed,
-  2 a rejected input, and any other code or a signal failed.
-- Ctrl-C, SIGTERM or SIGHUP stops the job: the program gets SIGTERM, and is
-  killed when it is still running 30 seconds later.
+  The program gets `TRACEL_TARGET` (`console` or `offline`), `TRACEL_ENV`, and
+  `TRACEL_NAMESPACE` and `TRACEL_PROJECT` when a project is linked.
+- The program's exit code says how the job ended: 0 is completed, 2 is a job
+  or input the program rejected, which fails with `USAGE`, and any other code
+  or a signal is a failure, which fails with `JOB_FAILED`.
+- Ctrl-C, SIGTERM or SIGHUP kills the job and the processes it started, and
+  fails with `JOB_FAILED`.
+- Without a job, `run -- <args>` is `cargo run --release -- <args>`.
 
 ## Remote runs
 
@@ -259,9 +263,12 @@ Each file's size and SHA-256 checksum are checked before it is saved.
   arguments after `--`. They reach the program unchanged: the job command
   single-quotes each argument that is empty, starts with `#`, or contains a
   space, tab, newline, quote or backslash.
-- A job may incur costs, so the command asks before uploading anything, and
-  `--yes` skips the question. Without a terminal it needs `--yes`, and fails
-  with `CONFIRMATION_REQUIRED` before packaging.
+- A job may incur costs, so the command asks before uploading anything, naming
+  the group and the code version, and `--yes` skips the question. Without a
+  terminal it needs `--yes`, and fails with `CONFIRMATION_REQUIRED` before
+  packaging.
+- In human output, the command ends on the commands that follow the job's
+  logs and wait for it.
 - `--dry-run` packages and shows the job without logging in, uploading or
   queuing.
 - `--follow` follows the job's logs, then exits as `jobs wait` does. Without a
