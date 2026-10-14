@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -405,19 +406,20 @@ fn upload(
         targets: prepared.targets.clone(),
         uploaded,
     };
-    let Some(urls) = response.urls else {
+    let uploads = match &response.urls {
+        Some(urls) => requested(prepared.uploads, urls),
+        None => Vec::new(),
+    };
+    if uploads.is_empty() {
         context.terminal().outro(&format!(
             "Code version {} is already uploaded.",
             short_digest(digest)
         ));
         return Ok(packaged(false));
-    };
+    }
 
     let spinner = context.terminal().spinner("Uploading the code version");
-    for (key, path) in prepared.uploads {
-        let url = urls
-            .get(&key)
-            .with_context(|| format!("The Tracel Console sent no upload URL for '{key}'"))?;
+    for (key, url, path) in uploads {
         let bytes =
             std::fs::read(&path).with_context(|| format!("Can't read '{}'", path.display()))?;
         client
@@ -440,4 +442,47 @@ fn upload(
         short_digest(&response.digest)
     ));
     Ok(packaged(true))
+}
+
+/// The files of a package the Tracel Console asked for, each with its upload URL. A file
+/// the code version already has gets no URL and is left out.
+fn requested(
+    uploads: Vec<(String, PathBuf)>,
+    urls: &HashMap<String, String>,
+) -> Vec<(String, &str, PathBuf)> {
+    uploads
+        .into_iter()
+        .filter_map(|(key, path)| urls.get(&key).map(|url| (key, url.as_str(), path)))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_files_the_console_asks_for_are_uploaded() {
+        let uploads = vec![
+            (
+                "x86_64-unknown-linux-gnu".to_string(),
+                PathBuf::from("linux"),
+            ),
+            ("aarch64-apple-darwin".to_string(), PathBuf::from("macos")),
+        ];
+        let urls = HashMap::from([(
+            "aarch64-apple-darwin".to_string(),
+            "https://storage/macos".to_string(),
+        )]);
+
+        let requested = requested(uploads, &urls);
+
+        assert_eq!(
+            requested,
+            [(
+                "aarch64-apple-darwin".to_string(),
+                "https://storage/macos",
+                PathBuf::from("macos")
+            )]
+        );
+    }
 }
