@@ -1,11 +1,15 @@
+use std::io::{self, Write};
 use std::time::SystemTime;
 
 use clap::{Args, Subcommand};
+use serde::Serialize;
 use tracel_client::ClientError;
 use tracel_client::console::TracelCredentials;
 
-use crate::commands::login::environment_suffix;
+use crate::commands::login::login_needed;
 use crate::context::{CliContext, ClientCreationError};
+use crate::error::{CliError, ErrorKind};
+use crate::ui::{Details, Human, Layout, Outcome, Render, Timestamp};
 
 #[derive(Args, Debug)]
 pub struct AuthArgs {
@@ -15,77 +19,128 @@ pub struct AuthArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum AuthCommands {
-    /// Print an access token of your login, renewed if needed, for scripts.
-    /// TRACEL_API_KEY is ignored.
+    /// Print an access token of your login for scripts
     Token,
-    /// Show which credential commands use, the user they act as, and when your login ends.
+    /// Show the credential in use and when your login ends
     Status,
 }
 
-pub fn handle_command(args: AuthArgs, context: CliContext) -> anyhow::Result<()> {
-    match args.command {
-        AuthCommands::Token => print_token(&context),
-        AuthCommands::Status => show_status(&context),
+impl AuthArgs {
+    /// `token` draws nothing: its bare value is read by other programs.
+    pub fn layout(&self) -> Layout {
+        match self.command {
+            AuthCommands::Token => Layout::Bare,
+            AuthCommands::Status => Layout::Read,
+        }
     }
 }
 
-fn print_token(context: &CliContext) -> anyhow::Result<()> {
-    let access_token = context.app_session()?.access_token().map_err(|e| match e {
-        ClientError::AppSessionEnded => anyhow::anyhow!(
-            "Not logged in{}. Run 'tracel login' first.",
-            environment_suffix(&context.environment())
-        ),
-        e => e.into(),
-    })?;
-
-    println!("{}", access_token.as_str());
-
-    Ok(())
+pub fn handle_command(args: AuthArgs, context: CliContext) -> anyhow::Result<Outcome> {
+    match args.command {
+        AuthCommands::Token => Ok(access_token(&context)?.into()),
+        AuthCommands::Status => Ok(status(&context)?.into()),
+    }
 }
 
-fn show_status(context: &CliContext) -> anyhow::Result<()> {
-    context.terminal().command_title("Authentication Status");
+/// Printed bare for `$(tracel auth token)`.
+#[derive(Serialize)]
+struct AccessToken {
+    access_token: String,
+}
 
-    let client = context.create_client();
+impl Render for AccessToken {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
+        writeln!(out, "{}", self.access_token)
+    }
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum Credential {
+    ApiKey,
+    Login,
+}
+
+#[derive(Serialize)]
+struct AuthStatus {
+    credential: Credential,
+    login_ends_at: Option<Timestamp>,
+    user: User,
+    environment: String,
+}
+
+#[derive(Serialize)]
+struct User {
+    username: String,
+    namespace: String,
+}
+
+impl Render for AuthStatus {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
+        let credential = match self.credential {
+            Credential::ApiKey => "TRACEL_API_KEY",
+            Credential::Login => "login",
+        };
+        let now = SystemTime::now();
+        let login = match self.login_ends_at {
+            Some(Timestamp(end)) if now >= end => "ended".to_string(),
+            Some(Timestamp(end)) => format!("ends in {}", time_left(end, now)),
+            None => "none".to_string(),
+        };
+        Details::new()
+            .field("Credential", credential)
+            .field("Login", login)
+            .field("Namespace", &self.user.namespace)
+            .write(out)
+    }
+
+    fn summary(&self) -> Option<String> {
+        Some(format!("Logged in as {}.", self.user.username))
+    }
+}
+
+fn access_token(context: &CliContext) -> anyhow::Result<AccessToken> {
+    let access_token = context
+        .app_session()?
+        .access_token()
+        .map_err(|e| -> anyhow::Error {
+            match e {
+                ClientError::AppSessionEnded => {
+                    CliError::new(ErrorKind::NotAuthenticated, "Not logged in.")
+                        .with_hint("Run `tracel login`.")
+                        .into()
+                }
+                e => e.into(),
+            }
+        })?;
+
+    Ok(AccessToken {
+        access_token: access_token.as_str().to_string(),
+    })
+}
+
+fn status(context: &CliContext) -> anyhow::Result<AuthStatus> {
+    let client = context.create_client().map_err(|error| match error {
+        ClientCreationError::NoCredentials | ClientCreationError::InvalidCredentials => {
+            login_needed(&error).into()
+        }
+        error => anyhow::Error::from(error),
+    })?;
+    let credential = match context.credentials()? {
+        Some(TracelCredentials::ApiKey(_)) => Credential::ApiKey,
+        _ => Credential::Login,
+    };
     let login = context.app_session()?.stored()?;
 
-    let credential = match (TracelCredentials::from_env().is_ok(), &login) {
-        (true, _) => "TRACEL_API_KEY",
-        (false, Some(_)) => "login",
-        (false, None) => "none",
-    };
-    context
-        .terminal()
-        .print(&format!("Credential: {}", credential));
-
-    let now = SystemTime::now();
-    let login_status = match &login {
-        Some(login) if login.has_ended_at(now) => "ended".to_string(),
-        Some(login) => format!("ends in {}", time_left(login.refresh_token_expires_at, now)),
-        None => "none".to_string(),
-    };
-    context
-        .terminal()
-        .print(&format!("Login: {}", login_status));
-
-    let env_msg = environment_suffix(&context.environment());
-    match client {
-        Ok(client) => {
-            context.terminal().finalize(&format!(
-                "Commands act as {}{}.",
-                client.user().username,
-                env_msg
-            ));
-            Ok(())
-        }
-        Err(ClientCreationError::NoCredentials | ClientCreationError::InvalidCredentials) => {
-            anyhow::bail!(
-                "Not logged in{}. Run 'tracel login' or set TRACEL_API_KEY.",
-                env_msg
-            )
-        }
-        Err(e) => Err(e.into()),
-    }
+    Ok(AuthStatus {
+        credential,
+        login_ends_at: login.map(|login| Timestamp(login.refresh_token_expires_at)),
+        user: User {
+            username: client.user().username.clone(),
+            namespace: client.user().namespace.clone(),
+        },
+        environment: context.environment_name(),
+    })
 }
 
 fn time_left(until: SystemTime, now: SystemTime) -> String {
@@ -97,5 +152,39 @@ fn time_left(until: SystemTime, now: SystemTime) -> String {
         format!("{hours}h {minutes}m")
     } else {
         format!("{minutes}m")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    use rstest::rstest;
+
+    use super::*;
+
+    #[rstest]
+    #[case::under_a_minute(59, "0m")]
+    #[case::minutes(45 * 60, "45m")]
+    #[case::hours(3 * 3600 + 5 * 60, "3h 5m")]
+    #[case::days(6 * 86400 + 23 * 3600 + 59 * 60, "6d 23h")]
+    fn given_the_time_until_a_login_expires_when_showing_it_then_it_reads_in_its_two_largest_units(
+        #[case] seconds: u64,
+        #[case] expected: &str,
+    ) {
+        let now = UNIX_EPOCH + Duration::from_secs(1_900_000_000);
+
+        let left = time_left(now + Duration::from_secs(seconds), now);
+
+        assert_eq!(left, expected);
+    }
+
+    #[test]
+    fn given_an_expired_login_when_showing_the_time_left_then_no_time_is_left() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_900_000_000);
+
+        let left = time_left(now - Duration::from_secs(60), now);
+
+        assert_eq!(left, "0m");
     }
 }

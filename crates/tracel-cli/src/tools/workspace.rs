@@ -12,10 +12,7 @@ impl WorkspaceInfo {
     pub fn load_from_path(manifest_path: &Path) -> Result<Self, ProjectContextError> {
         if !manifest_path.is_file() {
             return Err(ProjectContextError::new(
-                format!(
-                    "Cargo.toml not found at specified path '{}'",
-                    manifest_path.display()
-                ),
+                format!("No Cargo.toml at '{}'", manifest_path.display()),
                 ErrorKind::ManifestNotFound,
                 None,
             ));
@@ -27,9 +24,8 @@ impl WorkspaceInfo {
             .map_err(|e| {
                 ProjectContextError::new(
                     format!(
-                        "Failed to load cargo metadata for manifest at '{}': {}",
-                        manifest_path.display(),
-                        e
+                        "Can't read the cargo metadata of '{}'",
+                        manifest_path.display()
                     ),
                     ErrorKind::Parsing,
                     Some(anyhow::anyhow!(e)),
@@ -38,14 +34,10 @@ impl WorkspaceInfo {
 
         let workspace_root = metadata.workspace_root.clone().into_std_path_buf();
 
-        // Determine workspace name from workspace Cargo.toml
         let workspace_toml_path = workspace_root.join("Cargo.toml");
         if !workspace_toml_path.exists() {
             return Err(ProjectContextError::new(
-                format!(
-                    "Cargo.toml not found at workspace root '{}'. This is not a valid cargo project.",
-                    workspace_toml_path.display()
-                ),
+                format!("No Cargo.toml at '{}'", workspace_toml_path.display()),
                 ErrorKind::ManifestNotFound,
                 None,
             ));
@@ -53,11 +45,7 @@ impl WorkspaceInfo {
 
         let toml_str = std::fs::read_to_string(&workspace_toml_path).map_err(|e| {
             ProjectContextError::new(
-                format!(
-                    "Failed to read Cargo.toml at '{}': {}",
-                    workspace_toml_path.display(),
-                    e
-                ),
+                format!("Can't read '{}'", workspace_toml_path.display()),
                 ErrorKind::Parsing,
                 Some(anyhow::anyhow!(e)),
             )
@@ -87,10 +75,7 @@ impl WorkspaceInfo {
     }
 }
 
-/// Extract workspace name from TOML content
-/// Returns None if:
-/// - TOML content cannot be parsed
-/// - Neither workspace.package.name nor package.name exists
+/// Read the name in `[workspace.package]`, else in `[package]`.
 fn extract_workspace_name_from_toml(toml_content: &str) -> Option<String> {
     let workspace_document = toml_content.parse::<toml::Value>().ok()?;
 
@@ -110,70 +95,59 @@ fn extract_workspace_name_from_toml(toml_content: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
     #[test]
-    fn test_extract_workspace_name_from_workspace_package() {
-        let toml_content = r#"
+    fn given_a_workspace_package_name_when_reading_the_manifest_then_it_names_the_workspace() {
+        let manifest = r#"
 [workspace]
-members = ["crate1", "crate2"]
+members = ["trainer"]
 
 [workspace.package]
-name = "my-awesome-workspace"
-version = "0.1.0"
+name = "my-workspace"
 "#;
-        let result = extract_workspace_name_from_toml(toml_content);
-        assert_eq!(result, Some("my-awesome-workspace".to_string()));
+
+        let name = extract_workspace_name_from_toml(manifest);
+
+        assert_eq!(name.as_deref(), Some("my-workspace"));
     }
 
     #[test]
-    fn test_extract_workspace_name_from_package() {
-        let toml_content = r#"
+    fn given_a_single_package_when_reading_the_manifest_then_its_name_names_the_workspace() {
+        let manifest = r#"
 [package]
-name = "single-crate-project"
-version = "0.1.0"
+name = "trainer"
 "#;
-        let result = extract_workspace_name_from_toml(toml_content);
-        assert_eq!(result, Some("single-crate-project".to_string()));
+
+        let name = extract_workspace_name_from_toml(manifest);
+
+        assert_eq!(name.as_deref(), Some("trainer"));
     }
 
     #[test]
-    fn test_extract_workspace_name_prefers_workspace_over_package() {
-        let toml_content = r#"
-[workspace]
-members = ["crate1"]
-
+    fn given_both_names_when_reading_the_manifest_then_the_workspace_package_name_wins() {
+        let manifest = r#"
 [workspace.package]
-name = "workspace-name"
+name = "my-workspace"
 
 [package]
-name = "package-name"
+name = "trainer"
 "#;
-        let result = extract_workspace_name_from_toml(toml_content);
-        assert_eq!(result, Some("workspace-name".to_string()));
+
+        let name = extract_workspace_name_from_toml(manifest);
+
+        assert_eq!(name.as_deref(), Some("my-workspace"));
     }
 
-    #[test]
-    fn test_extract_workspace_name_returns_none_when_no_name() {
-        let toml_content = r#"
-[workspace]
-members = ["crate1", "crate2"]
-"#;
-        let result = extract_workspace_name_from_toml(toml_content);
-        assert_eq!(result, None);
-    }
+    #[rstest]
+    #[case::no_name("[workspace]\nmembers = [\"trainer\"]\n")]
+    #[case::empty("")]
+    #[case::invalid_toml("this is not valid toml { [ }")]
+    fn given_a_manifest_without_a_name_when_reading_it_then_there_is_none(#[case] manifest: &str) {
+        let name = extract_workspace_name_from_toml(manifest);
 
-    #[test]
-    fn test_extract_workspace_name_returns_none_for_invalid_toml() {
-        let toml_content = "this is not valid toml { [ }";
-        let result = extract_workspace_name_from_toml(toml_content);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_extract_workspace_name_returns_none_for_empty_toml() {
-        let toml_content = "";
-        let result = extract_workspace_name_from_toml(toml_content);
-        assert_eq!(result, None);
+        assert_eq!(name, None);
     }
 }

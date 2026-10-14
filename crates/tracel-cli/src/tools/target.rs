@@ -4,13 +4,13 @@ use std::collections::HashSet;
 use std::process::{Command, Stdio};
 
 use anyhow::Context;
-use colored::Colorize;
 use tracel_client::console::project::request::{Arch, Os};
 
-/// Every (os, arch) target we offer to build for, in canonical display order.
-/// The host is surfaced separately and pulled to the front by `prompt_targets`.
-/// macOS x86_64 (Intel) is intentionally omitted — we don't support it.
-pub const ALL_TARGETS: [(Os, Arch); 5] = [
+use crate::error::{CliError, ErrorKind};
+use crate::ui::{Declined, Terminal, Unanswered};
+
+/// The targets packaging builds for, in display order. macOS on Intel isn't one.
+const ALL_TARGETS: [(Os, Arch); 5] = [
     (Os::Linux, Arch::X86_64),
     (Os::Linux, Arch::Arm64),
     (Os::Macos, Arch::Arm64),
@@ -31,8 +31,55 @@ pub fn target_triple(os: Os, arch: Arch) -> &'static str {
     }
 }
 
-/// Human-friendly name for an (os, arch) pair, e.g. "Linux x86_64".
-fn pretty_name(os: Os, arch: Arch) -> &'static str {
+/// Read a `--target` triple.
+pub fn parse_target(triple: &str) -> Result<(Os, Arch), CliError> {
+    ALL_TARGETS
+        .iter()
+        .copied()
+        .find(|&(os, arch)| target_triple(os, arch) == triple)
+        .ok_or_else(|| {
+            let valid = ALL_TARGETS
+                .iter()
+                .map(|&(os, arch)| target_triple(os, arch))
+                .collect::<Vec<_>>()
+                .join(", ");
+            CliError::new(
+                ErrorKind::Usage,
+                format!("No target '{triple}'. Targets: {valid}."),
+            )
+        })
+}
+
+fn resolve_targets(host: (Os, Arch), requested: &[String]) -> Result<Vec<(Os, Arch)>, CliError> {
+    if requested.is_empty() {
+        return Ok(vec![host]);
+    }
+    let mut targets = Vec::new();
+    for triple in requested {
+        let target = parse_target(triple)?;
+        if !targets.contains(&target) {
+            targets.push(target);
+        }
+    }
+    Ok(targets)
+}
+
+/// Choose the targets: those `--target` names, else the host when the user can't answer,
+/// else the user's choice.
+pub fn select_targets(
+    terminal: &Terminal,
+    requested: &[String],
+    host: (Os, Arch),
+    installed: &HashSet<String>,
+) -> anyhow::Result<Vec<(Os, Arch)>> {
+    if !requested.is_empty() || !terminal.is_interactive() {
+        return resolve_targets(host, requested).map_err(anyhow::Error::from);
+    }
+    prompt_targets(terminal, host, installed)
+}
+
+/// Name an (os, arch) pair for people, such as "Linux x86_64".
+pub fn pretty_name(os: Os, arch: Arch) -> &'static str {
     match (os, arch) {
         (Os::Linux, Arch::X86_64) => "Linux x86_64",
         (Os::Linux, Arch::Arm64) => "Linux arm64",
@@ -49,24 +96,21 @@ pub fn host_target() -> anyhow::Result<(Os, Arch)> {
         "windows" => Os::Windows,
         "linux" => Os::Linux,
         "macos" => Os::Macos,
-        other => anyhow::bail!("Unsupported host operating system for packaging: `{other}`"),
+        other => anyhow::bail!("Packaging doesn't support this operating system ({other})."),
     };
     let arch = match std::env::consts::ARCH {
         "x86_64" => Arch::X86_64,
         "aarch64" | "arm64" => Arch::Arm64,
-        other => anyhow::bail!("Unsupported host architecture for packaging: `{other}`"),
+        other => anyhow::bail!("Packaging doesn't support this architecture ({other})."),
     };
     if (os, arch) == (Os::Macos, Arch::X86_64) {
-        anyhow::bail!("macOS on x86_64 (Intel) is not supported for packaging.");
+        anyhow::bail!("Packaging doesn't support macOS on Intel.");
     }
     Ok((os, arch))
 }
 
-/// Triples reported by `rustup target list --installed`.
-///
-/// Returns an empty set on any failure (rustup missing, non-zero exit, bad UTF-8),
-/// which conservatively makes every *cross* target appear "not installed". The host
-/// target never depends on this set — a host build needs no rustup target.
+/// List the targets `rustup target list --installed` reports, none when rustup fails,
+/// so that every cross target then counts as missing.
 pub fn installed_targets() -> HashSet<String> {
     let output = Command::new("rustup")
         .arg("target")
@@ -85,27 +129,27 @@ pub fn installed_targets() -> HashSet<String> {
     }
 }
 
-/// Install a target's prebuilt std with `rustup target add <triple>`, streaming
-/// output to the user's terminal.
-pub fn add_target(triple: &str) -> anyhow::Result<()> {
+/// Install a target's standard library with `rustup target add`, showing its output
+/// on stderr.
+fn add_target(triple: &str) -> anyhow::Result<()> {
     let status = Command::new("rustup")
         .arg("target")
         .arg("add")
         .arg(triple)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(std::io::stderr()))
         .status()
-        .with_context(|| {
-            format!("Failed to run `rustup target add {triple}` (is rustup installed?)")
-        })?;
+        .with_context(|| format!("Can't run `rustup target add {triple}`"))?;
     if !status.success() {
-        anyhow::bail!("`rustup target add {triple}` failed");
+        anyhow::bail!("`rustup target add {triple}` failed.");
     }
     Ok(())
 }
 
-/// Prompt the user to select one or more targets to build for. The host is listed
-/// first and labelled "(this machine)"; cross targets not installed via rustup are
-/// dimmed and annotated with the `rustup target add` command to install them.
-pub fn prompt_targets(
+/// Ask which targets to build, the host first. Targets rustup hasn't installed are
+/// dimmed.
+fn prompt_targets(
+    terminal: &Terminal,
     host: (Os, Arch),
     installed: &HashSet<String>,
 ) -> anyhow::Result<Vec<(Os, Arch)>> {
@@ -123,55 +167,103 @@ pub fn prompt_targets(
                 (
                     (os, arch),
                     format!("{name}  ({triple})  (this machine)"),
-                    "builds natively; no extra toolchain needed".to_string(),
+                    "builds natively".to_string(),
                 )
             } else if installed.contains(triple) {
                 ((os, arch), format!("{name}  ({triple})"), String::new())
             } else {
-                // Not installed: dim the whole label (stays greyed even under the
-                // cursor) and keep a visible textual marker so the distinction
-                // survives in terminals without color, plus an actionable hint.
+                // Dim the whole label, which stays dim under the cursor, and keep a
+                // marker that survives without colors.
                 (
                     (os, arch),
-                    format!("{name}  ({triple})  - not installed")
-                        .dimmed()
+                    console::style(format!("{name}  ({triple})  not installed"))
+                        .dim()
                         .to_string(),
-                    format!("run: rustup target add {triple}"),
+                    "installed with rustup if chosen".to_string(),
                 )
             }
         })
         .collect();
 
-    cliclack::multiselect("Select the target(s) to build for (space to toggle, enter to confirm)")
-        .items(&items)
-        .initial_values(vec![host])
-        .required(true)
-        .interact()
-        .map_err(anyhow::Error::from)
+    terminal.multiselect(
+        "Targets",
+        &items,
+        vec![host],
+        Unanswered::new("Packaging needs targets.", "Pass --target <triple>."),
+    )
 }
 
-pub fn install_missing_target(missing: Vec<&str>) -> anyhow::Result<()> {
+/// Install the `missing` targets with rustup when `install_targets` says so or the user
+/// agrees.
+pub fn install_missing_target(
+    terminal: &Terminal,
+    missing: Vec<&str>,
+    install_targets: bool,
+) -> anyhow::Result<()> {
     if !missing.is_empty() {
         let list = missing.join(", ");
-        if cliclack::confirm(format!(
-            "These targets are not installed: {list}. Run `rustup target add` for them now?"
-        ))
-        .initial_value(true)
-        .interact()?
+        if install_targets
+            || terminal.confirm(
+                &format!("Install {list} with rustup?"),
+                true,
+                Unanswered::new(
+                    format!("Installing {list} needs confirmation."),
+                    "Pass --install-targets to install them without asking.",
+                ),
+            )?
         {
             for triple in &missing {
                 add_target(triple)?;
             }
         } else {
-            let cmds = missing
-                .iter()
-                .map(|triple| format!("rustup target add {triple}"))
-                .collect::<Vec<_>>()
-                .join("\n  ");
-            anyhow::bail!(
-                "Cannot build without the selected targets installed. Install them with:\n  {cmds}"
-            );
+            return Err(Declined::new("Nothing was packaged.").into());
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn given_no_requested_target_when_resolving_targets_then_it_is_the_host() {
+        let targets = resolve_targets((Os::Macos, Arch::Arm64), &[]).unwrap();
+
+        assert_eq!(targets, [(Os::Macos, Arch::Arm64)]);
+    }
+
+    #[test]
+    fn given_a_target_requested_twice_when_resolving_targets_then_it_appears_once_in_request_order()
+    {
+        let requested = [
+            "aarch64-unknown-linux-gnu".to_string(),
+            "x86_64-pc-windows-msvc".to_string(),
+            "aarch64-unknown-linux-gnu".to_string(),
+        ];
+
+        let targets = resolve_targets((Os::Linux, Arch::X86_64), &requested).unwrap();
+
+        assert_eq!(
+            targets,
+            [(Os::Linux, Arch::Arm64), (Os::Windows, Arch::X86_64)]
+        );
+    }
+
+    #[test]
+    fn given_an_unknown_triple_when_parsing_a_target_then_the_error_lists_the_targets() {
+        let error = parse_target("x86_64-apple-darwin").unwrap_err();
+
+        let message = error.to_string();
+        assert_eq!(error.kind, ErrorKind::Usage);
+        for target in [
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "aarch64-apple-darwin",
+            "x86_64-pc-windows-msvc",
+            "aarch64-pc-windows-msvc",
+        ] {
+            assert!(message.contains(target), "{message}");
+        }
+    }
 }

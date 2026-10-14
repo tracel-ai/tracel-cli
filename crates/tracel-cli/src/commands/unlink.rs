@@ -1,30 +1,53 @@
+use clap::Args;
+use serde::Serialize;
+
 use crate::{
-    context::CliContext, helpers::require_linked_project, tools::project_context::ProjectContext,
+    context::CliContext,
+    helpers::require_linked_project,
+    tools::project_context::ProjectContext,
+    ui::{Declined, Outcome, Unanswered},
 };
 
-pub fn handle_command(context: CliContext) -> anyhow::Result<()> {
-    let project = require_linked_project(&context)?;
+#[derive(Args, Debug)]
+pub struct UnlinkArgs {
+    /// Unlink without asking
+    #[arg(long, short = 'y')]
+    pub yes: bool,
+}
 
-    context.terminal().command_title("Unlink");
+/// The project that was unlinked.
+#[derive(Serialize)]
+struct Unlinked {
+    unlinked: bool,
+    namespace: String,
+    name: String,
+}
 
-    let confirm_value = context
-        .terminal()
-        .confirm("Are you sure you want to unlink the Tracel Console project from this repository?")
-        .unwrap();
+pub fn handle_command(args: UnlinkArgs, context: CliContext) -> anyhow::Result<Outcome> {
+    let project = require_linked_project()?;
+    let linked = project.get_project();
+    let name = format!("{}/{}", linked.namespace, linked.name);
 
-    if confirm_value {
-        match ProjectContext::unlink(&project.get_manifest_path()) {
-            Ok(_) => context.terminal().finalize("Project unlinked successfully"),
-            Err(e) => {
-                context
-                    .terminal()
-                    .cancel_finalize(&format!("Failed to unlink project: {}", e));
-                anyhow::bail!(e);
-            }
+    if !args.yes {
+        let confirmed = context.terminal().confirm(
+            &format!("Unlink {name}?"),
+            false,
+            Unanswered::new(
+                format!("Unlinking {name} needs confirmation."),
+                "Pass --yes to unlink without asking.",
+            ),
+        )?;
+        if !confirmed {
+            return Err(Declined::new("Nothing was unlinked.").into());
         }
-    } else {
-        context.terminal().cancel_finalize("Cancelled");
     }
 
-    Ok(())
+    ProjectContext::unlink(&project.get_manifest_path())?;
+    context.terminal().outro(&format!("Unlinked {name}."));
+
+    Ok(Outcome::data(Unlinked {
+        unlinked: true,
+        namespace: linked.namespace.clone(),
+        name: linked.name.clone(),
+    }))
 }

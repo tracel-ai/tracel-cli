@@ -1,5 +1,5 @@
-//! Helpers for `tracel model upload`: model existence check, and
-//! multi-threaded fail-fast multipart part upload.
+//! Uploading a model version: making sure the model exists, and uploading its parts in
+//! parallel.
 
 mod existence;
 mod parts;

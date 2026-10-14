@@ -1,38 +1,52 @@
 use std::sync::Arc;
 
-use crate::tools::terminal::Terminal;
 use tracel_client::ClientError;
 use tracel_client::console::auth::DeviceAuthClient;
 use tracel_client::console::{AppSession, Client, Env, FileSessionStore, TracelCredentials};
 use url::Url;
 
+use crate::environment;
+use crate::tools::tracel_config::TracelProject;
+use crate::ui::{Output, Terminal};
+
 const CLIENT_ID: &str = "tracel-cli";
 
+/// Why no client could be made.
 #[derive(thiserror::Error, Debug)]
 pub enum ClientCreationError {
-    #[error("No credentials found")]
+    #[error("Not logged in.")]
     NoCredentials,
-    #[error("Invalid credentials")]
+    #[error("Your login has ended.")]
     InvalidCredentials,
-    #[error("The API key in TRACEL_API_KEY was refused: {0}")]
-    ApiKeyRefused(ClientError),
+    #[error("TRACEL_API_KEY was rejected: it's invalid, expired or revoked.")]
+    ApiKeyRefused,
     #[error(transparent)]
     SessionStore(ClientError),
-    #[error("Server connection error: {0}")]
-    ServerConnectionError(String),
+    #[error("Can't reach the Tracel Console at {0}.")]
+    ServerConnectionError(Url),
 }
 
-/// CLI-specific context that wraps the library context with terminal functionality
+/// What a command runs with: stdout and stderr, and the environment and project it
+/// targets.
 pub struct CliContext {
     terminal: Terminal,
+    output: Output,
     environment: Env,
+    project: Option<TracelProject>,
 }
 
 impl CliContext {
-    pub fn new(terminal: Terminal, environment: Env) -> Self {
+    pub fn new(
+        terminal: Terminal,
+        output: Output,
+        environment: Env,
+        project: Option<TracelProject>,
+    ) -> Self {
         Self {
             terminal,
+            output,
             environment,
+            project,
         }
     }
 
@@ -40,23 +54,24 @@ impl CliContext {
         DeviceAuthClient::new(self.environment(), CLIENT_ID)
     }
 
+    /// Open the login stored for this environment's Tracel Console.
     pub fn app_session(&self) -> Result<AppSession, ClientError> {
         let store = FileSessionStore::for_server(&self.environment.get_url())?;
         Ok(AppSession::new(Arc::new(store), self.device_auth()))
     }
 
-    /// `TRACEL_API_KEY` if set, else the login stored for this environment's server.
-    fn credentials(&self) -> Result<Option<TracelCredentials>, ClientError> {
-        if let Ok(credentials) = TracelCredentials::from_env() {
-            return Ok(Some(credentials));
-        }
-
-        let app_session = self.app_session()?;
-        Ok(app_session
-            .stored()?
-            .map(|_| TracelCredentials::app_session(app_session)))
+    /// Find the credential commands use: `TRACEL_API_KEY` when it is set, else the
+    /// stored login.
+    pub fn credentials(&self) -> Result<Option<TracelCredentials>, ClientError> {
+        first_credentials(TracelCredentials::from_env().ok(), || {
+            let app_session = self.app_session()?;
+            Ok(app_session
+                .stored()?
+                .map(|_| TracelCredentials::app_session(app_session)))
+        })
     }
 
+    /// Connect to the Tracel Console with the credential commands use.
     pub fn create_client(&self) -> Result<Client, ClientCreationError> {
         let credentials = self
             .credentials()
@@ -67,30 +82,67 @@ impl CliContext {
         Client::connect(self.environment(), &credentials).map_err(|e| match e {
             ClientError::SessionStore(_) => ClientCreationError::SessionStore(e),
             ClientError::Unauthenticated | ClientError::CredentialNotAllowed if uses_api_key => {
-                ClientCreationError::ApiKeyRefused(e)
+                ClientCreationError::ApiKeyRefused
             }
             ClientError::Unauthenticated | ClientError::AppSessionEnded => {
                 ClientCreationError::InvalidCredentials
             }
-            _ => ClientCreationError::ServerConnectionError(e.to_string()),
+            _ => ClientCreationError::ServerConnectionError(self.environment.get_url()),
         })
     }
 
-    pub fn get_frontend_endpoint(&self) -> url::Url {
-        // We can't know easily the url depending on the environment, so let's just serve
-        // production url
-        Url::parse("https://console.tracel.ai/").expect("Frontend endpoint should be valid")
+    pub fn web_console(&self) -> Url {
+        environment::web_console(&self.environment)
     }
 
     pub fn terminal(&self) -> &Terminal {
         &self.terminal
     }
 
+    /// Return stdout, for commands that stream their output while they run.
+    pub fn output(&self) -> &Output {
+        &self.output
+    }
+
     pub fn environment(&self) -> Env {
         self.environment.clone()
     }
 
-    pub fn get_api_endpoint(&self) -> String {
-        self.environment.get_url().to_string()
+    pub fn environment_name(&self) -> String {
+        environment::name(&self.environment)
+    }
+
+    /// Return the project `--project` names, if any.
+    pub fn project(&self) -> Option<&TracelProject> {
+        self.project.as_ref()
+    }
+
+    pub fn api_url(&self) -> Url {
+        self.environment.get_url()
+    }
+}
+
+/// Prefer `api_key`, and read the stored login only without one.
+fn first_credentials(
+    api_key: Option<TracelCredentials>,
+    stored_login: impl FnOnce() -> Result<Option<TracelCredentials>, ClientError>,
+) -> Result<Option<TracelCredentials>, ClientError> {
+    match api_key {
+        Some(api_key) => Ok(Some(api_key)),
+        None => stored_login(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn given_tracel_api_key_when_choosing_credentials_then_the_stored_login_is_not_read() {
+        let api_key = TracelCredentials::ApiKey("key".into());
+
+        let chosen = first_credentials(Some(api_key), || panic!("the stored login was read"));
+
+        assert!(matches!(chosen, Ok(Some(TracelCredentials::ApiKey(key))) if key == "key"));
     }
 }

@@ -1,11 +1,7 @@
-//! Cross-linker helpers for binary upload.
-//!
-//! `rustup target add` installs only the prebuilt std, not a linker. For the
-//! predictable Linux same-OS cross-arch case we resolve a cross-linker and inject it
-//! into the single build command via cargo's `--config target.<triple>.linker` flag,
-//! leaving the project's `.cargo/config.toml` untouched.
-//! Cross-OS targets (Windows/macOS from Linux, etc.) need a whole toolchain, not just
-//! a linker entry — those are handled by a build driver (see `tools::build_driver`).
+//! The linker of a Linux build for another architecture. `rustup target add` installs a
+//! target's standard library but no linker, so the build gets one through cargo's
+//! `--config target.<triple>.linker`, and the project's cargo config stays as it is.
+//! A build for another OS needs a whole toolchain, which a build driver supplies.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -14,14 +10,13 @@ use toml_edit::DocumentMut;
 use tracel_client::console::project::request::{Arch, Os};
 
 use crate::tools::target::target_triple;
-use crate::tools::terminal::Terminal;
+use crate::ui::Terminal;
 
-/// What (if anything) is needed to link `target` while running on `host`.
-pub enum LinkerNeed {
-    /// Native, a same-OS cross-arch the toolchain handles itself (macOS/Windows), or a
-    /// cross-OS target (whose toolchain is supplied by the build driver, not a linker entry).
+/// What linking `target` on `host` needs.
+enum LinkerNeed {
+    /// Nothing: the toolchain or the build driver links it.
     None,
-    /// Linux same-OS cross-arch: a `target.<triple>.linker` setting we inject per-build.
+    /// A `target.<triple>.linker` setting for the build, on Linux.
     ConfigEntry {
         linker: &'static str,
         install_hint: &'static str,
@@ -29,7 +24,7 @@ pub enum LinkerNeed {
 }
 
 /// Classify what linker setup `target` needs when building on `host`.
-pub fn linker_need(host: (Os, Arch), target: (Os, Arch)) -> LinkerNeed {
+fn linker_need(host: (Os, Arch), target: (Os, Arch)) -> LinkerNeed {
     if host == target {
         return LinkerNeed::None;
     }
@@ -43,11 +38,11 @@ pub fn linker_need(host: (Os, Arch), target: (Os, Arch)) -> LinkerNeed {
             Os::Linux => match target_arch {
                 Arch::Arm64 => LinkerNeed::ConfigEntry {
                     linker: "aarch64-linux-gnu-gcc",
-                    install_hint: "install the cross-linker, e.g. `apt install gcc-aarch64-linux-gnu` (Debian/Ubuntu) or `pacman -S aarch64-linux-gnu-gcc` (Arch)",
+                    install_hint: "Install it with `apt install gcc-aarch64-linux-gnu`.",
                 },
                 Arch::X86_64 => LinkerNeed::ConfigEntry {
                     linker: "x86_64-linux-gnu-gcc",
-                    install_hint: "install the cross-linker, e.g. `apt install gcc-x86-64-linux-gnu` (Debian/Ubuntu)",
+                    install_hint: "Install it with `apt install gcc-x86-64-linux-gnu`.",
                 },
             },
             // macOS (clang) and Windows (MSVC) toolchains build either arch natively.
@@ -55,13 +50,12 @@ pub fn linker_need(host: (Os, Arch), target: (Os, Arch)) -> LinkerNeed {
         };
     }
 
-    // Different OS: a linker entry isn't enough — a build driver (cargo-xwin /
-    // cargo-zigbuild) supplies the toolchain instead. See `tools::build_driver`.
+    // For another OS, a build driver supplies the toolchain.
     LinkerNeed::None
 }
 
-/// Read the project's cargo config, preferring `.cargo/config.toml` over the legacy
-/// `.cargo/config`. Returns the path it was read from and its contents.
+/// Read the project's cargo config, `.cargo/config.toml` before the older
+/// `.cargo/config`, as its path and contents.
 fn read_config(root: &Path) -> Option<(PathBuf, String)> {
     for name in [".cargo/config.toml", ".cargo/config"] {
         let path = root.join(name);
@@ -81,10 +75,9 @@ fn linker_env_var(triple: &str) -> String {
     )
 }
 
-/// Whether a linker for `triple` is already configured — either via a
-/// `target.<triple>.linker` entry in the project's cargo config, or the
-/// `CARGO_TARGET_<triple>_LINKER` environment variable.
-pub fn linker_configured(root: &Path, triple: &str) -> bool {
+/// Whether `triple` already has a linker, from the project's cargo config or
+/// `CARGO_TARGET_<TRIPLE>_LINKER`.
+fn linker_configured(root: &Path, triple: &str) -> bool {
     if std::env::var_os(linker_env_var(triple)).is_some() {
         return true;
     }
@@ -100,8 +93,8 @@ pub fn linker_configured(root: &Path, triple: &str) -> bool {
     false
 }
 
-/// Whether `bin` can be executed (used to decide whether to also print an install hint).
-pub fn linker_on_path(bin: &str) -> bool {
+/// Whether `bin` runs from PATH.
+fn linker_on_path(bin: &str) -> bool {
     Command::new(bin)
         .arg("--version")
         .stdout(Stdio::null())
@@ -111,9 +104,8 @@ pub fn linker_on_path(bin: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Resolve the cross-linker to inject for a same-OS cross-arch build that needs one
-/// (Linux), or `None` when the toolchain handles it natively or the user has already
-/// configured a linker for `target`.
+/// Choose the linker to give a Linux build for another architecture, unless its
+/// toolchain needs none or the user set one.
 pub fn resolve_linker(
     terminal: &Terminal,
     root: &Path,
@@ -127,15 +119,11 @@ pub fn resolve_linker(
             linker: linker_bin,
             install_hint,
         } => {
-            // The user already set a linker for this target (cargo config or env var);
-            // respect their choice and don't override it.
             if linker_configured(root, triple) {
                 return None;
             }
             if !linker_on_path(linker_bin) {
-                terminal.print_warning(&format!(
-                    "Linker `{linker_bin}` was not found on PATH — {install_hint}."
-                ));
+                terminal.warning(&format!("No linker {linker_bin} on PATH.\n{install_hint}"));
             }
             Some(linker_bin)
         }
@@ -144,30 +132,9 @@ pub fn resolve_linker(
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
-
-    /// A unique, empty scratch directory for a test, removed on drop.
-    struct TempRoot(PathBuf);
-
-    impl TempRoot {
-        fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir()
-                .join(format!("burn_linker_test_{}_{name}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            TempRoot(dir)
-        }
-
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for TempRoot {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
 
     const LINUX_X86: (Os, Arch) = (Os::Linux, Arch::X86_64);
     const LINUX_ARM: (Os, Arch) = (Os::Linux, Arch::Arm64);
@@ -175,41 +142,52 @@ mod tests {
     const MAC_ARM: (Os, Arch) = (Os::Macos, Arch::Arm64);
     const WIN_X86: (Os, Arch) = (Os::Windows, Arch::X86_64);
 
-    #[test]
-    fn linker_need_same_target_is_none() {
-        assert!(matches!(
-            linker_need(LINUX_X86, LINUX_X86),
-            LinkerNeed::None
-        ));
-    }
-
-    #[test]
-    fn linker_need_linux_cross_arch_is_config_entry() {
-        match linker_need(LINUX_X86, LINUX_ARM) {
-            LinkerNeed::ConfigEntry { linker, .. } => assert_eq!(linker, "aarch64-linux-gnu-gcc"),
-            _ => panic!("expected ConfigEntry"),
-        }
-        match linker_need(LINUX_ARM, LINUX_X86) {
-            LinkerNeed::ConfigEntry { linker, .. } => assert_eq!(linker, "x86_64-linux-gnu-gcc"),
-            _ => panic!("expected ConfigEntry"),
+    fn linker(need: LinkerNeed) -> Option<&'static str> {
+        match need {
+            LinkerNeed::None => None,
+            LinkerNeed::ConfigEntry { linker, .. } => Some(linker),
         }
     }
 
     #[test]
-    fn linker_need_macos_cross_arch_is_none() {
-        assert!(matches!(linker_need(MAC_X86, MAC_ARM), LinkerNeed::None));
+    fn given_the_host_target_when_building_then_no_linker_is_needed() {
+        let need = linker_need(LINUX_X86, LINUX_X86);
+
+        assert_eq!(linker(need), None);
+    }
+
+    #[rstest]
+    #[case::to_arm(LINUX_X86, LINUX_ARM, "aarch64-linux-gnu-gcc")]
+    #[case::to_x86(LINUX_ARM, LINUX_X86, "x86_64-linux-gnu-gcc")]
+    fn given_another_linux_architecture_when_building_then_its_cross_gcc_links(
+        #[case] host: (Os, Arch),
+        #[case] target: (Os, Arch),
+        #[case] expected: &str,
+    ) {
+        let need = linker_need(host, target);
+
+        assert_eq!(linker(need), Some(expected));
+    }
+
+    #[rstest]
+    #[case::macos_architectures(MAC_X86, MAC_ARM)]
+    #[case::linux_to_windows(LINUX_X86, WIN_X86)]
+    #[case::linux_to_macos(LINUX_X86, MAC_ARM)]
+    fn given_a_target_the_toolchain_or_build_driver_links_when_building_then_no_linker_is_needed(
+        #[case] host: (Os, Arch),
+        #[case] target: (Os, Arch),
+    ) {
+        let need = linker_need(host, target);
+
+        assert_eq!(linker(need), None);
     }
 
     #[test]
-    fn linker_need_different_os_is_none() {
-        // Cross-OS linker setup is handled by the build driver, not a linker entry.
-        assert!(matches!(linker_need(LINUX_X86, WIN_X86), LinkerNeed::None));
-        assert!(matches!(linker_need(LINUX_X86, MAC_ARM), LinkerNeed::None));
-    }
+    fn given_no_cargo_config_when_checking_the_linker_then_it_is_not_configured() {
+        let root = tempfile::tempdir().unwrap();
 
-    #[test]
-    fn linker_configured_false_when_absent() {
-        let root = TempRoot::new("absent");
-        assert!(!linker_configured(root.path(), "aarch64-unknown-linux-gnu"));
+        let configured = linker_configured(root.path(), "aarch64-unknown-linux-gnu");
+
+        assert!(!configured);
     }
 }

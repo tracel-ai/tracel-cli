@@ -1,7 +1,12 @@
-pub mod cli;
-pub mod tools;
-
+mod cli;
 mod commands;
 mod context;
+mod environment;
+mod error;
 mod helpers;
-mod logging;
+#[cfg(test)]
+mod test_support;
+mod tools;
+mod ui;
+
+pub use cli::cli_main;

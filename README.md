@@ -11,27 +11,23 @@
 
 </div>
 
-## Description
+The Tracel CLI (`tracel`) works with the
+[Tracel Console](https://console.tracel.ai/), where
+[Burn](https://github.com/tracel-ai/burn) users track experiments, share models
+and run training on compute providers. Together with the
+[Tracel SDK](https://github.com/tracel-ai/tracel) in your project, it lets you:
 
-The Tracel CLI (`tracel`) is the command-line tool for interacting with [Tracel Console](https://console.tracel.ai/), the centralized platform for experiment tracking, model sharing, and deployment for [Burn](https://github.com/tracel-ai/burn) users.
-
-This CLI works in conjunction with the [Tracel SDK](https://github.com/tracel-ai/tracetracell) to provide a seamless workflow for:
-
-- Running training jobs locally or remotely
-- Managing experiments and tracking metrics
-- Packaging and deploying models
-- Integrating with compute providers
-- Managing project configurations
+- run your project locally and browse its experiments, metrics and logs;
+- package your code for compute providers;
+- push, pull and promote models, and download artifacts and datasets.
 
 ## Installation
-
-### Install from crates.io
 
 ```bash
 cargo install tracel-cli
 ```
 
-### Build from source
+Or build it from source:
 
 ```bash
 git clone https://github.com/tracel-ai/tracel-cli.git
@@ -39,146 +35,166 @@ cd tracel-cli
 cargo install --path crates/tracel-cli
 ```
 
-After installation, the `tracel` command will be available in your terminal.
+You need Rust 1.87 or later, an account on the
+[Tracel Console](https://console.tracel.ai/), and the Tracel SDK in your Burn
+project.
 
-## Prerequisites
+## Getting started
 
-1. **Tracel Account**: Create an account at [console.tracel.ai](https://console.tracel.ai/)
-2. **Rust**: Version 1.87.0 or higher
-3. **Tracel SDK**: Add the SDK to your Burn project
+```bash
+tracel login      # approve the login in your browser
+tracel init       # link this workspace to a Console project
+tracel train      # run it locally with `cargo run`
+tracel experiments list
+```
+
+Every command takes `--help`. Commands print tables and messages on a terminal,
+and JSON when their output goes to another program; `--json` asks for JSON
+anywhere. `--no-input` makes a command fail instead of asking a question, and
+`--project <namespace>/<name>` picks a project other than the one the workspace
+is linked to. The [CLI reference](docs/cli.md) covers output formats, exit
+codes, credentials and each command's JSON.
 
 ## Commands
 
-### `tracel train`
+### `tracel login`, `logout` and `auth`
 
-Run your project locally. This is a thin alias for `cargo run`: every argument
-after `--` is forwarded to your binary, so `tracel train -- <args>` is equivalent
-to `cargo run -- <args>`. stdin/stdout/stderr are inherited and the binary's
-exit code is propagated.
-
-```bash
-# Equivalent to `cargo run`
-tracel train
-
-# Equivalent to `cargo run -- train mnist --epochs 100`
-tracel train -- train mnist --epochs 100
-```
-
-### `tracel package`
-
-Package your project for deployment on remote compute providers.
-
-```bash
-tracel package
-```
-
-This creates a deployable artifact containing your code, dependencies, and configurations.
-
-### `tracel login`
-
-Authenticate with the Console platform. The CLI prints a link and a code to
-approve in your browser, and the login then lasts seven days.
+`tracel login` shows a link and a code, and offers to open the link in your
+browser. Approve the login there and the CLI is logged in for seven days.
 
 ```bash
 tracel login
-```
-
-When `TRACEL_API_KEY` is set, commands use that API key instead of the login.
-
-### `tracel logout`
-
-End the login on the server and forget it locally.
-
-```bash
 tracel logout
+tracel auth status    # which credential commands use, and when the login ends
 ```
 
-### `tracel auth`
+Scripts can log in in two steps, or use an API key from the Console instead:
 
 ```bash
-# Which credential commands use, the user they act as, and when the login ends
-tracel auth status
-
-# Print an access token of the login for scripts; TRACEL_API_KEY is ignored
-curl -H "Authorization: Bearer $(tracel auth token)" https://console.tracel.ai/api/v1/user/organizations
-```
-
-### `tracel init`
-
-Initialize or reinitialize a Tracel project in the current directory.
-
-```bash
-# Interactive initialization
-tracel init
-```
-
-### `tracel unlink`
-
-Unlink the current directory from Tracel project.
-
-```bash
-tracel unlink
+tracel login --no-wait      # prints the link and the code to approve
+tracel login --complete     # waits for the approval
+TRACEL_API_KEY=... tracel me
+curl -H "Authorization: Bearer $(tracel auth token)" \
+  https://console.tracel.ai/api/v1/user/organizations
 ```
 
 ### `tracel me`
 
-Display information about the currently authenticated user.
+Show who you are logged in as.
 
 ```bash
 tracel me
 ```
 
+### `tracel init` and `unlink`
+
+Link the workspace, the Cargo workspace you run it in, to a project on the
+Tracel Console, creating the project if it doesn't exist. The link is saved in
+`tracel.toml` at the workspace root.
+
+```bash
+tracel init
+tracel init --owner my-org --name mnist --yes --allow-dirty
+tracel unlink
+```
+
+`init` needs a git commit, and offers to commit your changes. `--force` links a
+workspace that is already linked to another project.
+
 ### `tracel project`
 
-Display information about the current project.
+Show the project the workspace is linked to, or list your projects and your
+organizations' projects.
 
 ```bash
 tracel project
+tracel project list
+tracel project list my-org
 ```
 
-## Project Structure
+### `tracel train`
 
-The Tracel CLI is organized as a Cargo workspace:
+Run the workspace locally with `cargo run`. Arguments after `--` go to your
+program, and its output and exit code are the command's.
 
-```text
-tracel-cli/
-├── crates/
-│   └── tracel-cli/ 
-└── xtask/                       # Build utilities
+```bash
+tracel train -- --epochs 10
+```
+
+### `tracel package`
+
+Upload a code version of the workspace, the code compute providers run: a
+compiled binary, or the source to build there. A code version is the current
+commit, so `package` offers to commit your changes first.
+
+```bash
+tracel package
+tracel package --mode binary --target x86_64-unknown-linux-gnu --json
+tracel package --mode source --allow-dirty
+```
+
+### `tracel experiments`
+
+Browse the project's experiments by their number, along with their metrics and
+logs. `exp` is short for `experiments`.
+
+```bash
+tracel experiments list --sort created_at,desc --limit 10
+tracel exp get latest
+tracel exp metrics 42 --metric loss
+tracel exp logs 42 --level warn --level error
+tracel exp logs 42 --follow
+```
+
+### `tracel models`
+
+Browse the project's models and their versions, download and upload versions,
+make an experiment's artifact a new version, and point aliases at versions.
+A version is a number such as `7` or `v7`, an alias, or `latest`.
+
+```bash
+tracel models list
+tracel models get my-model --version production
+tracel models versions my-model --all
+tracel models pull my-model --version v7 --directory ./weights
+tracel models push my-model --directory ./weights --auto-create true
+tracel models promote my-model --experiment 42 --artifact weights
+tracel models alias set my-model production 7
+```
+
+### `tracel artifacts`
+
+List the artifacts of an experiment, and download one by name or id.
+
+```bash
+tracel artifacts list 42
+tracel artifacts download 42 weights --directory ./weights
+```
+
+### `tracel datasets`
+
+Browse the project's datasets and their published versions.
+
+```bash
+tracel datasets list
+tracel datasets get images
+tracel datasets versions images
 ```
 
 ## Development
 
-### Running from source
-
 ```bash
-cargo run --bin tracel-- --help
-```
-
-### Running tests
-
-```bash
+cargo run --bin tracel -- --help
 cargo test
 ```
 
-### Development mode
+The repository is a Cargo workspace: the CLI is in `crates/tracel-cli`, and
+`xtask` holds the build tasks.
 
-For testing against a local Console instance:
+## Contributing
 
-```bash
-tracel --dev login
-```
-
-This connects to `http://localhost:9001` and uses separate development credentials.
-
-## Contribution
-
-Contributions are welcome! Please feel free to:
-
-- Report issues or bugs
-- Request new features
-- Submit pull requests
-- Improve documentation
+Issues and pull requests are welcome, whether they report a bug, ask for a
+feature or improve the documentation.
 
 ## License
 
@@ -191,6 +207,6 @@ at your option.
 
 ## Links
 
-- [Console Platform](https://console.tracel.ai/)
+- [Tracel Console](https://console.tracel.ai/)
 - [Tracel SDK](https://github.com/tracel-ai/tracel)
-- [Burn Framework](https://github.com/tracel-ai/burn)
+- [Burn](https://github.com/tracel-ai/burn)

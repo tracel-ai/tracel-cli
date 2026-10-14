@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use tracel_client::console::artifact::response::PresignedUploadUrlResponse;
 use tracel_client::console::model::response::PresignedModelFileUploadUrlsResponse;
 
+/// One part of a file to upload: where its bytes are in the file, and the URL to upload
+/// them to.
 #[derive(Clone, Debug)]
 pub struct PartUploadTask {
     pub rel_path: String,
@@ -21,7 +23,7 @@ fn validate_part_sequence(
         let expected = index as u32 + 1;
         if part.part != expected {
             anyhow::bail!(
-                "Upload response for '{rel_path}' has non-contiguous or duplicate part numbers (expected part {expected}, got {}).",
+                "The Tracel Console numbered the parts of '{rel_path}' wrongly: expected part {expected}, got {}.",
                 part.part
             );
         }
@@ -37,12 +39,14 @@ fn validate_part_total_size(
     let total: u64 = parts.iter().map(|part| part.size_bytes).sum();
     if total != expected_size {
         anyhow::bail!(
-            "Upload response for '{rel_path}' parts sum to {total} bytes but local file is {expected_size} bytes."
+            "The Tracel Console's parts of '{rel_path}' sum to {total} bytes, not {expected_size}."
         );
     }
     Ok(())
 }
 
+/// Split each file of an upload response into its parts, checking that they number from
+/// 1 and cover the file.
 pub fn build_part_tasks(
     files: &BTreeMap<String, PathBuf>,
     file_sizes: &BTreeMap<String, u64>,
@@ -53,20 +57,20 @@ pub fn build_part_tasks(
     for upload_file in upload_files {
         let absolute_path = files.get(&upload_file.rel_path).ok_or_else(|| {
             anyhow::anyhow!(
-                "Upload response referenced unknown file path '{}'.",
+                "The Tracel Console sent parts of an unknown file '{}'.",
                 upload_file.rel_path
             )
         })?;
         let expected_size = *file_sizes.get(&upload_file.rel_path).ok_or_else(|| {
             anyhow::anyhow!(
-                "Upload response referenced file '{}' with no known local size.",
+                "The Tracel Console sent parts of '{}', whose size is unknown.",
                 upload_file.rel_path
             )
         })?;
 
         if upload_file.urls.parts.is_empty() {
             anyhow::bail!(
-                "Upload response for '{}' does not contain any part.",
+                "The Tracel Console sent no parts of '{}'.",
                 upload_file.rel_path
             );
         }
@@ -94,150 +98,71 @@ pub fn build_part_tasks(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use rstest::rstest;
     use tracel_client::console::artifact::response::MultipartUploadResponse;
 
-    #[test]
-    fn given_multi_part_file_when_build_part_tasks_then_computes_sequential_offsets() {
-        let mut files = BTreeMap::new();
-        files.insert("weights.bin".to_string(), PathBuf::from("/tmp/weights.bin"));
-        let mut file_sizes = BTreeMap::new();
-        file_sizes.insert("weights.bin".to_string(), 300u64);
-        let upload_files = vec![PresignedModelFileUploadUrlsResponse {
-            rel_path: "weights.bin".to_string(),
+    use super::*;
+
+    fn weights(size: u64) -> (BTreeMap<String, PathBuf>, BTreeMap<String, u64>) {
+        let files = BTreeMap::from([("weights.bin".to_string(), PathBuf::from("weights.bin"))]);
+        let sizes = BTreeMap::from([("weights.bin".to_string(), size)]);
+        (files, sizes)
+    }
+
+    fn parts_of(rel_path: &str, parts: &[(u32, u64)]) -> Vec<PresignedModelFileUploadUrlsResponse> {
+        vec![PresignedModelFileUploadUrlsResponse {
+            rel_path: rel_path.to_string(),
             urls: MultipartUploadResponse {
                 id: "upload-1".to_string(),
-                parts: vec![
-                    PresignedUploadUrlResponse {
-                        part: 2,
-                        url: "https://example.com/part2".to_string(),
-                        size_bytes: 100,
-                    },
-                    PresignedUploadUrlResponse {
-                        part: 1,
-                        url: "https://example.com/part1".to_string(),
-                        size_bytes: 200,
-                    },
-                ],
+                parts: parts
+                    .iter()
+                    .map(|&(part, size_bytes)| PresignedUploadUrlResponse {
+                        part,
+                        url: format!("https://storage/part{part}"),
+                        size_bytes,
+                    })
+                    .collect(),
             },
-        }];
-
-        let tasks = build_part_tasks(&files, &file_sizes, &upload_files).unwrap();
-
-        assert_eq!(tasks.len(), 2);
-        assert_eq!(tasks[0].part, 1);
-        assert_eq!(tasks[0].offset, 0);
-        assert_eq!(tasks[0].size_bytes, 200);
-        assert_eq!(tasks[1].part, 2);
-        assert_eq!(tasks[1].offset, 200);
-        assert_eq!(tasks[1].size_bytes, 100);
+        }]
     }
 
     #[test]
-    fn given_unknown_rel_path_when_build_part_tasks_then_returns_error() {
-        let files: BTreeMap<String, PathBuf> = BTreeMap::new();
-        let file_sizes: BTreeMap<String, u64> = BTreeMap::new();
+    fn given_parts_out_of_order_when_splitting_a_file_then_each_part_starts_where_the_previous_ends()
+     {
+        let (files, sizes) = weights(300);
 
-        let upload_files = vec![PresignedModelFileUploadUrlsResponse {
-            rel_path: "missing.bin".to_string(),
-            urls: MultipartUploadResponse {
-                id: "upload-1".to_string(),
-                parts: vec![PresignedUploadUrlResponse {
-                    part: 1,
-                    url: "https://example.com/part1".to_string(),
-                    size_bytes: 10,
-                }],
-            },
-        }];
+        let tasks = build_part_tasks(
+            &files,
+            &sizes,
+            &parts_of("weights.bin", &[(2, 100), (1, 200)]),
+        )
+        .unwrap();
 
-        let result = build_part_tasks(&files, &file_sizes, &upload_files);
-
-        assert!(result.is_err());
+        assert_eq!(
+            (tasks[0].part, tasks[0].offset, tasks[0].size_bytes),
+            (1, 0, 200)
+        );
+        assert_eq!(
+            (tasks[1].part, tasks[1].offset, tasks[1].size_bytes),
+            (2, 200, 100)
+        );
     }
 
-    #[test]
-    fn given_parts_summing_to_less_than_local_size_when_build_part_tasks_then_returns_error() {
-        let mut files = BTreeMap::new();
-        files.insert("weights.bin".to_string(), PathBuf::from("/tmp/weights.bin"));
-        let mut file_sizes = BTreeMap::new();
-        file_sizes.insert("weights.bin".to_string(), 500u64);
+    #[rstest]
+    #[case::unknown_file("other.bin", &[(1, 300)], "'other.bin'")]
+    #[case::no_parts("weights.bin", &[], "no parts")]
+    #[case::too_small("weights.bin", &[(1, 200)], "200 bytes")]
+    #[case::repeated_part("weights.bin", &[(1, 150), (1, 150)], "got 1")]
+    #[case::missing_part("weights.bin", &[(1, 200), (3, 100)], "got 3")]
+    fn given_parts_that_do_not_cover_the_file_when_splitting_it_then_the_upload_is_refused_for_that_reason(
+        #[case] rel_path: &str,
+        #[case] parts: &[(u32, u64)],
+        #[case] reason: &str,
+    ) {
+        let (files, sizes) = weights(300);
 
-        let upload_files = vec![PresignedModelFileUploadUrlsResponse {
-            rel_path: "weights.bin".to_string(),
-            urls: MultipartUploadResponse {
-                id: "upload-1".to_string(),
-                parts: vec![PresignedUploadUrlResponse {
-                    part: 1,
-                    url: "https://example.com/part1".to_string(),
-                    size_bytes: 300,
-                }],
-            },
-        }];
+        let error = build_part_tasks(&files, &sizes, &parts_of(rel_path, parts)).unwrap_err();
 
-        let result = build_part_tasks(&files, &file_sizes, &upload_files);
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn given_duplicate_part_number_when_build_part_tasks_then_returns_error() {
-        let mut files = BTreeMap::new();
-        files.insert("weights.bin".to_string(), PathBuf::from("/tmp/weights.bin"));
-        let mut file_sizes = BTreeMap::new();
-        file_sizes.insert("weights.bin".to_string(), 400u64);
-
-        let upload_files = vec![PresignedModelFileUploadUrlsResponse {
-            rel_path: "weights.bin".to_string(),
-            urls: MultipartUploadResponse {
-                id: "upload-1".to_string(),
-                parts: vec![
-                    PresignedUploadUrlResponse {
-                        part: 1,
-                        url: "https://example.com/part1".to_string(),
-                        size_bytes: 200,
-                    },
-                    PresignedUploadUrlResponse {
-                        part: 1,
-                        url: "https://example.com/part1b".to_string(),
-                        size_bytes: 200,
-                    },
-                ],
-            },
-        }];
-
-        let result = build_part_tasks(&files, &file_sizes, &upload_files);
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn given_gap_in_part_numbers_when_build_part_tasks_then_returns_error() {
-        let mut files = BTreeMap::new();
-        files.insert("weights.bin".to_string(), PathBuf::from("/tmp/weights.bin"));
-        let mut file_sizes = BTreeMap::new();
-        file_sizes.insert("weights.bin".to_string(), 300u64);
-
-        let upload_files = vec![PresignedModelFileUploadUrlsResponse {
-            rel_path: "weights.bin".to_string(),
-            urls: MultipartUploadResponse {
-                id: "upload-1".to_string(),
-                parts: vec![
-                    PresignedUploadUrlResponse {
-                        part: 1,
-                        url: "https://example.com/part1".to_string(),
-                        size_bytes: 200,
-                    },
-                    PresignedUploadUrlResponse {
-                        part: 3,
-                        url: "https://example.com/part3".to_string(),
-                        size_bytes: 100,
-                    },
-                ],
-            },
-        }];
-
-        let result = build_part_tasks(&files, &file_sizes, &upload_files);
-
-        assert!(result.is_err());
+        assert!(error.to_string().contains(reason), "{error}");
     }
 }

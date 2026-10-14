@@ -1,52 +1,176 @@
+use std::io;
+
+use anyhow::Context;
+use clap::{Args, Subcommand};
+use serde::Serialize;
+use tracel_client::console::project::request::Visibility;
+use tracel_client::console::project::response::ProjectResponse;
+
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
-use crate::helpers::require_linked_project;
+use crate::error::{CliError, ErrorKind};
+use crate::helpers::resolve_namespace_project;
+use crate::helpers::{ProjectSource, missing_project};
+use crate::ui::{Details, Human, Outcome, Render, Table, list_summary, when};
 
-pub fn handle_command(context: CliContext) -> anyhow::Result<()> {
-    context.terminal().command_title("Project Information");
+#[derive(Args, Debug)]
+pub struct ProjectArgs {
+    #[command(subcommand)]
+    pub command: Option<ProjectCommands>,
+}
 
-    let project = require_linked_project(&context)?;
+#[derive(Subcommand, Debug)]
+pub enum ProjectCommands {
+    /// List your and your organizations' projects
+    List(ListArgs),
+}
 
-    let client = match get_client_and_login_if_needed(&context) {
-        Ok(client) => client,
-        Err(e) => {
-            context.terminal().cancel_finalize(&format!("{e}"));
-            return Ok(());
+#[derive(Args, Debug)]
+pub struct ListArgs {
+    /// List only this namespace's projects
+    #[arg(value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    pub namespace: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(transparent)]
+struct Projects(Vec<ProjectResponse>);
+
+impl Render for Projects {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
+        Table::new(["PROJECT", "VISIBILITY", "DESCRIPTION", "CREATED AT"])
+            .shrink("DESCRIPTION")
+            .rows(self.0.iter().map(|project| {
+                [
+                    format!("{}/{}", project.namespace_name, project.project_name),
+                    visibility_name(&project.visibility).into(),
+                    project.description.clone(),
+                    when(&project.created_at),
+                ]
+            }))
+            .write(out)
+    }
+
+    fn summary(&self) -> Option<String> {
+        Some(list_summary(
+            self.0.len(),
+            self.0.len() as u64,
+            ["project", "projects"],
+            "No projects yet. Create one with `tracel init`.",
+        ))
+    }
+}
+
+#[derive(Serialize)]
+struct ProjectInfo {
+    namespace: String,
+    name: String,
+    description: String,
+    created_by: String,
+    visibility: Visibility,
+    source: ProjectSource,
+}
+
+impl Render for ProjectInfo {
+    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
+        Details::new()
+            .field("Description", &self.description)
+            .field("Visibility", visibility_name(&self.visibility))
+            .field("Created by", &self.created_by)
+            .field("Selected by", &self.source)
+            .write(out)
+    }
+
+    fn summary(&self) -> Option<String> {
+        Some(format!("Commands use {}/{}.", self.namespace, self.name))
+    }
+}
+
+fn visibility_name(visibility: &Visibility) -> &'static str {
+    match visibility {
+        Visibility::Private => "private",
+        Visibility::Public => "public",
+    }
+}
+
+pub fn handle_command(args: ProjectArgs, context: CliContext) -> anyhow::Result<Outcome> {
+    match args.command {
+        Some(ProjectCommands::List(args)) => Ok(list_projects(args, context)?.into()),
+        None => Ok(show_project(context)?.into()),
+    }
+}
+
+fn list_projects(args: ListArgs, context: CliContext) -> anyhow::Result<Projects> {
+    let client = get_client_and_login_if_needed(&context)?;
+    let user_namespace = &client.user().namespace;
+    let mut projects = Vec::new();
+    if args
+        .namespace
+        .as_deref()
+        .is_none_or(|namespace| namespace == user_namespace)
+    {
+        projects.extend(client.list_user_projects(user_namespace)?);
+        if args.namespace.is_some() {
+            return Ok(Projects(projects));
         }
-    };
-
-    let bc_project = project.get_project();
-    // Fetch project information from the server
-    match client.get_project(&bc_project.owner, &bc_project.name) {
-        Ok(project) => {
-            context
-                .terminal()
-                .print(&format!("Project: {}", project.project_name));
-            context
-                .terminal()
-                .print(&format!("Namespace: {}", project.namespace_name));
-            context
-                .terminal()
-                .print(&format!("Description: {}", project.description));
-            context
-                .terminal()
-                .print(&format!("Created By: {}", project.created_by));
-            context
-                .terminal()
-                .finalize("Project information retrieved successfully.");
+    }
+    let organizations = client.get_user_organizations()?;
+    if let Some(namespace) = args.namespace {
+        if !organizations
+            .organizations
+            .iter()
+            .any(|organization| organization.namespace == namespace)
+        {
+            let available = std::iter::once(user_namespace.as_str())
+                .chain(
+                    organizations
+                        .organizations
+                        .iter()
+                        .map(|organization| organization.namespace.as_str()),
+                )
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(CliError::new(
+                ErrorKind::NotFound,
+                format!("Unknown namespace '{namespace}'. Namespaces: {available}."),
+            )
+            .into());
         }
+        projects.extend(client.list_organization_projects(&namespace)?);
+    } else {
+        for organization in organizations.organizations {
+            projects.extend(client.list_organization_projects(&organization.namespace)?);
+        }
+    }
+    Ok(Projects(projects))
+}
+
+fn show_project(context: CliContext) -> anyhow::Result<ProjectInfo> {
+    let resolved = resolve_namespace_project(&context)?;
+    let client = get_client_and_login_if_needed(&context)?;
+
+    let selected = &resolved.project;
+    let project = match client.get_project(&selected.namespace, &selected.name) {
+        Ok(project) => project,
         Err(e) if e.is_not_found() => {
-            context.terminal().cancel_finalize(&format!(
-                "Project {}/{} not found on the server.",
-                bc_project.owner, bc_project.name
-            ));
+            return Err(missing_project(selected, &resolved.source).into());
         }
         Err(e) => {
-            context
-                .terminal()
-                .cancel_finalize(&format!("Failed to retrieve project information: {}", e));
+            return Err(e).with_context(|| {
+                format!(
+                    "Can't read project {}/{}",
+                    selected.namespace, selected.name
+                )
+            });
         }
     };
 
-    Ok(())
+    Ok(ProjectInfo {
+        namespace: project.namespace_name,
+        name: project.project_name,
+        description: project.description,
+        created_by: project.created_by,
+        visibility: project.visibility,
+        source: resolved.source,
+    })
 }

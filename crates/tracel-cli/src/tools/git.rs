@@ -9,7 +9,7 @@ pub fn is_repo_dirty() -> anyhow::Result<bool> {
     Ok(repo.is_dirty()?)
 }
 
-/// The hash of the current HEAD commit. Used as the code-version digest.
+/// Read the hash of the HEAD commit, which identifies a code version.
 pub fn get_last_commit_hash() -> anyhow::Result<String> {
     let repo = gix::discover(".")?;
     let last_commit = repo.head()?.peel_to_commit()?.id();
@@ -25,7 +25,7 @@ pub fn get_first_commit_hash() -> anyhow::Result<String> {
         .sorting(Sorting::ByCommitTime(CommitTimeOrder::OldestFirst));
     let revs = platform.all()?;
 
-    let last_hash = revs.last().context("No commits found in the repository.")?;
+    let last_hash = revs.last().context("The repository has no commit")?;
     let last_hash = last_hash?.id();
 
     Ok(last_hash.to_string())
@@ -37,7 +37,7 @@ pub fn is_repo_initialized() -> bool {
 
 pub fn init_repo(dir: &Path) -> anyhow::Result<Repository> {
     if is_repo_initialized() {
-        return Err(anyhow::anyhow!("Repository already initialized."));
+        anyhow::bail!("The git repository already exists.");
     }
 
     let repo = gix::init(dir)?;
@@ -49,25 +49,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_get_first_commit_hash() {
-        let hash = get_first_commit_hash().expect("Failed to get first commit hash");
-
+    fn the_first_commit_is_the_root_of_head() {
         let output = std::process::Command::new("git")
-            .args(["rev-list", "--parents", "HEAD"])
+            .args(["rev-list", "--max-parents=0", "--first-parent", "HEAD"])
             .output()
-            .expect("Failed to run git rev-list");
+            .expect("git runs");
+        let root = String::from_utf8_lossy(&output.stdout);
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let first = get_first_commit_hash().expect("the repository has commits");
 
-        if let Some(last_line) = stdout.lines().last() {
-            let parts: Vec<&str> = last_line.split_whitespace().collect();
-            if let Some(first_commit_hash) = parts.first() {
-                assert_eq!(hash, *first_commit_hash);
-            } else {
-                panic!("No commit hash found in the last line of git rev-list output.");
-            }
-        } else {
-            eprintln!("No commits found.");
-        }
+        assert_eq!(first, root.trim());
     }
 }

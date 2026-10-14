@@ -1,9 +1,10 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::Arc;
 
 use anyhow::Context;
-use clap::Args;
+use clap::{Args, ValueEnum};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tracel_client::console::Client;
 use tracel_client::console::project::request::{
@@ -11,112 +12,191 @@ use tracel_client::console::project::request::{
     PublishSourceRequest,
 };
 
-use crate::commands::init::commit_sequence;
+use crate::commands::init::commit_all;
 use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
-use crate::helpers::{require_linked_project, validate_project_exists_on_server};
+use crate::error::{CliError, ErrorKind};
+use crate::helpers::{
+    require_cargo_workspace, resolve_namespace_project, validate_project_exists_on_server,
+};
 use crate::tools::build_driver::{self, BuildDriver};
 use crate::tools::packager::{PackageEvent, package_workspace};
 use crate::tools::project_context::ProjectContext;
 use crate::tools::{cargo, git, target};
+use crate::ui::{Outcome, Unanswered, short_digest};
 
 #[derive(Args, Debug)]
 pub struct PackageArgs {
-    /// Package even if the git repository has uncommitted changes (skips the commit prompt).
+    /// Package with uncommitted changes
     #[arg(long, action)]
     pub allow_dirty: bool,
+    /// Package a compiled binary or the source
+    #[arg(long, value_enum)]
+    pub mode: Option<Mode>,
+    /// Build for this target triple; repeat for more
+    #[arg(long = "target", value_name = "TRIPLE")]
+    pub targets: Vec<String>,
+    /// Upload this binary when several are built
+    #[arg(long, value_name = "NAME")]
+    pub bin: Option<String>,
+    /// Install missing Rust targets without asking
+    #[arg(long)]
+    pub install_targets: bool,
+    /// Commit all current changes before packaging
+    #[arg(long, conflicts_with = "allow_dirty")]
+    pub commit: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
     Binary,
     Source,
 }
 
-/// An artifact prepared for upload: the publish request describing it, plus the
-/// `(upload-url key, file path)` pairs whose bytes must be PUT to the presigned
-/// URLs the server returns.
-struct PreparedArtifact {
+/// A code version ready to upload: its publish request, each file by the key of its
+/// upload URL, and the targets it was built for.
+struct PreparedCodeVersion {
     request: PublishArtifactRequest,
     uploads: Vec<(String, PathBuf)>,
+    targets: Vec<String>,
 }
 
-pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<()> {
-    context.terminal().command_title("Package project");
+/// The code version `package` made. `uploaded` is false when it already existed.
+#[derive(Serialize)]
+struct Packaged {
+    namespace: String,
+    project: String,
+    digest: String,
+    version_id: String,
+    mode: Mode,
+    targets: Vec<String>,
+    uploaded: bool,
+}
 
-    // 0. Ensure we have auth and a linked project that exists on the server.
+pub fn handle_command(args: PackageArgs, context: CliContext) -> anyhow::Result<Outcome> {
+    if args.mode.is_none() && !context.terminal().is_interactive() {
+        return Err(CliError::new(ErrorKind::Usage, MODE_NEEDED)
+            .with_hint(MODE_HINT)
+            .into());
+    }
+    if args.mode == Some(Mode::Source) && !args.targets.is_empty() {
+        return Err(CliError::new(
+            ErrorKind::Usage,
+            "--target is only valid with --mode binary.",
+        )
+        .into());
+    }
+    for triple in &args.targets {
+        target::parse_target(triple)?;
+    }
+
+    let workspace_info = require_cargo_workspace()?;
+    let resolved = resolve_namespace_project(&context)?;
     let client = get_client_and_login_if_needed(&context)?;
-    let project = require_linked_project(&context)?;
-    validate_project_exists_on_server(&context, &project, &client)?;
+    validate_project_exists_on_server(&resolved.project, &resolved.source, &client)?;
+    let project = ProjectContext {
+        workspace_info,
+        project: resolved.project,
+    };
 
-    // 1. Dirty check — warn and offer to commit, but allow proceeding.
-    if git::is_repo_dirty()? && !args.allow_dirty {
-        context
-            .terminal()
-            .print_warning("Your repository has uncommitted changes.");
-        if cliclack::confirm("Commit changes before packaging?")
-            .initial_value(true)
-            .interact()?
-        {
-            commit_sequence()?;
+    let has_commit = git::get_last_commit_hash().is_ok();
+    if !has_commit && !args.commit && !context.terminal().is_interactive() {
+        return Err(
+            CliError::new(ErrorKind::Usage, "The workspace has no commit yet.")
+                .with_hint("Commit your changes, or pass --commit.")
+                .into(),
+        );
+    }
+    if args.commit {
+        if !has_commit || git::is_repo_dirty()? {
+            commit_all(context.terminal())?;
+        }
+    } else if git::is_repo_dirty()? && !args.allow_dirty {
+        let dirty = "The workspace has uncommitted changes.";
+        if !context.terminal().is_interactive() {
+            return Err(CliError::new(ErrorKind::Usage, dirty)
+                .with_hint("Commit them, or pass --commit or --allow-dirty.")
+                .into());
+        }
+        context.terminal().warning(dirty);
+        if context.terminal().confirm(
+            "Commit them first?",
+            true,
+            Unanswered::new(
+                "Packaging needs a commit.",
+                "Pass --commit or --allow-dirty.",
+            ),
+        )? {
+            commit_all(context.terminal())?;
         }
     }
 
-    // 2. The code version is identified by the current commit hash.
-    let digest = git::get_last_commit_hash().context(
-        "Failed to read the current git commit. The repository needs at least one commit to package.",
-    )?;
+    let digest = git::get_last_commit_hash().context("Can't read the current commit")?;
     if git::is_repo_dirty()? {
-        context.terminal().print_warning(&format!(
-            "Proceeding with uncommitted changes — they will not be part of code version {digest}."
+        context.terminal().warning(&format!(
+            "Uncommitted changes are not part of code version {}.",
+            short_digest(&digest)
         ));
     }
 
-    // 3. Choose how to package.
-    let mode = cliclack::select("How would you like to package your code?")
-        .items(&[
-            (
-                Mode::Binary,
-                "Binary (more secure)",
-                "ship a compiled binary; your source is not uploaded",
-            ),
-            (
-                Mode::Source,
-                "Source (more portable)",
-                "upload source; it is built on the compute provider",
-            ),
-        ])
-        .interact()?;
+    let mode = match args.mode {
+        Some(mode) => mode,
+        None => context.terminal().select(
+            "Mode",
+            &[
+                (
+                    Mode::Binary,
+                    "Binary (more secure)",
+                    "ship a compiled binary; your source is not uploaded",
+                ),
+                (
+                    Mode::Source,
+                    "Source (more portable)",
+                    "upload source; it is built on the compute provider",
+                ),
+            ],
+            None,
+            Unanswered::new(MODE_NEEDED, MODE_HINT),
+        )?,
+    };
+    if mode == Mode::Source && !args.targets.is_empty() {
+        return Err(CliError::new(
+            ErrorKind::Usage,
+            "--target is only valid with --mode binary.",
+        )
+        .into());
+    }
 
-    let artifact = match mode {
-        Mode::Source => build_source_artifact(&context, &project)?,
-        Mode::Binary => build_binary_artifact(&context, &project)?,
+    let code_version = match mode {
+        Mode::Source => prepare_source(&context, &project)?,
+        Mode::Binary => prepare_binaries(&context, &project, &args)?,
     };
 
-    // 4. Upload.
-    upload(&context, &client, &project, &digest, artifact)
+    Ok(Outcome::data(upload(
+        &context,
+        &client,
+        &project,
+        &digest,
+        mode,
+        code_version,
+    )?))
 }
 
-fn build_source_artifact(
+fn prepare_source(
     context: &CliContext,
     project: &ProjectContext,
-) -> anyhow::Result<PreparedArtifact> {
-    let spinner = context.terminal().spinner();
-    spinner.start("Packaging workspace...");
-    let spinner_clone = spinner.clone();
+) -> anyhow::Result<PreparedCodeVersion> {
+    let spinner = context.terminal().spinner("Packaging the workspace");
+    let reporter = spinner.clone();
     let result = package_workspace(
         project.get_workspace_name(),
-        Arc::new(move |msg: PackageEvent| {
-            spinner_clone.set_message(msg.message);
-        }),
+        Arc::new(move |event: PackageEvent| reporter.set_message(event.message)),
     )
-    .map_err(|e| {
-        spinner.error("Packaging failed.");
-        anyhow::anyhow!("Failed to package workspace: {e}")
-    })?;
-    spinner.stop("Workspace packaged.");
+    .context("Can't package the workspace")?;
+    spinner.clear();
 
-    Ok(PreparedArtifact {
+    Ok(PreparedCodeVersion {
         request: PublishArtifactRequest::Source {
             source: PublishSourceRequest {
                 checksum: result.checksum,
@@ -124,33 +204,35 @@ fn build_source_artifact(
             },
         },
         uploads: vec![("source.zip".to_string(), result.path)],
+        targets: Vec::new(),
     })
 }
 
-fn build_binary_artifact(
+fn prepare_binaries(
     context: &CliContext,
     project: &ProjectContext,
-) -> anyhow::Result<PreparedArtifact> {
+    args: &PackageArgs,
+) -> anyhow::Result<PreparedCodeVersion> {
     let host = target::host_target()?;
     let installed = target::installed_targets();
 
-    let selected = target::prompt_targets(host, &installed)?;
+    let selected = target::select_targets(context.terminal(), &args.targets, host, &installed)?;
 
-    // rustup preflight: offer to install any selected cross target whose std is missing.
+    // Offer to install the chosen cross targets whose standard library is missing.
     let missing: Vec<&str> = selected
         .iter()
         .filter(|&&(os, arch)| (os, arch) != host)
         .map(|&(os, arch)| target::target_triple(os, arch))
         .filter(|triple| !installed.contains(*triple))
         .collect();
-    target::install_missing_target(missing)?;
+    target::install_missing_target(context.terminal(), missing, args.install_targets)?;
 
     let root = project.get_workspace_root();
     let drivers = build_driver::detect();
     let mut binaries = Vec::new();
     let mut uploads = Vec::new();
 
-    for (os, arch) in selected {
+    for &(os, arch) in &selected {
         let triple = target::target_triple(os, arch);
         let is_host = (os, arch) == host;
         let driver = if is_host {
@@ -160,15 +242,22 @@ fn build_binary_artifact(
         };
 
         let linker = if is_host {
-            context.terminal().print_warning(&format!(
-                "Building for this machine ({triple}). It will only run on compute providers with the same OS and architecture."
+            context.terminal().warning(&format!(
+                "The binary runs only on {} compute providers.",
+                target::pretty_name(os, arch)
             ));
             None
         } else {
             build_driver::cross_preflight(context.terminal(), root, host, (os, arch), driver)?
         };
 
-        let path = build_release_binary(context, (!is_host).then_some(triple), driver, linker)?;
+        let path = build_release_binary(
+            context,
+            (!is_host).then_some(triple),
+            driver,
+            linker,
+            args.bin.as_deref(),
+        )?;
         let (checksum, size) = sha256_and_size(&path)?;
         binaries.push(PublishBinaryRequest {
             os,
@@ -179,36 +268,34 @@ fn build_binary_artifact(
         uploads.push((triple.to_string(), path));
     }
 
-    Ok(PreparedArtifact {
+    Ok(PreparedCodeVersion {
         request: PublishArtifactRequest::Binaries { binaries },
         uploads,
+        targets: selected
+            .iter()
+            .map(|&(os, arch)| target::target_triple(os, arch).to_string())
+            .collect(),
     })
 }
 
-/// Run the release build with `driver` (optionally for a cross `--target`) and return
-/// the path to the produced executable (prompting if the build produced more than one).
+/// Build the release binary with `driver`, for `target` when cross-building, and return
+/// its path, asking which one when the build makes several.
 fn build_release_binary(
     context: &CliContext,
     target: Option<&str>,
     driver: BuildDriver,
     linker: Option<&str>,
+    bin: Option<&str>,
 ) -> anyhow::Result<PathBuf> {
-    let mut cmd_label = match target {
+    let cmd_label = match target {
         Some(triple) => format!("{} --release --target {triple}", driver.label()),
         None => format!("{} --release", driver.label()),
     };
-    if let Some(linker) = linker {
-        cmd_label.push_str(&format!(" (linker {linker})"));
-    }
-    context
-        .terminal()
-        .print(&format!("Building release binary ({cmd_label})..."));
-
     let mut command = cargo::command();
     for arg in driver.subcommand_args() {
         command.arg(arg);
     }
-    command.arg("--release").arg("--message-format=json");
+    command.arg("--release");
     if let Some(triple) = target {
         command.arg("--target").arg(triple);
         if let Some(linker) = linker {
@@ -217,57 +304,69 @@ fn build_release_binary(
                 .arg(format!("target.{triple}.linker=\"{linker}\""));
         }
     }
-    let output = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .output()
-        .with_context(|| format!("Failed to run `{cmd_label}`"))?;
-
-    if !output.status.success() {
-        anyhow::bail!("`{cmd_label}` failed");
+    let building = match target {
+        Some(triple) => format!("Building for {triple}"),
+        None => "Building the binary".to_string(),
+    };
+    let spinner = context.terminal().spinner(&building);
+    let built = cargo::build_quietly(command, &cmd_label, |status| {
+        spinner.set_message(format!("{building}: {status}"));
+    });
+    spinner.clear();
+    let built = built?;
+    if !built.succeeded() {
+        built.show_output();
     }
+    let executables = built.executables()?;
 
-    let mut executables: Vec<PathBuf> = Vec::new();
-    for line in output.stdout.split(|&b| b == b'\n') {
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(msg) = serde_json::from_slice::<serde_json::Value>(line) {
-            if msg.get("reason").and_then(|r| r.as_str()) == Some("compiler-artifact") {
-                if let Some(exe) = msg.get("executable").and_then(|e| e.as_str()) {
-                    executables.push(PathBuf::from(exe));
-                }
-            }
-        }
+    let names: Vec<&str> = executables.iter().map(|(name, _)| name.as_str()).collect();
+    if let Some(bin) = bin {
+        return executables
+            .iter()
+            .find(|(name, _)| name == bin)
+            .map(|(_, path)| path.clone())
+            .ok_or_else(|| {
+                CliError::new(
+                    ErrorKind::Usage,
+                    format!("No binary '{bin}'. Binaries: {}.", names.join(", ")),
+                )
+                .into()
+            });
     }
-
     match executables.len() {
-        0 => anyhow::bail!("The build did not produce any binary target."),
-        1 => Ok(executables.into_iter().next().unwrap()),
+        0 => anyhow::bail!("The build made no binary."),
+        1 => Ok(executables[0].1.clone()),
         _ => {
             let items: Vec<(PathBuf, String, &str)> = executables
                 .iter()
-                .map(|p| {
+                .map(|(_, path)| {
                     (
-                        p.clone(),
-                        p.file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| p.display().to_string()),
+                        path.clone(),
+                        path.file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.display().to_string()),
                         "",
                     )
                 })
                 .collect();
-            cliclack::select("Multiple binaries were built. Select which to upload")
-                .items(&items)
-                .interact()
-                .map_err(anyhow::Error::from)
+            context.terminal().select(
+                "Binary",
+                &items,
+                None,
+                Unanswered::new(
+                    format!("Several binaries were built: {}.", names.join(", ")),
+                    "Pass --bin <name>.",
+                ),
+            )
         }
     }
 }
 
+const MODE_NEEDED: &str = "Packaging needs a mode.";
+const MODE_HINT: &str = "Pass --mode binary or --mode source.";
+
 fn sha256_and_size(path: &Path) -> anyhow::Result<(String, u64)> {
-    let bytes = std::fs::read(path)
-        .with_context(|| format!("Failed to read binary at {}", path.display()))?;
+    let bytes = std::fs::read(path).with_context(|| format!("Can't read '{}'", path.display()))?;
     let checksum = format!("{:x}", Sha256::digest(&bytes));
     Ok((checksum, bytes.len() as u64))
 }
@@ -277,14 +376,15 @@ fn upload(
     client: &Client,
     project: &ProjectContext,
     digest: &str,
-    prepared: PreparedArtifact,
-) -> anyhow::Result<()> {
-    let bc_project = project.get_project();
+    mode: Mode,
+    prepared: PreparedCodeVersion,
+) -> anyhow::Result<Packaged> {
+    let linked = project.get_project();
 
     let response = client
         .publish_project_version_urls(
-            &bc_project.owner,
-            &bc_project.name,
+            &linked.namespace,
+            &linked.name,
             PublishProjectVersionRequest {
                 digest: digest.to_string(),
                 artifact: prepared.request,
@@ -292,50 +392,97 @@ fn upload(
         )
         .with_context(|| {
             format!(
-                "Failed to request upload URLs for {}/{}",
-                bc_project.owner, bc_project.name
+                "Can't start the upload to {}/{}",
+                linked.namespace, linked.name
             )
         })?;
 
-    let Some(urls) = response.urls else {
-        context.terminal().print_success(&format!(
-            "This commit ({digest}) is already packaged (version {}).",
-            response.id
-        ));
-        context.terminal().finalize("Nothing to upload.");
-        return Ok(());
+    let packaged = |uploaded| Packaged {
+        namespace: linked.namespace.clone(),
+        project: linked.name.clone(),
+        digest: digest.to_string(),
+        version_id: response.id.clone(),
+        mode,
+        targets: prepared.targets.clone(),
+        uploaded,
     };
-
-    let spinner = context.terminal().spinner();
-    spinner.start("Uploading artifacts...");
-    for (key, path) in prepared.uploads {
-        let url = urls.get(&key).ok_or_else(|| {
-            spinner.error("Upload failed.");
-            anyhow::anyhow!("Server did not return an upload URL for `{key}`")
-        })?;
-        let bytes =
-            std::fs::read(&path).with_context(|| format!("Failed to read {}", path.display()))?;
-        client.upload_bytes_to_url(url, bytes).map_err(|e| {
-            spinner.error("Upload failed.");
-            anyhow::anyhow!("Failed to upload `{key}`: {e}")
-        })?;
+    let uploads = match &response.urls {
+        Some(urls) => requested(prepared.uploads, urls),
+        None => Vec::new(),
+    };
+    if uploads.is_empty() {
+        context.terminal().outro(&format!(
+            "Code version {} is already uploaded.",
+            short_digest(digest)
+        ));
+        return Ok(packaged(false));
     }
-    spinner.stop("Artifacts uploaded.");
+
+    let spinner = context.terminal().spinner("Uploading the code version");
+    for (key, url, path) in uploads {
+        let bytes =
+            std::fs::read(&path).with_context(|| format!("Can't read '{}'", path.display()))?;
+        client
+            .upload_bytes_to_url(url, bytes)
+            .with_context(|| format!("Can't upload '{key}'"))?;
+    }
+    spinner.clear();
 
     client
-        .complete_project_version_upload(&bc_project.owner, &bc_project.name, &response.id)
+        .complete_project_version_upload(&linked.namespace, &linked.name, &response.id)
         .with_context(|| {
             format!(
-                "Failed to finalize upload for {}/{}",
-                bc_project.owner, bc_project.name
+                "Can't finish the upload to {}/{}",
+                linked.namespace, linked.name
             )
         })?;
 
-    context
-        .terminal()
-        .print_success(&format!("New code version uploaded: {}", response.digest));
-    context
-        .terminal()
-        .finalize("Project packaged successfully.");
-    Ok(())
+    context.terminal().outro(&format!(
+        "Uploaded code version {}.",
+        short_digest(&response.digest)
+    ));
+    Ok(packaged(true))
+}
+
+/// The files of a package the Tracel Console asked for, each with its upload URL. A file
+/// the code version already has gets no URL and is left out.
+fn requested(
+    uploads: Vec<(String, PathBuf)>,
+    urls: &HashMap<String, String>,
+) -> Vec<(String, &str, PathBuf)> {
+    uploads
+        .into_iter()
+        .filter_map(|(key, path)| urls.get(&key).map(|url| (key, url.as_str(), path)))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_files_the_console_asks_for_are_uploaded() {
+        let uploads = vec![
+            (
+                "x86_64-unknown-linux-gnu".to_string(),
+                PathBuf::from("linux"),
+            ),
+            ("aarch64-apple-darwin".to_string(), PathBuf::from("macos")),
+        ];
+        let urls = HashMap::from([(
+            "aarch64-apple-darwin".to_string(),
+            "https://storage/macos".to_string(),
+        )]);
+
+        let requested = requested(uploads, &urls);
+
+        assert_eq!(
+            requested,
+            [(
+                "aarch64-apple-darwin".to_string(),
+                "https://storage/macos",
+                PathBuf::from("macos")
+            )]
+        );
+    }
 }

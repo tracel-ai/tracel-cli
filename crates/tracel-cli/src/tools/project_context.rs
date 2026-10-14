@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::tools::{tracel_config::TracelProject, workspace::WorkspaceInfo};
 
+/// What went wrong with a workspace or its link.
 #[derive(Debug)]
 pub enum ErrorKind {
     ManifestNotFound,
@@ -11,6 +12,7 @@ pub enum ErrorKind {
     Unexpected,
 }
 
+/// An error about a workspace or its link.
 #[derive(thiserror::Error, Debug)]
 pub struct ProjectContextError {
     message: String,
@@ -31,10 +33,6 @@ impl ProjectContextError {
     pub fn kind(&self) -> &ErrorKind {
         &self.kind
     }
-
-    pub fn is_project_not_linked(&self) -> bool {
-        matches!(self.kind, ErrorKind::ProjectNotLinked)
-    }
 }
 
 impl std::fmt::Display for ProjectContextError {
@@ -43,9 +41,9 @@ impl std::fmt::Display for ProjectContextError {
     }
 }
 
+/// A workspace and the project it is linked to.
 pub struct ProjectContext {
     pub workspace_info: WorkspaceInfo,
-    pub build_profile: String,
     pub project: TracelProject,
 }
 
@@ -60,14 +58,14 @@ impl ProjectContext {
         let project = TracelProject::load(&workspace_info.workspace_root)
             .map_err(|e| {
                 ProjectContextError::new(
-                    "Failed to read tracel.toml".to_string(),
+                    "Can't read tracel.toml".to_string(),
                     ErrorKind::Parsing,
                     Some(e.into()),
                 )
             })?
             .ok_or_else(|| {
                 ProjectContextError::new(
-                    "No Tracel Console project linked to this repository".to_string(),
+                    "This workspace isn't linked to a project".to_string(),
                     ErrorKind::ProjectNotLinked,
                     None,
                 )
@@ -75,7 +73,6 @@ impl ProjectContext {
 
         Ok(Self {
             workspace_info,
-            build_profile: "release".to_string(),
             project,
         })
     }
@@ -85,7 +82,7 @@ impl ProjectContext {
 
         project.save(&workspace_info.workspace_root).map_err(|e| {
             ProjectContextError::new(
-                "Failed to write tracel.toml".to_string(),
+                "Can't write tracel.toml".to_string(),
                 ErrorKind::ProjectInitialization,
                 Some(e.into()),
             )
@@ -93,7 +90,6 @@ impl ProjectContext {
 
         Ok(Self {
             workspace_info,
-            build_profile: "release".to_string(),
             project,
         })
     }
@@ -103,7 +99,7 @@ impl ProjectContext {
 
         TracelProject::remove(&workspace_info.workspace_root).map_err(|e| {
             ProjectContextError::new(
-                "Failed to remove tracel.toml".to_string(),
+                "Can't remove tracel.toml".to_string(),
                 ErrorKind::Unexpected,
                 Some(e.into()),
             )

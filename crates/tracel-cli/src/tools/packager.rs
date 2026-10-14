@@ -1,8 +1,4 @@
-//! Workspace packaging functionality for Tracel Console
-//!
-//! This module provides functionality to package an entire workspace as a single compressed archive,
-//! respecting gitignore rules. This is used to upload workspace projects to Tracel Console while
-//! maintaining backwards compatibility with the single-crate API.
+//! Packaging the workspace's source as one compressed archive, without what git ignores.
 
 use std::{
     fs::File,
@@ -10,72 +6,52 @@ use std::{
     sync::Arc,
 };
 
-use colored::Colorize;
+use anyhow::Context;
 use sha2::Digest as _;
 use sha2::Sha256;
 
-use crate::print_info;
 use crate::tools::event::Reporter;
+use crate::ui::{counted, size};
 
+/// A packaged archive: where it is, its SHA-256 checksum and its size.
 #[derive(Debug)]
 pub struct ArchiveMetadata {
-    pub name: String,
     pub path: PathBuf,
     pub checksum: String,
     pub size: u64,
 }
 
+/// A step of packaging, shown as it happens.
 pub struct PackageEvent {
     pub message: String,
 }
 
 type PackageEventReporter = dyn Reporter<PackageEvent>;
 
-/// Package the entire workspace as a single compressed archive with gitignore applied.
-///
-/// Returns a `PackageResult` containing the packaged workspace data and digest
+/// Package the workspace as one compressed archive, without what git ignores.
 pub fn package_workspace(
     workspace_name: &str,
     event_reporter: Arc<PackageEventReporter>,
 ) -> anyhow::Result<ArchiveMetadata> {
-    event_reporter.report_event(PackageEvent {
-        message: "Initializing workspace packaging".to_string(),
-    });
-
-    // Get workspace metadata
-    let cmd = cargo_metadata::MetadataCommand::new();
-    let metadata = cmd.exec()?;
-
+    let metadata = cargo_metadata::MetadataCommand::new().exec()?;
     let workspace_root = metadata
         .workspace_root
         .canonicalize()
-        .map_err(|e| anyhow::anyhow!("Failed to canonicalize workspace root: {}", e))?;
+        .context("Can't find the workspace root")?;
 
-    print_info!(
-        "Packaging workspace at: {}",
-        workspace_root.display().to_string().bold()
-    );
-
-    // List all files in the workspace respecting gitignore
     event_reporter.report_event(PackageEvent {
-        message: "Discovering files (respecting .gitignore)".to_string(),
+        message: "Listing files".to_string(),
     });
-
     let files = list_workspace_files(&workspace_root)?;
 
-    print_info!("Found {} files to package", files.len());
-
     event_reporter.report_event(PackageEvent {
-        message: format!("Discovered {} files", files.len()),
+        message: format!(
+            "Compressing {}",
+            counted(files.len() as u64, ["file", "files"])
+        ),
     });
 
-    // Create the archive
-    event_reporter.report_event(PackageEvent {
-        message: "Creating compressed archive".to_string(),
-    });
-
-    // Write the archive under the cargo target directory, the idiomatic home for
-    // build artifacts (kept out of the archive itself by the `target/` exclusion).
+    // The archive goes in the target directory, which it leaves out.
     let output_dir = metadata
         .target_directory
         .as_std_path()
@@ -85,63 +61,29 @@ pub fn package_workspace(
 
     std::fs::create_dir_all(&output_dir)?;
 
-    // Create archive at tarcel/package/{workspace_name}.tar.gz
     let archive_file = File::create(&archive_path)?;
 
-    // Organize files inside the archive (when uncompressed) it will be inside a directory named `{workspace_name}/` to match the standard cargo crate format.
     let uncompressed_size =
         create_workspace_archive(&workspace_root, &files, &archive_file, workspace_name)?;
 
     event_reporter.report_event(PackageEvent {
-        message: format!(
-            "Archive created: {}",
-            human_readable_bytes(uncompressed_size)
-        ),
+        message: format!("Computing the checksum of {}", size(uncompressed_size)),
     });
-
-    // Calculate checksum
-    event_reporter.report_event(PackageEvent {
-        message: "Computing checksum".to_string(),
-    });
-
     let archive_data = std::fs::read(&archive_path)?;
-    let checksum = format!("{:x}", Sha256::digest(&archive_data));
-    let size = archive_data.len() as u64;
-
-    // Build metadata from cargo_metadata
-    event_reporter.report_event(PackageEvent {
-        message: "Extracting package metadata".to_string(),
-    });
-
-    let archive_data = ArchiveMetadata {
-        name: workspace_name.to_string(),
+    Ok(ArchiveMetadata {
         path: archive_path,
-        checksum: checksum.clone(),
-        size,
-    };
-
-    event_reporter.report_event(PackageEvent {
-        message: "Workspace packaging completed successfully".to_string(),
-    });
-
-    Ok(archive_data)
+        checksum: format!("{:x}", Sha256::digest(&archive_data)),
+        size: archive_data.len() as u64,
+    })
 }
 
-/// Lists all files in the workspace that should be packaged, respecting gitignore rules.
+/// List the workspace files to package, without what git ignores.
 fn list_workspace_files(workspace_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
     let git_repo = discover_gix_repo(workspace_root)?;
 
-    if let Some(ref repo) = git_repo {
-        print_info!(
-            "Git repository found at {}",
-            repo.path().display().to_string().bold()
-        );
-    }
-
-    // Build gitignore matcher
     let mut exclude_builder = ignore::gitignore::GitignoreBuilder::new(workspace_root);
 
-    // Add default excludes if not using git
+    // Without git, leave out hidden files.
     if git_repo.is_none() {
         exclude_builder.add_line(None, ".*")?;
     }
@@ -162,25 +104,22 @@ fn list_workspace_files(workspace_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
             }
         }
 
-        // Check gitignore rules
         !ignore_exclude
             .matched_path_or_any_parents(relative_path, is_dir)
             .is_ignore()
     };
 
-    // Use git if available, otherwise walk the filesystem
     if let Some(repo) = git_repo {
         list_files_gix(workspace_root, &repo, &filter)
     } else {
         let mut files = Vec::new();
-        list_files_walk(workspace_root, &mut files, true, &filter)?;
+        list_files_walk(workspace_root, &mut files, &filter)?;
         Ok(files)
     }
 }
 
-/// Creates a compressed tar.gz archive of the workspace files.
-///
-/// All files are prefixed with `{package_prefix}/` to match the standard cargo crate format.
+/// Write `files` to `dst` as a tar.gz archive, each under `{package_prefix}/` as in
+/// cargo's crate archives, and return their total size.
 fn create_workspace_archive(
     workspace_root: &Path,
     files: &[PathBuf],
@@ -195,7 +134,7 @@ fn create_workspace_archive(
     for file_path in files {
         let relative_path = file_path
             .strip_prefix(workspace_root)
-            .map_err(|e| anyhow::anyhow!("Failed to strip workspace root prefix: {}", e))?;
+            .context("A packaged file is outside the workspace")?;
 
         if file_path.is_file() {
             let mut file = File::open(file_path)?;
@@ -205,7 +144,6 @@ fn create_workspace_archive(
             header.set_metadata_in_mode(&metadata, tar::HeaderMode::Deterministic);
             header.set_cksum();
 
-            // Prefix all paths with {name}-{version}/ to match cargo crate format
             let prefixed_path = PathBuf::from(package_prefix).join(relative_path);
             ar.append_data(&mut header, &prefixed_path, &mut file)?;
             uncompressed_size += metadata.len();
@@ -218,7 +156,7 @@ fn create_workspace_archive(
     Ok(uncompressed_size)
 }
 
-/// Discovers a git repository starting from the given path.
+/// Find the git repository whose work tree holds `root`, if any.
 fn discover_gix_repo(root: &Path) -> anyhow::Result<Option<gix::Repository>> {
     let repo = match gix::ThreadSafeRepository::discover(root) {
         Ok(repo) => repo.to_thread_local(),
@@ -226,13 +164,9 @@ fn discover_gix_repo(root: &Path) -> anyhow::Result<Option<gix::Repository>> {
     };
 
     let repo_root = repo.workdir().ok_or_else(|| {
-        anyhow::format_err!(
-            "Did not expect repo at {} to be bare",
-            repo.path().display()
-        )
+        anyhow::format_err!("The git repository at {} is bare.", repo.path().display())
     })?;
 
-    // Verify the repository contains the workspace root
     let canon_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let canon_repo_root = repo_root
         .canonicalize()
@@ -245,7 +179,7 @@ fn discover_gix_repo(root: &Path) -> anyhow::Result<Option<gix::Repository>> {
     }
 }
 
-/// Lists files using git to respect .gitignore rules.
+/// List the files git tracks or doesn't ignore, through nested repositories.
 fn list_files_gix(
     workspace_root: &Path,
     repo: &gix::Repository,
@@ -272,13 +206,12 @@ fn list_files_gix(
             if !is_dir {
                 files.push(file_path);
             } else {
-                // Recursively walk directories
                 match gix::open(&file_path) {
                     Ok(sub_repo) => {
                         files.extend(list_files_gix(workspace_root, &sub_repo, filter)?);
                     }
                     Err(_) => {
-                        list_files_walk(&file_path, &mut files, false, filter)?;
+                        list_files_walk(&file_path, &mut files, filter)?;
                     }
                 }
             }
@@ -288,11 +221,10 @@ fn list_files_gix(
     Ok(files)
 }
 
-/// Lists files by walking the filesystem (fallback when git is not available).
+/// List the files under `path` that `filter` keeps, without git.
 fn list_files_walk(
     path: &Path,
     files: &mut Vec<PathBuf>,
-    _is_root: bool,
     filter: &impl Fn(&Path, bool) -> bool,
 ) -> anyhow::Result<()> {
     if !path.is_dir() {
@@ -328,18 +260,4 @@ fn list_files_walk(
     }
 
     Ok(())
-}
-
-/// Formats a byte count into a human-readable string.
-fn human_readable_bytes(bytes: u64) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-    let mut size = bytes as f64;
-    let mut unit_idx = 0;
-
-    while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
-        size /= 1024.0;
-        unit_idx += 1;
-    }
-
-    format!("{:.2} {}", size, UNITS[unit_idx])
 }
