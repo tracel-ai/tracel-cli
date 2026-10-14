@@ -7,7 +7,7 @@ use anyhow::Context;
 use cargo_metadata::{DependencyKind, Metadata};
 use serde::Deserialize;
 use serde_json::json;
-use tracel_job::{DefinitionsFile, JobDefinition, PROTOCOL, TRACEL_DESCRIBE, TRACEL_REPORT_FILE};
+use tracel_job::{DefinitionsFile, JobDefinition, PROTOCOL, ParseError, TRACEL_DESCRIBE};
 
 use crate::error::{CliError, ErrorKind};
 use crate::tools::cargo;
@@ -44,18 +44,17 @@ pub fn find_job<'a>(
         .with_hint("List the jobs with `tracel run --list`."))
 }
 
-/// Fails unless `protocol` is the version of the definitions files this CLI reads.
-fn check_protocol(protocol: u32) -> Result<(), CliError> {
-    if protocol == PROTOCOL {
-        return Ok(());
-    }
-    Err(CliError::new(
-        ErrorKind::Internal,
-        format!(
-            "The program lists its jobs with runner protocol {protocol}, but this CLI reads protocol {PROTOCOL}."
+/// Say why the definitions the program `name` wrote can't be read.
+fn unreadable_definitions(name: &str, error: ParseError) -> CliError {
+    let message = match error {
+        ParseError::Protocol { found } => format!(
+            "`{name}` lists its jobs with runner protocol {found}, but this CLI reads protocol {PROTOCOL}."
         ),
-    )
-    .with_hint(SAME_PROTOCOL))
+        ParseError::Invalid(error) => {
+            format!("`{name}` listed its jobs in a form this CLI can't read: {error}")
+        }
+    };
+    CliError::new(ErrorKind::Internal, message).with_hint(SAME_PROTOCOL)
 }
 
 /// A workspace package, as job discovery sees it.
@@ -257,7 +256,6 @@ fn run_describe(program: &Path, name: &str, timeout: Duration) -> anyhow::Result
         .env(TRACEL_DESCRIBE, &path)
         // Describing creates no experiment, so it needs no Console settings.
         .env("TRACEL_TARGET", "offline")
-        .env_remove(TRACEL_REPORT_FILE)
         .stdin(Stdio::null())
         .stdout(Stdio::from(std::io::stderr()))
         .spawn()
@@ -279,7 +277,7 @@ fn run_describe(program: &Path, name: &str, timeout: Duration) -> anyhow::Result
                 ),
             )
             .with_hint(
-                "With TRACEL_DESCRIBE set, the program must reach `Cli::run` quickly; move slow setup into its jobs.",
+                "To list its jobs, the program must reach `Jobs::run` quickly; move slow setup into its jobs.",
             )
             .into());
         }
@@ -303,30 +301,23 @@ fn run_describe(program: &Path, name: &str, timeout: Duration) -> anyhow::Result
 /// The definitions the program `name` wrote to `path`, when they follow the protocol this CLI
 /// reads.
 fn read_definitions(path: &Path, name: &str) -> anyhow::Result<DefinitionsFile> {
-    match DefinitionsFile::read(path) {
-        Ok(definitions) => {
-            check_protocol(definitions.protocol)?;
-            Ok(definitions)
+    let json = match std::fs::read(path) {
+        Ok(json) => json,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(CliError::new(
+                ErrorKind::Usage,
+                format!("`{name}` didn't list its jobs."),
+            )
+            .with_hint(
+                "Define its jobs with `tracel::runtime::Jobs`, or run it with `tracel run -- <args>`.",
+            )
+            .into());
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Err(CliError::new(
-            ErrorKind::Usage,
-            format!("`{name}` did not list its jobs."),
-        )
-        .with_hint(
-            "Register its jobs with `tracel::app::cli::Cli` from tracel 0.10 or later, or run it with `tracel run -- <args>`.",
-        )
-        .into()),
-        // A document that is not a definitions file, or is cut short.
-        Err(error) if matches!(error.kind(), io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof) => Err(CliError::new(
-            ErrorKind::Internal,
-            format!("`{name}` listed its jobs in a form this CLI does not read: {error}"),
-        )
-        .with_hint(SAME_PROTOCOL)
-        .into()),
         Err(error) => {
-            Err(error).with_context(|| format!("Can't read {}", path.display()))
+            return Err(error).with_context(|| format!("Can't read {}", path.display()));
         }
-    }
+    };
+    DefinitionsFile::from_json(&json).map_err(|error| unreadable_definitions(name, error).into())
 }
 
 #[cfg(test)]
@@ -338,7 +329,6 @@ mod tests {
     const DEFINITIONS: &str = r#"{
         "protocol": 1,
         "sdk_version": "0.10.0",
-        "runner": "cli",
         "jobs": [
             {
                 "name": "toy-training",
@@ -388,7 +378,6 @@ mod tests {
         let definitions = read(DEFINITIONS).unwrap();
         assert_eq!(definitions, self::definitions());
         assert_eq!(definitions.sdk_version, "0.10.0");
-        assert_eq!(definitions.runner, "cli");
         let job = find_job(&definitions, "toy-training").unwrap();
         assert_eq!(job.input_example, Some(json!({"epochs": 3})));
         assert_eq!(
@@ -441,7 +430,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let error = read_definitions(&dir.path().join("jobs.json"), "trainer").unwrap_err();
         assert_eq!(crate::error::classify(&error), ErrorKind::Usage);
-        assert_eq!(error.to_string(), "`trainer` did not list its jobs.");
+        assert_eq!(error.to_string(), "`trainer` didn't list its jobs.");
     }
 
     #[test]

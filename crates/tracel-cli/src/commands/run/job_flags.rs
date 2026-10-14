@@ -11,7 +11,8 @@ use std::ffi::OsString;
 use clap::builder::Resettable;
 use clap::{Arg, ArgAction, ArgMatches, Command, value_parser};
 use serde_json::Value;
-use tracel_job::{JobDefinition, job_command, job_input};
+use tracel_job::JobDefinition;
+use tracel_job::cli::{job_command, job_input};
 
 use crate::error::{CliError, ErrorKind};
 
@@ -29,7 +30,7 @@ pub fn with_job_flags(tracel: Command, args: &[OsString]) -> Command {
         .skip(1)
         .take_while(|arg| *arg != "--")
         .filter_map(|arg| arg.to_str()?.strip_prefix("--"))
-        .map(|flag| flag.split_once('=').map_or(flag, |(name, _)| name));
+        .map(flag_name);
     for name in flags {
         if !name.is_empty()
             && !name.starts_with('-')
@@ -72,10 +73,20 @@ pub fn apply(
     input: Value,
     flags: &[String],
 ) -> Result<Value, CliError> {
-    if flags.is_empty() {
+    let Some(flag) = flags.first() else {
         return Ok(input);
-    }
+    };
     let job = &definition.name;
+    if definition.input_schema.is_none() {
+        let flag = flag_name(flag);
+        return Err(CliError::new(
+            ErrorKind::Usage,
+            format!("Job '{job}' has no flag {flag}: its input has no JSON schema."),
+        )
+        .with_hint(
+            "Set its input with `--set <PATH>=<VALUE>`, or give the job's input a JSON schema with `Job::with_schema`.",
+        ));
+    }
     let arguments = [job.clone(), input.to_string()]
         .into_iter()
         .chain(flags.iter().cloned());
@@ -87,7 +98,8 @@ pub fn apply(
                 "List the flags of job '{job}' with `tracel run {job} --help`."
             ))
         })?;
-    Ok(job_input(&matches))
+    job_input(&matches, |path| std::fs::read_to_string(path))
+        .map_err(|error| CliError::new(ErrorKind::Usage, error.to_string()))
 }
 
 /// `tracel` whose `tracel run` is that of the job `definition`, for `tracel run <JOB> --help`:
@@ -141,6 +153,11 @@ fn long_flags(run: &Command) -> Vec<&str> {
                 .chain(arg.get_all_aliases().unwrap_or_default())
         })
         .collect()
+}
+
+/// Take the name of a long flag written `name` or `name=value`.
+fn flag_name(flag: &str) -> &str {
+    flag.split_once('=').map_or(flag, |(name, _)| name)
 }
 
 /// The argument of `--<name>`, one of the job's flags: given no value, or one, which may be a

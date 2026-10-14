@@ -3110,12 +3110,14 @@ dependencies = [
 [[package]]
 name = "tracel-job"
 version = "0.10.0"
-source = "git+https://github.com/tracel-ai/tracel?rev=f13282d468da982c1d780d9a94d4af86934c7f4d#f13282d468da982c1d780d9a94d4af86934c7f4d"
+source = "git+https://github.com/tracel-ai/tracel?rev=fdfd0a33f2b630a71acd390bd4643610fc29657c#fdfd0a33f2b630a71acd390bd4643610fc29657c"
 dependencies = [
  "clap",
  "clap_complete",
+ "referencing",
  "serde",
  "serde_json",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

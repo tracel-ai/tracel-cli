@@ -268,6 +268,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::test_support::job;
 
     fn key(key: &str) -> Segment {
         Segment::Key(key.to_string())
@@ -449,14 +450,22 @@ mod tests {
         }
     }
 
-    /// A job whose example input is `example`, with no schema.
-    fn job(example: Value) -> JobDefinition {
-        JobDefinition {
-            name: "train".to_string(),
-            description: None,
-            input_schema: None,
-            input_example: Some(example),
-        }
+    /// A job whose example input is `example`, with a schema of the fields the tests set.
+    fn train(example: Value) -> JobDefinition {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "epochs": {"type": "integer"},
+                "batch_size": {"type": "integer"},
+                "shuffle": {"type": "boolean"},
+                "tag": {"type": "string"},
+                "optimizer": {
+                    "type": "object",
+                    "properties": {"lr": {"type": "number"}, "decay": {"type": "number"}}
+                }
+            }
+        });
+        job("train", Some(schema), Some(example))
     }
 
     fn assignments(arguments: &[&str]) -> Vec<Assignment> {
@@ -482,7 +491,7 @@ mod tests {
             "optimizer": {"lr": 0.001, "decay": 0.1}
         });
         let input = resolve(
-            &job(example.clone()),
+            &train(example.clone()),
             example,
             &[
                 json!({"epochs": 20, "batch_size": 16, "optimizer": {"decay": null}}),
@@ -497,7 +506,7 @@ mod tests {
             json!({"epochs": 50, "batch_size": 32, "tag": "config", "optimizer": {"lr": 0.1}})
         );
         assert_eq!(
-            resolve(&job(json!({})), Value::Null, &[], &[], &[]).unwrap(),
+            resolve(&train(json!({})), Value::Null, &[], &[], &[]).unwrap(),
             Value::Null
         );
     }
@@ -505,7 +514,7 @@ mod tests {
     #[test]
     fn job_flags_set_what_the_same_assignments_set() {
         let example = json!({"epochs": 10, "shuffle": false, "optimizer": {"lr": 0.001}});
-        let job = job(example.clone());
+        let job = train(example.clone());
         let with_flags = resolve(
             &job,
             example.clone(),

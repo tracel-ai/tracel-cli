@@ -3,7 +3,6 @@ mod input;
 mod job_flags;
 mod launch;
 mod remote;
-mod report;
 
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -13,7 +12,7 @@ use clap::builder::StyledStr;
 use clap::{ArgAction, ArgGroup, Args, Command};
 use serde::Serialize;
 use serde_json::Value;
-use tracel_job::{DefinitionsFile, RunReport};
+use tracel_job::DefinitionsFile;
 
 pub use job_flags::{job_flags, with_job_flags};
 
@@ -30,8 +29,7 @@ use crate::ui::{Human, Layout, Outcome, Render, Table, Terminal, Unanswered, lis
 
 use describe::{describe, find_job};
 use input::Assignment;
-use launch::{Event, Launch, Target, launch, select_target};
-use report::{announcement, ending, ending_error};
+use launch::{Event, Launch, Target, exit_error, launch, select_target};
 
 #[derive(Args, Debug)]
 #[command(group(
@@ -164,7 +162,6 @@ struct JobRun {
     input: Value,
     target: Target,
     exit_code: Option<i32>,
-    report: Option<RunReport>,
 }
 
 /// Run `job` of the workspace binary with its resolved input, locally or with --remote.
@@ -228,40 +225,22 @@ fn run_job(job: &str, args: &RunArgs, context: &CliContext) -> anyhow::Result<Ou
 
     let mut env = sdk_environment(context, project.as_ref());
     env.push(("TRACEL_TARGET", target.as_str().to_string()));
-    let report_directory = tempfile::tempdir().context("Can't create a temporary directory")?;
-    let report_path = report_directory.path().join("report.json");
-    let mut announced = false;
-    let finished = launch(
+    let exit = launch(
         Launch {
             program: &described.program,
             job,
             input: &input_json,
             env,
             stdout: context.output().child_stdout(),
-            report_path: &report_path,
         },
         |event| match event {
-            Event::Report(report) => {
-                if let Some(announcement) = report.experiment.as_ref().and_then(announcement) {
-                    if !announced {
-                        terminal.info(&announcement);
-                    }
-                    announced = true;
-                }
-            }
             Event::Stopping => terminal.info(&format!(
                 "Stopping job '{job}'; it is killed if still running in 30 seconds."
             )),
             Event::Killed => terminal.warning(&format!("Killed job '{job}'.")),
-            Event::UnreadableReport(reason) => terminal.warning(&format!(
-                "Ignoring the run report of job '{job}': {reason}."
-            )),
         },
     )?;
-
-    let report = finished.report;
-    let ended = ending(report.as_ref(), finished.exit);
-    if let Some(error) = ending_error(job, &ended, report.as_ref()) {
+    if let Some(error) = exit_error(job, &exit) {
         return Err(error.into());
     }
     terminal.outro(&format!("Job '{job}' completed."));
@@ -269,8 +248,7 @@ fn run_job(job: &str, args: &RunArgs, context: &CliContext) -> anyhow::Result<Ou
         job: job.to_string(),
         input,
         target,
-        exit_code: finished.exit.code,
-        report,
+        exit_code: exit.status.code(),
     }))
 }
 
@@ -625,13 +603,10 @@ mod tests {
             input_schema: None,
             input_example: None,
         };
-        let definitions = DefinitionsFile::new(
-            "cli",
-            vec![
-                job("toy-training", Some("Run a toy training loop")),
-                job("wordtok", None),
-            ],
-        );
+        let definitions = DefinitionsFile::new(vec![
+            job("toy-training", Some("Run a toy training loop")),
+            job("wordtok", None),
+        ]);
 
         let mut text = Vec::new();
         definitions
