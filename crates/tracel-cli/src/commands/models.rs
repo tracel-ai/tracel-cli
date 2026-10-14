@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use clap::{Args, Subcommand};
 use serde::Serialize;
 use serde_json::Value;
+use tracel_artifact::upload::{MultipartUploadFile, MultipartUploadPart};
 use tracel_client::console::model::request::{
     ModelFileSpecRequest, ModelVersionListState, PromoteModelVersionRequest,
     RequestModelVersionUploadRequest, SetModelAliasRequest,
@@ -19,8 +20,8 @@ use crate::commands::login::get_client_and_login_if_needed;
 use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
 use crate::helpers::{
-    DownloadFile, DownloadResult, Resource, build_part_tasks, download_files, ensure_model_exists,
-    map_resource_error, parse_metadata, resolve_namespace_project, select_artifact, upload_parts,
+    DownloadFile, DownloadResult, Resource, download_files, ensure_model_exists,
+    map_resource_error, parse_metadata, resolve_namespace_project, select_artifact, upload_files,
     validate_auto_create, validate_rel_path,
 };
 use crate::tools::fs::{build_file_specs, collect_files};
@@ -533,7 +534,7 @@ fn pull(
             checksum: Some(file.checksum),
         })
         .collect();
-    let files = download_files(&client, context.terminal(), &directory, &files, args.force)?;
+    let files = download_files(context.terminal(), &directory, &files, args.force)?;
     let bytes = files.iter().map(|file| file.bytes).sum();
     context.terminal().outro(&format!(
         "Downloaded '{}' v{} ({}) to {}.",
@@ -579,11 +580,6 @@ fn push(
     let file_specs = build_file_specs(&files)?;
     spinner.clear();
 
-    let file_sizes: BTreeMap<String, u64> = file_specs
-        .iter()
-        .map(|f| (f.rel_path.clone(), f.size_bytes))
-        .collect();
-
     let spinner = context.terminal().spinner("Starting the upload");
     let upload_request = RequestModelVersionUploadRequest {
         files: file_specs
@@ -601,8 +597,28 @@ fn push(
         .map_err(|e| map_resource_error(e, namespace, name, Resource::Model(&args.model_name)))?;
     spinner.clear();
 
-    let tasks = build_part_tasks(&files, &file_sizes, &upload.files)?;
-    upload_parts(&client, tasks, context.terminal())?;
+    let plan: Vec<MultipartUploadFile> = upload
+        .files
+        .into_iter()
+        .map(|file| MultipartUploadFile {
+            rel_path: file.rel_path,
+            parts: file
+                .urls
+                .parts
+                .into_iter()
+                .map(|part| MultipartUploadPart {
+                    part: part.part,
+                    url: part.url,
+                    size_bytes: part.size_bytes,
+                })
+                .collect(),
+        })
+        .collect();
+    let message = format!(
+        "Uploading {}",
+        counted(files.len() as u64, ["file", "files"])
+    );
+    upload_files(context.terminal(), message, &files, &plan)?;
 
     let map_error =
         |error| map_resource_error(error, namespace, name, Resource::Model(&args.model_name));

@@ -206,8 +206,7 @@ pub fn handle_command(args: ArtifactsArgs, context: CliContext) -> anyhow::Resul
                     }
                 })
                 .collect();
-            let files =
-                download_files(&client, context.terminal(), &directory, &files, args.force)?;
+            let files = download_files(context.terminal(), &directory, &files, args.force)?;
             let bytes = files.iter().map(|file| file.bytes).sum();
             context.terminal().outro(&format!(
                 "Downloaded artifact '{}' ({}) to {}.",

@@ -169,7 +169,14 @@ false when it already had them all.
 into `./<artifact>` when the artifact's name is a plain file name; `-d,
 --directory <dir>` chooses another directory. Every path and existing file is
 checked before anything downloads, and `--force` overwrites existing files.
-Each file's size and SHA-256 checksum are checked before it is saved.
+The files download into a temporary directory beside it, a large file in
+several ranges at once, and each file's size and SHA-256 checksum are checked
+before any of them moves in, so a failed download leaves the directory
+unchanged.
+
+`models push` and the code versions `package` uploads send up to eight parts or
+files at once. A transfer on a terminal shows the bytes moved, the rate and the
+time left.
 
 ## Models
 

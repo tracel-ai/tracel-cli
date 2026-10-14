@@ -1,3 +1,5 @@
+//! Making sure a model exists before a version is pushed to it.
+
 use anyhow::Context;
 use tracel_client::console::Client;
 use tracel_client::console::model::request::CreateModelRequest;
