@@ -48,9 +48,9 @@ rstest = { version = "0.27.0", default-features = false }
 
 
 ## External Crate
-tracel-client = { git = "https://github.com/tracel-ai/burn-central-client", rev = "674857369bb78ac18a79ae516f9d70557bb0d07d" }
-tracel-artifact = { git = "https://github.com/tracel-ai/tracel", rev = "7d748979abac7b6f9b80750e6d36afce8668a06f" }
-tracel-job = { git = "https://github.com/tracel-ai/tracel", rev = "7d748979abac7b6f9b80750e6d36afce8668a06f" }
+tracel-client = "0.22.0"
+tracel-artifact = { git = "https://github.com/tracel-ai/tracel", rev = "f52ee9e5c76153abf2ca750c31427d44dd86cc0b" }
+tracel-job = { git = "https://github.com/tracel-ai/tracel", rev = "f52ee9e5c76153abf2ca750c31427d44dd86cc0b" }
 
 ## Crate
 tracel-cli = { version = "0.5.0", path = "crates/tracel-cli" }

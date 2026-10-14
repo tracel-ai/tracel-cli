@@ -3091,8 +3091,8 @@ checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
 
 [[package]]
 name = "tracel-artifact"
-version = "0.10.0"
-source = "git+https://github.com/tracel-ai/tracel?rev=7d748979abac7b6f9b80750e6d36afce8668a06f#7d748979abac7b6f9b80750e6d36afce8668a06f"
+version = "0.11.0"
+source = "git+https://github.com/tracel-ai/tracel?rev=f52ee9e5c76153abf2ca750c31427d44dd86cc0b#f52ee9e5c76153abf2ca750c31427d44dd86cc0b"
 dependencies = [
  "crossbeam",
  "reqwest",
@@ -3136,8 +3136,9 @@ dependencies = [
 
 [[package]]
 name = "tracel-client"
-version = "0.21.0"
-source = "git+https://github.com/tracel-ai/burn-central-client?rev=674857369bb78ac18a79ae516f9d70557bb0d07d#674857369bb78ac18a79ae516f9d70557bb0d07d"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "456275c8a4a1fd65e147aac5e39a34de32070ad8efe03929cb7cf6104fe2f407"
 dependencies = [
  "directories",
  "reqwest",
@@ -3154,8 +3155,8 @@ dependencies = [
 
 [[package]]
 name = "tracel-job"
-version = "0.10.0"
-source = "git+https://github.com/tracel-ai/tracel?rev=7d748979abac7b6f9b80750e6d36afce8668a06f#7d748979abac7b6f9b80750e6d36afce8668a06f"
+version = "0.11.0"
+source = "git+https://github.com/tracel-ai/tracel?rev=f52ee9e5c76153abf2ca750c31427d44dd86cc0b#f52ee9e5c76153abf2ca750c31427d44dd86cc0b"
 dependencies = [
  "clap",
  "clap_complete",
