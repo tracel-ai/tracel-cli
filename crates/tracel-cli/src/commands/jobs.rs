@@ -1,11 +1,10 @@
-use std::io::{self, Write};
+use std::io;
 use std::time::{Duration, Instant};
 
 use clap::{Args, Subcommand};
-use serde::Serialize;
 use tracel_client::ClientError;
 use tracel_client::console::job::response::{
-    ExecutionContextResponse, JobLogResponse, JobResponse, MoneyResponse, ProjectJobsResponse,
+    ExecutionContextResponse, JobResponse, MoneyResponse, ProjectJobsResponse,
 };
 
 use crate::commands::login::get_client_and_login_if_needed;
@@ -13,7 +12,7 @@ use crate::context::CliContext;
 use crate::error::{CliError, ErrorKind};
 use crate::helpers::{
     FinalStatus, final_status, follow_logs, job_invocation, missing_job, poll_job, read_job,
-    require_completed, resolve_namespace_project,
+    require_completed, resolve_namespace_project, show_logs,
 };
 use crate::tools::tracel_config::TracelProject;
 use crate::ui::{
@@ -67,10 +66,10 @@ pub struct LogsArgs {
     /// Job number
     #[arg(value_parser = clap::value_parser!(i32).range(1..))]
     pub num: i32,
-    /// Read from this byte of the logs
-    #[arg(long, value_name = "BYTE")]
-    pub start: Option<u64>,
-    /// Keep reading until it finishes
+    /// Show only its last N lines, or start following with them (10 by default)
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
+    pub tail: Option<u32>,
+    /// Keep showing new lines until it finishes
     #[arg(long)]
     pub follow: bool,
 }
@@ -212,36 +211,6 @@ fn money(money: &MoneyResponse) -> String {
     format!("{} {}", money.amount, money.currency)
 }
 
-/// A page of job `num`'s logs, closed by the command that reads the next one when there
-/// is more.
-#[derive(Serialize)]
-#[serde(transparent)]
-struct LogPage {
-    #[serde(skip)]
-    num: i32,
-    page: JobLogResponse,
-}
-
-impl Render for LogPage {
-    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
-        let logs = &self.page.logs;
-        out.write_all(logs.as_bytes())?;
-        if !logs.is_empty() && !logs.ends_with('\n') {
-            writeln!(out)?;
-        }
-        Ok(())
-    }
-
-    fn summary(&self) -> Option<String> {
-        self.page.has_more.then(|| {
-            format!(
-                "More: `tracel jobs logs {} --start {}`.",
-                self.num, self.page.end
-            )
-        })
-    }
-}
-
 fn cancel_error(error: ClientError, project: &TracelProject, num: i32) -> anyhow::Error {
     if error.is_conflict() {
         return CliError::new(
@@ -262,20 +231,13 @@ pub fn handle_command(args: JobsArgs, context: CliContext) -> anyhow::Result<Out
             .into()),
         JobsCommands::Get(args) => Ok(read_job(&client()?, &project, args.num)?.into()),
         JobsCommands::Logs(args) if args.follow => {
-            let start = args.start.unwrap_or(0);
-            let job = follow_logs(&client()?, context.output(), &project, args.num, start)?;
+            let job = follow_logs(&client()?, context.output(), &project, args.num, args.tail)?;
             context.terminal().outro(&state(&job));
             Ok(Outcome::streamed())
         }
         JobsCommands::Logs(args) => {
-            let page = client()?
-                .get_job_logs(&project.namespace, &project.name, args.num, args.start)
-                .map_err(|error| missing_job(error, &project, args.num))?;
-            Ok(LogPage {
-                num: args.num,
-                page,
-            }
-            .into())
+            show_logs(&client()?, context.output(), &project, args.num, args.tail)?;
+            Ok(Outcome::streamed())
         }
         JobsCommands::Cancel(args) => Ok(Outcome::data(cancel(args, &context, &project)?)),
         JobsCommands::Wait(args) => Ok(Outcome::data(wait(args, &context, &project)?)),
@@ -375,7 +337,6 @@ mod tests {
 
     use super::*;
     use crate::error::ErrorReport;
-    use crate::test_support::plain;
 
     fn job(status: &str) -> JobResponse {
         JobResponse {
@@ -393,19 +354,6 @@ mod tests {
             created_at: "2026-10-13T15:00:00Z".into(),
             started_at: Some("2026-10-13T15:02:00Z".into()),
             completed_at: Some("2026-10-13T15:03:05Z".into()),
-        }
-    }
-
-    fn log_page(logs: &str, has_more: bool) -> LogPage {
-        LogPage {
-            num: 12,
-            page: JobLogResponse {
-                logs: logs.into(),
-                start: 0,
-                end: logs.len() as u64,
-                total_size: 4096,
-                has_more,
-            },
         }
     }
 
@@ -491,35 +439,5 @@ mod tests {
         let ran = ran(&queued);
 
         assert_eq!(ran, None);
-    }
-
-    #[test]
-    fn given_logs_that_end_mid_line_when_writing_a_page_then_the_line_is_ended() {
-        let page = log_page("epoch 1\nepoch 2", false);
-
-        let text = plain(&page);
-
-        assert_eq!(text, "epoch 1\nepoch 2\n");
-    }
-
-    #[test]
-    fn given_a_page_with_more_logs_when_summing_it_up_then_it_says_how_to_read_on() {
-        let page = log_page("epoch 1\n", true);
-
-        let summary = page.summary().unwrap();
-
-        assert!(
-            summary.contains("tracel jobs logs 12 --start 8"),
-            "{summary}"
-        );
-    }
-
-    #[test]
-    fn given_the_last_page_when_summing_it_up_then_there_is_no_summary() {
-        let page = log_page("epoch 1\n", false);
-
-        let summary = page.summary();
-
-        assert_eq!(summary, None);
     }
 }
