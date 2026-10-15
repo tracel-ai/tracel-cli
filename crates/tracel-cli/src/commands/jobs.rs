@@ -263,7 +263,7 @@ pub fn handle_command(args: JobsArgs, context: CliContext) -> anyhow::Result<Out
         JobsCommands::Get(args) => Ok(read_job(&client()?, &project, args.num)?.into()),
         JobsCommands::Logs(args) if args.follow => {
             let start = args.start.unwrap_or(0);
-            let job = follow_logs(&client()?, context.output(), &project, args.num, start)?;
+            let job = follow_logs(&client()?, &context, &project, args.num, start)?;
             context.terminal().outro(&state(&job));
             Ok(Outcome::streamed())
         }

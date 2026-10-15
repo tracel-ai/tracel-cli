@@ -50,7 +50,10 @@ and the instructions a login asks you to follow.
 instead: each log entry, with `"type":"log"` added, then
 `{"type":"end","running":false}` when the experiment has finished.
 `tracel jobs logs --follow --json` does the same with each page of logs, then
-`{"type":"end","status":"<status>"}`, and `tracel run --remote --follow --json`
+`{"type":"end","status":"<status>"}`. While the job runs with nothing in its
+log file, each line its compute provider streams comes as
+`{"type":"live_log","logs":"<line>"}` instead, and no page follows them.
+`tracel run --remote --follow --json`
 starts with the queued job, with `"type":"queued"` added, then writes the job's
 log events. An error still writes the failure line.
 
@@ -216,7 +219,12 @@ time left.
 - `jobs logs <number>` reads one page of the job's log file, and shows it as it
   is, then the command that reads the next page when there is more.
   `--start <byte>` reads from a byte offset, and a page's `end` is the next
-  page's `start`. `--follow` reads until the job has finished.
+  page's `start`. `--follow` reads until the job has finished. The compute
+  provider uploads the log file once the job has ended, so while it is empty,
+  `--follow` shows the lines the provider streams as they come, the way the web
+  console does, and doesn't show the file after them. Those lines start from
+  when following began; `jobs logs <number>` reads the whole file once the job
+  has ended.
 - `jobs cancel <number>` cancels a new, queued or running job, after asking;
   `--yes` skips the question. A running job stays `pending_cancellation` until
   its compute provider stops it.

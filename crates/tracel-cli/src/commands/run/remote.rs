@@ -163,7 +163,7 @@ pub fn queue(run: RemoteRun, context: &CliContext) -> anyhow::Result<Outcome> {
     let queued = format!("Queued job {num} with code version {digest}.");
     if run.follow {
         terminal.success(&queued);
-        follow_job(&client, context.output(), linked, num)?;
+        follow_job(&client, context, linked, num)?;
         terminal.outro(&format!("Job {num} completed."));
         return Ok(Outcome::streamed());
     }

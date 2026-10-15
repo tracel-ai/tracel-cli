@@ -2,22 +2,16 @@
 //! reading a job until it finishes.
 
 use std::borrow::Cow;
-use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
 use serde_json::Value;
 use tracel_client::ClientError;
 use tracel_client::console::Client;
-use tracel_client::console::job::response::{JobLogResponse, JobResponse};
+use tracel_client::console::job::response::JobResponse;
 
 use super::{Resource, map_resource_error};
 use crate::error::{CliError, ErrorKind};
 use crate::tools::tracel_config::TracelProject;
-use crate::ui::{Human, Output, Render};
-
-/// How often a followed job is read again once its logs are caught up.
-const FOLLOW_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Write the job command that gives the program `arguments` unchanged.
 ///
@@ -144,94 +138,12 @@ pub fn poll_job(
     }
 }
 
-/// An event of following a job's logs. As JSON, a page of logs gains `"type": "log"`.
-#[derive(Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum LogEvent<'a> {
-    Log(&'a JobLogResponse),
-    End {
-        status: &'a str,
-        /// Whether the logs so far end inside a line, which the text then ends.
-        #[serde(skip)]
-        mid_line: bool,
-    },
-}
-
-impl Render for LogEvent<'_> {
-    fn render(&self, out: &mut Human<'_>) -> io::Result<()> {
-        match self {
-            Self::Log(page) => out.write_all(page.logs.as_bytes()),
-            Self::End { mid_line: true, .. } => writeln!(out),
-            Self::End { .. } => Ok(()),
-        }
-    }
-}
-
-/// Find where the next read of the logs starts after `page`, read from `start`, and
-/// whether more is already there to read.
-fn next_read(start: u64, page: &JobLogResponse) -> anyhow::Result<(u64, bool)> {
-    let next = page.end.max(start);
-    if page.has_more && next == start {
-        anyhow::bail!("The Tracel Console has more logs to send, but not from where.");
-    }
-    Ok((next, page.has_more))
-}
-
-/// Write job `num`'s logs from byte `start` until the job has finished, and return it as
-/// last read. The job is read before its logs, so the logs read after a final status are
-/// complete.
-pub fn follow_logs(
-    client: &Client,
-    output: &Output,
-    project: &TracelProject,
-    num: i32,
-    start: u64,
-) -> anyhow::Result<JobResponse> {
-    let mut start = start;
-    let mut mid_line = false;
-    let job = poll_job(client, project, num, FOLLOW_INTERVAL, None, |_| {
-        loop {
-            let page = client
-                .get_job_logs(&project.namespace, &project.name, num, Some(start))
-                .map_err(|error| missing_job(error, project, num))?;
-            if !page.logs.is_empty() {
-                output.event(&LogEvent::Log(&page))?;
-                mid_line = !page.logs.ends_with('\n');
-            }
-            let more;
-            (start, more) = next_read(start, &page)?;
-            if !more {
-                return Ok(());
-            }
-        }
-    })?;
-    output.event(&LogEvent::End {
-        status: &job.status,
-        mid_line,
-    })?;
-    Ok(job)
-}
-
-/// Follow job `num`'s logs from the start until it finishes, and fail unless it
-/// completed.
-pub fn follow_job(
-    client: &Client,
-    output: &Output,
-    project: &TracelProject,
-    num: i32,
-) -> anyhow::Result<JobResponse> {
-    let job = follow_logs(client, output, project, num, 0)?;
-    require_completed(&job)?;
-    Ok(job)
-}
-
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
     use serde_json::json;
 
     use super::*;
-    use crate::test_support::plain;
 
     fn command(arguments: &[&str]) -> String {
         let arguments: Vec<String> = arguments
@@ -239,16 +151,6 @@ mod tests {
             .map(|argument| argument.to_string())
             .collect();
         job_command(&arguments)
-    }
-
-    fn page(end: u64, has_more: bool) -> JobLogResponse {
-        JobLogResponse {
-            logs: "epoch 1\n".into(),
-            start: 0,
-            end,
-            total_size: 4096,
-            has_more,
-        }
     }
 
     #[test]
@@ -313,38 +215,5 @@ mod tests {
         let invocation = job_invocation(queued);
 
         assert_eq!(invocation, None);
-    }
-
-    #[test]
-    fn given_a_page_when_reading_on_then_the_next_read_starts_where_it_ends() {
-        let next = next_read(0, &page(8, true)).unwrap();
-
-        assert_eq!(next, (8, true));
-    }
-
-    #[test]
-    fn given_a_page_that_ends_before_the_start_when_reading_on_then_the_start_is_kept() {
-        let next = next_read(16, &page(8, false)).unwrap();
-
-        assert_eq!(next, (16, false));
-    }
-
-    #[test]
-    fn given_more_logs_but_no_progress_when_reading_on_then_it_fails() {
-        let next = next_read(8, &page(8, true));
-
-        assert!(next.is_err());
-    }
-
-    #[test]
-    fn given_logs_that_end_mid_line_when_the_job_ends_then_the_line_is_ended() {
-        let end = LogEvent::End {
-            status: "completed",
-            mid_line: true,
-        };
-
-        let text = plain(&end);
-
-        assert_eq!(text, "\n");
     }
 }
