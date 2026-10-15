@@ -49,8 +49,8 @@ rstest = { version = "0.27.0", default-features = false }
 
 ## External Crate
 tracel-client = "0.22.0"
-tracel-artifact = { git = "https://github.com/tracel-ai/tracel", rev = "f52ee9e5c76153abf2ca750c31427d44dd86cc0b" }
-tracel-job = { git = "https://github.com/tracel-ai/tracel", rev = "f52ee9e5c76153abf2ca750c31427d44dd86cc0b" }
+tracel-artifact = "0.12.0"
+tracel-job = "0.12.0"
 
 ## Crate
 tracel-cli = { version = "0.6.0", path = "crates/tracel-cli" }
