@@ -3,14 +3,18 @@
 
 use std::borrow::Cow;
 use std::io::{self, Write};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::Value;
-use tracel_client::ClientError;
 use tracel_client::console::Client;
 use tracel_client::console::job::request::JobLogCursor;
-use tracel_client::console::job::response::{JobLogLine, JobLogResponse, JobResponse};
+use tracel_client::console::job::response::{
+    JobLogLine, JobLogResponse, JobLogStreamMessage, JobResponse,
+};
+use tracel_client::websocket::WebSocketError;
+use tracel_client::{ClientError, WebSocketClient};
 
 use super::{Resource, map_resource_error};
 use crate::error::{CliError, ErrorKind};
@@ -26,6 +30,9 @@ const LINES_ON_ATTACH: u32 = 10;
 
 /// How many lines one read of a job's log asks for when paging through it.
 const LOG_PAGE_LINES: u32 = 1_000;
+
+/// How long following waits to receive again when the log's stream has nothing new.
+const STREAM_PAUSE: Duration = Duration::from_millis(100);
 
 /// Write the job command that gives the program `arguments` unchanged.
 ///
@@ -218,15 +225,36 @@ impl LogFollower {
         }
         more
     }
+
+    /// Take `lines`, a frame of the log's stream, and return the ones that continue the log
+    /// and whether one was skipped, so that the log has to be read at [`read_at`](Self::read_at).
+    fn take_live<'a>(&mut self, lines: &'a [JobLogLine]) -> (&'a [JobLogLine], bool) {
+        let Some(newest) = self.newest else {
+            return (&[], true);
+        };
+        let shown_before = lines.iter().take_while(|line| line.seq <= newest).count();
+        let lines = &lines[shown_before..];
+        let continued = lines
+            .iter()
+            .zip(newest + 1..)
+            .take_while(|(line, seq)| line.seq == *seq)
+            .count();
+        if let Some(line) = lines[..continued].last() {
+            self.newest = Some(line.seq);
+        }
+        (&lines[..continued], continued < lines.len())
+    }
 }
 
-/// A job's log being shown, read a page at a time.
+/// A job's log being shown: its reads and, while it is followed, the stream that shows its
+/// new lines between them until the stream fails.
 struct JobLog<'a> {
     client: &'a Client,
     output: &'a Output,
     project: &'a TracelProject,
     num: i32,
     follower: LogFollower,
+    stream: Option<WebSocketClient>,
 }
 
 impl<'a> JobLog<'a> {
@@ -243,7 +271,15 @@ impl<'a> JobLog<'a> {
             project,
             num,
             follower: LogFollower::new(start),
+            stream: None,
         }
+    }
+
+    /// Read the job, then show the lines after the newest one, and return the job.
+    fn read(&mut self) -> anyhow::Result<JobResponse> {
+        let job = read_job(self.client, self.project, self.num)?;
+        self.read_new_lines()?;
+        Ok(job)
     }
 
     fn read_new_lines(&mut self) -> anyhow::Result<()> {
@@ -263,6 +299,40 @@ impl<'a> JobLog<'a> {
             self.show(&page.lines)?;
             if !more {
                 return Ok(());
+            }
+        }
+    }
+
+    /// Without a stream, following reads the log alone.
+    fn open_stream(&mut self) {
+        self.stream = self
+            .client
+            .open_job_log_websocket(&self.project.namespace, &self.project.name, self.num)
+            .ok();
+    }
+
+    /// Show the lines the stream sends until `next_read`, or wait for it without a stream.
+    fn receive_until(&mut self, next_read: Instant) -> anyhow::Result<()> {
+        loop {
+            let left = next_read.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok(());
+            }
+            let Some(stream) = self.stream.as_mut() else {
+                thread::sleep(left);
+                return Ok(());
+            };
+            match stream.receive::<JobLogStreamMessage>() {
+                Ok(Some(JobLogStreamMessage::Lines(lines))) => {
+                    let (shown, skipped) = self.follower.take_live(&lines);
+                    self.show(shown)?;
+                    if skipped {
+                        self.read_new_lines()?;
+                    }
+                }
+                Ok(None) => thread::sleep(STREAM_PAUSE.min(left)),
+                Err(WebSocketError::SerializationError(_)) => {}
+                Err(_) => self.stream = None,
             }
         }
     }
@@ -289,7 +359,7 @@ pub fn show_logs(
 
 /// Write job `num`'s log lines from `start` until the job has finished, and return it as
 /// last read. The job is read before its logs, so the lines read after a final status are
-/// complete.
+/// complete; between reads, the log's stream shows lines as soon as they are stored.
 fn follow(
     client: &Client,
     output: &Output,
@@ -298,9 +368,14 @@ fn follow(
     start: LogStart,
 ) -> anyhow::Result<JobResponse> {
     let mut log = JobLog::new(client, output, project, num, start);
-    let job = poll_job(client, project, num, FOLLOW_INTERVAL, None, |_| {
-        log.read_new_lines()
-    })?;
+    let mut job = log.read()?;
+    if final_status(&job.status).is_none() {
+        log.open_stream();
+    }
+    while final_status(&job.status).is_none() {
+        log.receive_until(Instant::now() + FOLLOW_INTERVAL)?;
+        job = log.read()?;
+    }
     output.event(&LogEvent::End {
         status: &job.status,
     })?;
@@ -364,6 +439,14 @@ mod tests {
             lines: seqs.map(line).collect(),
             has_more,
         }
+    }
+
+    fn frame(numbers: &[u64]) -> Vec<JobLogLine> {
+        numbers.iter().copied().map(line).collect()
+    }
+
+    fn seqs(lines: &[JobLogLine]) -> Vec<u64> {
+        lines.iter().map(|line| line.seq).collect()
     }
 
     #[test]
@@ -518,5 +601,57 @@ mod tests {
             follower.read_at(),
             (JobLogCursor::After(1002), Some(LOG_PAGE_LINES))
         );
+    }
+
+    #[test]
+    fn given_a_frame_continuing_the_log_when_following_then_it_shows_and_the_cursor_advances() {
+        let mut follower = LogFollower::new(LogStart::Last(LINES_ON_ATTACH));
+        follower.take(&page(0..3, false));
+        let received = frame(&[3, 4, 5]);
+
+        let (shown, skipped) = follower.take_live(&received);
+
+        assert_eq!(seqs(shown), [3, 4, 5]);
+        assert!(!skipped);
+        assert_eq!(follower.read_at().0, JobLogCursor::After(5));
+    }
+
+    #[test]
+    fn given_a_frame_with_lines_already_shown_when_following_then_only_the_new_ones_show() {
+        let mut follower = LogFollower::new(LogStart::Last(LINES_ON_ATTACH));
+        follower.take(&page(0..5, false));
+        let received = frame(&[3, 4, 5, 6]);
+
+        let (shown, skipped) = follower.take_live(&received);
+
+        assert_eq!(seqs(shown), [5, 6]);
+        assert!(!skipped);
+        assert_eq!(follower.read_at().0, JobLogCursor::After(6));
+    }
+
+    #[test]
+    fn given_a_frame_that_skips_a_line_when_following_then_it_shows_what_continued_and_reports_the_gap()
+     {
+        let mut follower = LogFollower::new(LogStart::Last(LINES_ON_ATTACH));
+        follower.take(&page(0..3, false));
+        let received = frame(&[3, 4, 6, 7]);
+
+        let (shown, skipped) = follower.take_live(&received);
+
+        assert_eq!(seqs(shown), [3, 4]);
+        assert!(skipped);
+        assert_eq!(follower.read_at().0, JobLogCursor::After(4));
+    }
+
+    #[test]
+    fn given_no_line_read_yet_when_a_frame_arrives_then_it_reports_a_gap() {
+        let mut follower = LogFollower::new(LogStart::Last(LINES_ON_ATTACH));
+        follower.take(&page(0..0, false));
+        let received = frame(&[0, 1]);
+
+        let (shown, skipped) = follower.take_live(&received);
+
+        assert!(shown.is_empty());
+        assert!(skipped);
     }
 }
