@@ -3118,7 +3118,8 @@ dependencies = [
 [[package]]
 name = "tracel-client"
 version = "0.24.0"
-source = "git+https://github.com/tracel-ai/tracel-client?rev=461bb3c80ded2172d142b750c8d3884aebf2b47b#461bb3c80ded2172d142b750c8d3884aebf2b47b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed83b0a8272286e92d8badb361d1241b95c5f49734298acdc95bfee198f19ab9"
 dependencies = [
  "directories",
  "reqwest",
