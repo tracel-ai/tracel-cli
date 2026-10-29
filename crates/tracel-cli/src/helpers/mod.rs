@@ -8,7 +8,7 @@ mod transfer;
 pub use download::{DownloadFile, DownloadResult, download_files, validate_rel_path};
 pub use jobs::{
     FinalStatus, final_status, follow_job, follow_logs, job_command, job_invocation, missing_job,
-    poll_job, read_job, require_completed,
+    poll_job, read_job, require_completed, show_logs,
 };
 pub use model::ensure_model_exists;
 pub use project::{

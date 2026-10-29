@@ -49,8 +49,9 @@ and the instructions a login asks you to follow.
 `tracel experiments logs --follow --json` writes one line of JSON per event
 instead: each log entry, with `"type":"log"` added, then
 `{"type":"end","running":false}` when the experiment has finished.
-`tracel jobs logs --follow --json` does the same with each page of logs, then
-`{"type":"end","status":"<status>"}`, and `tracel run --remote --follow --json`
+`tracel jobs logs --json` writes each line of the job's log the same way
+(`seq`, `stream`, `emitted_at`, `message`), and with `--follow` ends with
+`{"type":"end","status":"<status>"}`. `tracel run --remote --follow --json`
 starts with the queued job, with `"type":"queued"` added, then writes the job's
 log events. An error still writes the failure line.
 
@@ -211,13 +212,13 @@ time left.
 
 ## Jobs
 
-- A job's status is `new`, `queued`, `running`, `pending_cancellation`,
-  `completed`, `failed` or `cancelled`.
-- `jobs logs <number>` reads one page of the job's log file, and shows it as it
-  is, then the command that reads the next page when there is more.
-  `--start <byte>` reads from a byte offset, and a page's `end` is the next
-  page's `start`. `--follow` reads until the job has finished.
-- `jobs cancel <number>` cancels a new, queued or running job, after asking;
+- A job's status is `new`, `running`, `pending_cancellation`, `completed`,
+  `failed` or `cancelled`.
+- `jobs logs <number>` shows the job's whole log, as `kubectl logs` does, and
+  `--tail <n>` only its last `n` lines. `--follow` starts with the last 10
+  lines, or `--tail` of them, as `tail -f` does, then shows each new line until
+  the job has finished.
+- `jobs cancel <number>` cancels a new or running job, after asking;
   `--yes` skips the question. A running job stays `pending_cancellation` until
   its compute provider stops it.
 - `jobs wait <number>` checks the job every `--interval` seconds until it
@@ -270,14 +271,13 @@ time left.
   arguments after `--`. They reach the program unchanged: the job command
   single-quotes each argument that is empty, starts with `#`, or contains a
   space, tab, newline, quote or backslash.
-- A job may incur costs, so the command asks before uploading anything, naming
-  the group and the code version, and `--yes` skips the question. Without a
-  terminal it needs `--yes`, and fails with `CONFIRMATION_REQUIRED` before
-  packaging.
+- The command asks before uploading anything, naming the group and the code
+  version, and `--yes` skips the question. Without a terminal it needs `--yes`,
+  and fails with `CONFIRMATION_REQUIRED` before packaging.
 - In human output, the command ends on the commands that follow the job's
   logs and wait for it.
 - `--dry-run` packages and shows the job without logging in, uploading or
   queuing.
-- `--follow` follows the job's logs, then exits as `jobs wait` does. Without a
-  job number from the Tracel Console, it fails after queuing, and the job stays
-  queued.
+- `--follow` shows every line the job writes, then exits as `jobs wait` does.
+  Without a job number from the Tracel Console, it fails after queuing, and the
+  job stays queued.
