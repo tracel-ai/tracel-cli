@@ -3105,7 +3105,7 @@ dependencies = [
 
 [[package]]
 name = "tracel-cli"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "cargo_metadata",
@@ -3137,8 +3137,8 @@ dependencies = [
 
 [[package]]
 name = "tracel-client"
-version = "0.23.0"
-source = "git+https://github.com/tracel-ai/tracel-client?rev=3bd2f4e4e2cd3976009ea8ab5e63fd0e1bdaa63c#3bd2f4e4e2cd3976009ea8ab5e63fd0e1bdaa63c"
+version = "0.24.0"
+source = "git+https://github.com/tracel-ai/tracel-client?rev=461bb3c80ded2172d142b750c8d3884aebf2b47b#461bb3c80ded2172d142b750c8d3884aebf2b47b"
 dependencies = [
  "directories",
  "reqwest",
@@ -3758,7 +3758,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "xtask"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "strum 0.27.2",
  "tracel-xtask",
