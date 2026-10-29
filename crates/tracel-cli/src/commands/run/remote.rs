@@ -83,7 +83,7 @@ pub fn check(
 }
 
 /// Package the workspace as `tracel package` does, then queue it as a job, once the user
-/// agrees, since a job may incur costs.
+/// agrees.
 pub fn queue(run: RemoteRun, context: &CliContext) -> anyhow::Result<Outcome> {
     let terminal = context.terminal();
     let group = run.group;
@@ -113,7 +113,7 @@ pub fn queue(run: RemoteRun, context: &CliContext) -> anyhow::Result<Outcome> {
     let digest = short_digest(&package.digest).to_string();
     if !run.yes {
         let confirmed = terminal.confirm(
-            &format!("Queue it on {group} with code version {digest}? It may incur costs."),
+            &format!("Queue it on {group} with code version {digest}?"),
             false,
             queueing(group),
         )?;

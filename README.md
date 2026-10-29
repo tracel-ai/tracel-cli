@@ -123,9 +123,8 @@ is recorded on the Tracel Console when the workspace is linked and you're logged
 in, and on this machine otherwise. Ctrl-C stops the job.
 
 With `--remote`, the workspace is packaged as `tracel package` does and the job
-is queued on a compute provider group once you confirm, since a job may incur
-costs. `--follow` then shows its logs until it finishes. Without a job,
-`tracel run` is `cargo run --release`.
+is queued on a compute provider group once you confirm. `--follow` then shows
+its logs until it finishes. Without a job, `tracel run` is `cargo run --release`.
 
 ```bash
 tracel run --list

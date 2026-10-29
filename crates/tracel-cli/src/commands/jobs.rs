@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use clap::{Args, Subcommand};
 use tracel_client::ClientError;
 use tracel_client::console::job::response::{
-    ExecutionContextResponse, JobResponse, MoneyResponse, ProjectJobsResponse,
+    ExecutionContextResponse, JobResponse, ProjectJobsResponse,
 };
 
 use crate::commands::login::get_client_and_login_if_needed;
@@ -146,25 +146,6 @@ impl Render for JobResponse {
             .field("Command", command(&self.job_command))
             .field("Code version", short_digest(&self.job_project_version));
         let details = match &self.execution_context {
-            Some(ExecutionContextResponse::Managed {
-                compute_provider_name,
-                memory_gb,
-                cpu_cores,
-                num_gpus,
-                lock_price_per_hour,
-                final_cost,
-                estimated_cost,
-            }) => details
-                .field(
-                    "Compute provider",
-                    format!("{compute_provider_name} (managed)"),
-                )
-                .field("CPU cores", cpu_cores)
-                .field("Memory", format!("{memory_gb} GB"))
-                .optional("GPUs", *num_gpus)
-                .field("Price per hour", money(lock_price_per_hour))
-                .optional("Estimated cost", estimated_cost.as_ref().map(money))
-                .optional("Final cost", final_cost.as_ref().map(money)),
             Some(ExecutionContextResponse::SelfManaged {
                 compute_provider_name,
             }) => details.field(
@@ -205,10 +186,6 @@ fn state(job: &JobResponse) -> String {
         "pending_cancellation" => format!("Job {num} is stopping."),
         status => format!("Job {num} is {status}."),
     }
-}
-
-fn money(money: &MoneyResponse) -> String {
-    format!("{} {}", money.amount, money.currency)
 }
 
 fn cancel_error(error: ClientError, project: &TracelProject, num: i32) -> anyhow::Error {
@@ -430,13 +407,13 @@ mod tests {
 
     #[test]
     fn given_a_job_that_has_not_started_when_saying_how_long_it_ran_then_there_is_nothing_to_say() {
-        let queued = JobResponse {
+        let not_started = JobResponse {
             started_at: None,
             completed_at: None,
-            ..job("queued")
+            ..job("new")
         };
 
-        let ran = ran(&queued);
+        let ran = ran(&not_started);
 
         assert_eq!(ran, None);
     }
