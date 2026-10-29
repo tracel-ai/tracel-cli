@@ -456,7 +456,7 @@ mod tests {
 
         let archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
         assert_eq!(
-            archive.file_names().collect::<Vec<_>>(),
+            archive.file_names().collect::<Result<Vec<_>, _>>().unwrap(),
             ["Cargo.toml", "src/main.rs"]
         );
     }
